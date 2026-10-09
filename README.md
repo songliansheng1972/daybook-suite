@@ -12,7 +12,7 @@ Three independent parts, one foundation, one source of truth:
 
 ## Why "Daybook" (起居注, Qǐjūzhù)
 
-For nearly two thousand years, Chinese court historians kept the **qijuzhu** — the day-by-day record of the emperor's own words and deeds. The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.
+For nearly two thousand years, Chinese court historians kept the **qijuzhu** — the day-by-day record of the emperor's own words and deeds. **The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.**
 
 It ran on four iron rules:
 
@@ -96,7 +96,7 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 
 ## 名字的由来 —— 起居注
 
-近两千年前，中国的史官就在做一件事：**逐日记录帝王的一言一行**，写成的档册叫「**起居注**」。其名起于汉代（公元一世纪），到唐代成为定制，此后断断续续一直写到 1910 年。
+近两千年前，中国的史官就在做一件事：**逐日记录帝王的一言一行**，写成的档册叫「**起居注**」。**其名起于汉代（公元一世纪），到唐代成为定制，此后断断续续一直写到 1910 年。**
 
 它立过四条铁律：
 

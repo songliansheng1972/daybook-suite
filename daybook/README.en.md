@@ -28,7 +28,7 @@ Core indexing requires no database, server, network connection, or third-party P
 
 ## Why the name "Qijuzhu" (起居注)
 
-For nearly two thousand years, Chinese court historians kept the *qijuzhu* — the day-by-day record of the emperor's own words and deeds. The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.
+For nearly two thousand years, Chinese court historians kept the *qijuzhu* — the day-by-day record of the emperor's own words and deeds. **The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.**
 
 It ran on four iron rules:
 
