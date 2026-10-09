@@ -26,6 +26,21 @@ A journal — an append-only text log — plus a one-pass scanner that turns it 
 
 Core indexing requires no database, server, network connection, or third-party Python package. Python 3 is required; the optional chatroom component runs an HTTP server.
 
+## Why the name "Qijuzhu" (起居注)
+
+For nearly two thousand years, Chinese court historians kept the *qijuzhu* — the day-by-day record of the emperor's own words and deeds. The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.
+
+It ran on four iron rules:
+
+- **Append-only** — an entry, once written, was never altered.
+- **Independent recorder** — the Tang ideal was that *even the emperor did not get to read it*. (The classical ideal, not a practice every dynasty kept — later courts did ask to look.)
+- **Chronological** — "以事系日，以日系月，以月系时，以时系年": day by day, never reshuffled.
+- **Source of record** — qijuzhu → veritable records → official history, three tiers.
+
+Two thousand years of practice settled one point: **records that matter must be append-only, and independent of the one being recorded.**
+
+We invented nothing. We just hung that two-thousand-year-old ledger on your AI.
+
 ## Install
 
 Nothing to install. Copy the directory.

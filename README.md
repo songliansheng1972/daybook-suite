@@ -4,11 +4,11 @@
 
 Three independent parts, one foundation, one source of truth:
 
-| Part         | Box             | Role                                            | License                 |
-| ------------ | --------------- | ----------------------------------------------- | ----------------------- |
-| **Daybook** (起居注) | `daybook/`      | Ledger + records (foundation) · index / query / watch / append | MIT (fully open source) |
-| **Daybook MCP** (璇玑) | `daybook-mcp/`  | Query · exposes the volumes to any MCP client   | MIT (fully open source) |
-| **Daybook Orch** (司南) | `daybook-orch/` | Command · deterministic orchestration for multi-agent systems | AGPL-3.0 + commercial   |
+| Part                  | Box             | Role                                                           | License                 |
+| --------------------- | --------------- | -------------------------------------------------------------- | ----------------------- |
+| **Daybook** (起居注)     | `daybook/`      | Ledger + records (foundation) · index / query / watch / append | MIT (fully open source) |
+| **Daybook MCP** (璇玑)  | `daybook-mcp/`  | Query · exposes the volumes to any MCP client                  | MIT (fully open source) |
+| **Daybook Orch** (司南) | `daybook-orch/` | Command · deterministic orchestration for multi-agent systems  | AGPL-3.0 + commercial   |
 
 ## Why "Daybook" (起居注, Qǐjūzhù)
 
@@ -46,8 +46,8 @@ Each package is self-contained; `daybook.conf` lets you change volume paths.
 
 ## License
 
-> **This repository licenses each part separately; the root `LICENSE` is a signpost only, not a license text.** The full license texts live inside each package:
-> `daybook/LICENSE` (MIT) · `daybook-mcp/LICENSE` (MIT) · `daybook-orch/LICENSE` (AGPL-3.0-or-later)
+> **This repository licenses each part separately; the root `LICENSE` is a signpost only, not a license text.** The full license texts live inside each package:  
+> `daybook/LICENSE` (MIT) · `daybook-mcp/LICENSE` (MIT) · `daybook-orch/LICENSE` (AGPL-3.0-or-later)  
 > See `src/LICENSING.md` for the tiered-licensing notes; the source-side originals are `src/LICENSE` and `src/LICENSE.orch`.
 
 - **Daybook · Daybook MCP**: MIT (fully open source).
@@ -130,8 +130,8 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 
 ## 许可
 
-> **本仓按件分层授权，仓根 `LICENSE` 仅为指路牌、非授权文本。** 许可全文在各包内：
-> `daybook/LICENSE`（MIT）· `daybook-mcp/LICENSE`（MIT）· `daybook-orch/LICENSE`（AGPL-3.0-or-later）
+> **本仓按件分层授权，仓根 `LICENSE` 仅为指路牌、非授权文本。** 许可全文在各包内：  
+> `daybook/LICENSE`（MIT）· `daybook-mcp/LICENSE`（MIT）· `daybook-orch/LICENSE`（AGPL-3.0-or-later）  
 > 分层说明见 `src/LICENSING.md`；源侧原件为 `src/LICENSE` 与 `src/LICENSE.orch`。
 
 - **起居注 · 璇玑**：MIT（全开源）。
