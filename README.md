@@ -29,6 +29,10 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 
 ## 许可
 
+> **本仓按件分层授权，故仓根不放单一 LICENSE。** 许可全文在各包内：
+> `daybook/LICENSE`（MIT）· `daybook-mcp/LICENSE`（MIT）· `daybook-orch/LICENSE`（AGPL-3.0-or-later）
+> 分层说明见 `src/LICENSING.md`；源侧原件为 `src/LICENSE` 与 `src/LICENSE.orch`。
+
 - **起居注 · 璇玑**：MIT（全开源）。
 - **司南**：AGPL-3.0-or-later，或另购商业许可（**闭源嵌入 / 对外 SaaS 而不开源 / 官方支持与合规背书** 另谈）。
 - **$1 下载** ＝ 整装包的**便利费**；**源码永远公开，人人可免费自取**。
