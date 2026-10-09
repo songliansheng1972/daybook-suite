@@ -10,6 +10,23 @@ Three independent parts, one foundation, one source of truth:
 | **Daybook MCP** (璇玑) | `daybook-mcp/`  | Query · exposes the volumes to any MCP client   | MIT (fully open source) |
 | **Daybook Orch** (司南) | `daybook-orch/` | Command · deterministic orchestration for multi-agent systems | AGPL-3.0 + commercial   |
 
+## Why "Daybook" (起居注, Qǐjūzhù)
+
+For nearly two thousand years, Chinese court historians kept the **qijuzhu** — the day-by-day record of the emperor's own words and deeds. The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.
+
+It ran on four iron rules:
+
+- **Append-only** — an entry, once written, was never altered.
+- **Independent recorder** — the Tang ideal was that *even the emperor did not get to read it*. (That is the classical ideal, not a practice every dynasty kept — later courts did ask to look.)
+- **Chronological** — "以事系日，以日系月，以月系时，以时系年": day by day, never reshuffled.
+- **Source of record** — every later official history was compiled from it.
+
+The recorder was separate from the recorded, and a written record could not be rewritten. Two thousand years of practice settled one point: **records that matter must be append-only, and independent of the one being recorded.**
+
+The other two parts also carry old names: **璇玑 (xuánjī)**, an ancient astronomical instrument for *observation*; **司南 (sīnán)**, the early south-pointing compass, for *direction*.
+
+We invented nothing. We just hung that two-thousand-year-old ledger on your AI.
+
 ## Highlights
 
 - **Ledger = plain text** — readable with `cat`; no runtime requirements, no model requirements.
@@ -76,6 +93,23 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 | **起居注** | `daybook/`      | 账＋录（基座）· 索引 / 查询 / 监视 / 落条 | MIT（全开源）        |
 | **璇玑**  | `daybook-mcp/`  | 查 · 把卷暴露给任意 MCP 客户端        | MIT（全开源）        |
 | **司南**  | `daybook-orch/` | 令 · 多智能体的确定性编排             | AGPL-3.0 ＋ 商业许可 |
+
+## 名字的由来 —— 起居注
+
+近两千年前，中国的史官就在做一件事：**逐日记录帝王的一言一行**，写成的档册叫「**起居注**」。其名起于汉代（公元一世纪），到唐代成为定制，此后断断续续一直写到 1910 年。
+
+它立过四条铁律：
+
+- **只增不改** —— 写定的记录，不许删改。
+- **记录者独立** —— 唐代定制：连皇帝本人也不得调阅。（**这是制度理想，并非历代皆然** —— 宋以后即有君主索阅之例。）
+- **编年为序** —— 「以事系日，以日系月」，逐日逐条，不许重排。
+- **修史底本** —— 后世国史、实录皆由它编成。
+
+记录的人与被记录的人，分开；写过的事，不能重写。两千年实践验证的只有一句：**重要的记录，必须只增不改、独立于被记录者。**
+
+另两件亦取古名：**璇玑**，上古观测天象之器 —— 主「查」；**司南**，最早的定向之器 —— 主「令」。
+
+我们没发明什么 —— 只是把这叠两千年的账，挂给了 AI。
 
 ## 卖点
 
