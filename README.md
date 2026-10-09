@@ -1,5 +1,72 @@
 # daybook-suite
 
+**A ledger you can actually open.** Plain text · Zero dependencies · append-only — the truth lives in the volumes.
+
+Three independent parts, one foundation, one source of truth:
+
+| Part         | Box             | Role                                            | License                 |
+| ------------ | --------------- | ----------------------------------------------- | ----------------------- |
+| **Daybook** (起居注) | `daybook/`      | Ledger + records (foundation) · index / query / watch / append | MIT (fully open source) |
+| **Daybook MCP** (璇玑) | `daybook-mcp/`  | Query · exposes the volumes to any MCP client   | MIT (fully open source) |
+| **Daybook Orch** (司南) | `daybook-orch/` | Command · deterministic orchestration for multi-agent systems | AGPL-3.0 + commercial   |
+
+## Highlights
+
+- **Ledger = plain text** — readable with `cat`; no runtime requirements, no model requirements.
+- **Zero dependencies** — Python 3 standard library only; no network. Copy to any machine and it runs.
+- **Append-only** — writes never corrupt history; the index is just a catalog, rebuildable from the source text at any time.
+- **One foundation for all three** — the same volumes, the same truth; **others can build compliant ledgers on their own — we don't need to be present**.
+
+## Quick start
+
+```bash
+cd daybook       && python3 daybook.py index          # Daybook: index
+cd daybook-mcp   && python3 mcp_server.py             # Daybook MCP: start MCP server
+cd daybook-orch  && python3 orchestrator.py selftest  # Daybook Orch: end-to-end self-test 9/9
+```
+
+Each package is self-contained; `daybook.conf` lets you change volume paths.
+
+## License
+
+> **This repository licenses each part separately, so there is no single LICENSE at the repo root.** The full license texts live inside each package:
+> `daybook/LICENSE` (MIT) · `daybook-mcp/LICENSE` (MIT) · `daybook-orch/LICENSE` (AGPL-3.0-or-later)
+> See `src/LICENSING.md` for the tiered-licensing notes; the source-side originals are `src/LICENSE` and `src/LICENSE.orch`.
+
+- **Daybook · Daybook MCP**: MIT (fully open source).
+- **Daybook Orch**: AGPL-3.0-or-later, or a separate commercial license (**closed-source embedding / hosted SaaS without open-sourcing / official support & compliance endorsement** — contact us).
+- **$9.9 download** = a convenience fee for the prebuilt bundle; **the source code is forever public, free for anyone to fetch**.
+- The code is open, **but the name is not free to reuse** — `daybook` / `起居注` / `璇玑` / `司南` are attribution marks.
+
+## Source & packages (one source, three artifacts)
+
+```
+daybook-suite/            ← this repo
+├── daybook/              ← Daybook (artifact · MIT)
+├── daybook-mcp/          ← Daybook MCP (artifact · MIT)
+├── daybook-orch/         ← Daybook Orch (artifact · AGPL-3.0 or commercial)
+└── src/                  ← the single source (change the source first, never the copies)
+    └── pack.py           ← packager
+```
+
+- **Just want to use it**: run directly inside the three package directories — each is self-contained with zero dependencies.
+- **Want to change the code**: edit `src/`, then run `python3 src/pack.py` to repack (`--out` defaults to this repo root).
+- **Discipline**: the three packages are **artifacts**; hand-edits to artifacts are **silently wiped** by the next pack. `pack.py` ships with an "**artifacts == source**" consistency guard; any mismatch exits non-zero.
+
+## Contributing
+
+External contributions require signing the **CLA** first (`src/CLA.md`; also bundled in each of the three packages) — **otherwise this repository has no right to re-license code containing others' copyright under a commercial license**, and the commercial path for Daybook Orch would be irreversibly broken.
+
+## Authors
+
+- **纵贯线 (Zongguanxian)**: 斯坦森 (Statham), 皮特 (Pitt), 汤姆 (Tom), 史泰龙 (Stallone)
+- **手艺人老宋 (Artisan Lao Song)**
+- <songliansheng@vip.sina.com>
+
+---
+
+# daybook-suite（中文）
+
 **一叠你能翻的账。** 纯文本 · 零依赖 · append-only —— 真相在卷里。
 
 三件分立，同一底座，同一份真相：
