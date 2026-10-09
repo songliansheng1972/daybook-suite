@@ -1,0 +1,59 @@
+# Virtual environment
+.venv/
+
+# Backups
+备份/
+
+# Raw conversation archives
+对话原件/
+
+# Internal volumes
+实验卷.txt
+实验卷_EN.txt
+对话卷.txt
+聊天室.txt
+
+# Stress / benchmark samples
+压力卷.txt
+压力卷_元数据.txt
+
+# Development indexes
+开发卷/
+
+# Internal audit and marketing
+DAYBOOK审计分析.md
+发布前清单.md
+DAYBOOK_社交文案包.md
+DAYBOOK_EXPERIMENTS.md
+DAYBOOK_EXPERIMENTS_RESULT.md
+
+# Internal experiment code
+stress_test.py
+e11_test.py
+test/archive_pressure_volume.py
+
+# Hook cursor state
+.hook_a_已处理.txt
+
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.benchmarks/
+
+# OS
+.DS_Store
+
+# Runtime residue (in-tree runs generate these; never publish)
+.safeio_lock.*
+.游标_*.json
+volumes.md
+索引_*
+消息卷.txt
+j2_红证.txt
+j2_绿证.txt
+j2_并发探针.py
+
+# Private production conf (holds real volume paths + local hook commands)
+# 发行件用 daybook.dist.conf / 样板用 daybook.sample.conf —— 那两个照常入库。
+daybook.conf

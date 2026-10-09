@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>D 3.0 极简聊天室</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    color: #fff;
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: #111;
+    border-bottom: 1px solid #333;
+    padding: 8px 12px;
+    color: #fff;
+    font-weight: bold;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  header .badge {
+    color: #888;
+    font-size: 12px;
+    font-weight: normal;
+  }
+  #chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.6;
+  }
+  #chat .line { margin-bottom: 4px; }
+  #chat .ts { color: #888; }
+  #chat .role-judge { color: #fff; }
+  #chat .role-shi { color: #fff; }
+  #chat .role-audit { color: #fff; }
+  #chat .role-charge { color: #fff; }
+  #chat .role-yi { color: #fff; }
+  #chat .role-system { color: #888; font-style: italic; }
+  #chat .author { color: #fff; font-weight: bold; }
+  #chat .text { color: #fff; }
+
+  .input-bar {
+    background: #111;
+    border-top: 1px solid #333;
+    padding: 8px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .input-bar select {
+    background: #000;
+    color: #fff;
+    border: 1px solid #333;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .input-bar input[type="text"] {
+    flex: 1;
+    background: #000;
+    color: #fff;
+    border: 1px solid #333;
+    padding: 6px 10px;
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+  }
+  .input-bar input[type="text"]:focus {
+    border-color: #fff;
+  }
+  .input-bar button {
+    background: #fff;
+    color: #000;
+    border: none;
+    padding: 6px 16px;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  .input-bar button:hover {
+    background: #ccc;
+  }
+  .status {
+    font-size: 11px;
+    color: #888;
+    padding: 4px 12px;
+    background: #111;
+    border-top: 1px solid #222;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>D 3.0 极简聊天室 <span class="badge">= AI 多智能体编排中心显化</span></div>
+  <div class="badge">append-only · POSIX · 零依赖</div>
+</header>
+
+<div id="chat"></div>
+
+<div class="input-bar">
+  <select id="role">
+    <option value="判">[判] 汤姆</option>
+    <option value="裁">[裁] 老宋</option>
+    <option value="施">[施] 史泰龙</option>
+    <option value="审">[审] 汤姆</option>
+    <option value="议">[议] 自由</option>
+  </select>
+  <input id="author" type="hidden" value="汤姆">
+  <input id="text" type="text" placeholder="输入消息回车发送..." autocomplete="off">
+  <button id="send">发送</button>
+</div>
+
+<div class="status" id="status">就绪</div>
+
+<script>
+const ROLE_NAMES = { '判':'judge', '裁':'charge', '施':'shi', '审':'audit', '议':'yi', '系统':'system' };
+const AUTHOR_BY_ROLE = { '判':'汤姆', '裁':'老宋', '施':'史泰龙', '审':'汤姆', '议':'匿名' };
+
+const chatEl = document.getElementById('chat');
+const roleEl = document.getElementById('role');
+const authorEl = document.getElementById('author');
+const textEl = document.getElementById('text');
+const sendBtn = document.getElementById('send');
+const statusEl = document.getElementById('status');
+
+let lastSize = 0;
+
+function renderLine(line) {
+  const m = line.match(/^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]\s*(.*)$/);
+  if (!m) {
+    const div = document.createElement('div');
+    div.className = 'line';
+    div.textContent = line;
+    chatEl.appendChild(div);
+    return;
+  }
+  const [_, ts, role, author, text] = m;
+  const div = document.createElement('div');
+  div.className = 'line';
+  const roleClass = 'role-' + (ROLE_NAMES[role] || 'yi');
+  const roleLabel = '[' + role + ']';
+  div.innerHTML =
+    '<span class="ts">[' + ts + ']</span> ' +
+    '<span class="' + roleClass + '">' + roleLabel + '</span> ' +
+    '<span class="author">[' + author + ']</span> ' +
+    '<span class="text">' + escapeHtml(text) + '</span>';
+  chatEl.appendChild(div);
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function poll() {
+  try {
+    const resp = await fetch('/read?' + Date.now());
+    const text = await resp.text();
+    const lines = text.split('\n').filter(l => l.trim());
+    // 增量渲染: 只渲染新增的行
+    if (lines.length > chatEl.children.length) {
+      const start = chatEl.children.length;
+      for (let i = start; i < lines.length; i++) {
+        renderLine(lines[i]);
+      }
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+    statusEl.textContent = '已同步·共 ' + lines.length + ' 条';
+  } catch (e) {
+    statusEl.textContent = '错误: ' + e.message;
+  }
+}
+
+async function send() {
+  const role = roleEl.value;
+  const author = AUTHOR_BY_ROLE[role] || '匿名';
+  const text = textEl.value.trim();
+  if (!text) return;
+  statusEl.textContent = '发送中...';
+  try {
+    const resp = await fetch('/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role, author, text })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      textEl.value = '';
+      statusEl.textContent = '已发送';
+      await poll();
+    } else {
+      statusEl.textContent = '失败: ' + JSON.stringify(data);
+    }
+  } catch (e) {
+    statusEl.textContent = '错误: ' + e.message;
+  }
+}
+
+roleEl.addEventListener('change', () => {
+  const role = roleEl.value;
+  authorEl.value = AUTHOR_BY_ROLE[role] || '匿名';
+});
+
+sendBtn.addEventListener('click', send);
+textEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') send();
+});
+
+// 启动轮询
+setInterval(poll, 1000);
+poll();
+</script>
+
+</body>
+</html>

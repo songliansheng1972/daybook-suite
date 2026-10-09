@@ -1,0 +1,25 @@
+C     DAYBOOK - QIJUZHU INDEXER   (FORTRAN IV, 1960s mainframes)
+C     COMPILE: FTN DAYBOOK, RUN
+      PROGRAM DAYBOOK
+      INTEGER I, N, L
+      CHARACTER*80 LINE, VOL
+      CHARACTER*16 T
+      CHARACTER*64 CLS, TITLE
+      N = 0
+      READ (5, 100, END=900) VOL
+  100 FORMAT (A)
+  200 CONTINUE
+      READ (5, 110, END=900) LINE
+  110 FORMAT (A80)
+      N = N + 1
+      IF (LINE(1:1) .NE. '[') GOTO 200
+      IF (LINE(6:6) .NE. '-') GOTO 200
+      T = LINE(2:17)
+      CLS = ' '
+      TITLE = LINE(20:80)
+      WRITE (6, 300) VOL, N, T, CLS, TITLE
+  300 FORMAT (1X, A20, 1X, I6, 1X, A16, 1X, A64)
+      GOTO 200
+  900 CONTINUE
+      STOP
+      END

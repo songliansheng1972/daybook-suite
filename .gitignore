@@ -1,0 +1,10 @@
+# 仓根（daybook-suite）
+# 三包是产物，随仓提交（用户 clone 即跑）。
+# src/ 内的排除规则见 src/.gitignore。
+
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
