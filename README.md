@@ -29,7 +29,7 @@ Each package is self-contained; `daybook.conf` lets you change volume paths.
 
 ## License
 
-> **This repository licenses each part separately, so there is no single LICENSE at the repo root.** The full license texts live inside each package:
+> **This repository licenses each part separately; the root `LICENSE` is a signpost only, not a license text.** The full license texts live inside each package:
 > `daybook/LICENSE` (MIT) · `daybook-mcp/LICENSE` (MIT) · `daybook-orch/LICENSE` (AGPL-3.0-or-later)
 > See `src/LICENSING.md` for the tiered-licensing notes; the source-side originals are `src/LICENSE` and `src/LICENSE.orch`.
 
@@ -96,7 +96,7 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 
 ## 许可
 
-> **本仓按件分层授权，故仓根不放单一 LICENSE。** 许可全文在各包内：
+> **本仓按件分层授权，仓根 `LICENSE` 仅为指路牌、非授权文本。** 许可全文在各包内：
 > `daybook/LICENSE`（MIT）· `daybook-mcp/LICENSE`（MIT）· `daybook-orch/LICENSE`（AGPL-3.0-or-later）
 > 分层说明见 `src/LICENSING.md`；源侧原件为 `src/LICENSE` 与 `src/LICENSE.orch`。
 
