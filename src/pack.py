@@ -41,8 +41,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 且 daybook 包发行 conf 的卷表直接指向 sample/ 三卷（判_478 甲）。
 SAMPLE = ['sample/README.md',
           'sample/协作卷.txt',
-          'sample/辞海卷.txt',
-          'sample/大宗师卷.txt']
+          'sample/语汇卷.txt',
+          'sample/百科卷.txt']
 
 # ── 三包定义 ──────────────────────────────────────────────
 # prog        : 计入版本号的 .py 产品件

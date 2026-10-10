@@ -21,8 +21,8 @@ echo ""
 cat > "$OUT/test.conf" <<EOF
 [卷]
 协作=sample/协作卷.txt
-辞海=sample/辞海卷.txt
-大宗师=sample/大宗师卷.txt
+语汇=sample/语汇卷.txt
+百科=sample/百科卷.txt
 
 [条目]
 头正则=^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]
@@ -56,19 +56,19 @@ print('索引：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜�
 " > "$OUT/py.log" 2>&1
 cat "$OUT/py.log"
 cp "$OUT/索引_协作卷.tsv" "$OUT/py_协作.tsv"
-cp "$OUT/索引_辞海卷.tsv" "$OUT/py_辞海.tsv"
-cp "$OUT/索引_大宗师卷.tsv" "$OUT/py_大宗师.tsv"
+cp "$OUT/索引_语汇卷.tsv" "$OUT/py_语汇.tsv"
+cp "$OUT/索引_百科卷.tsv" "$OUT/py_百科.tsv"
 PY_COLL=$(($(wc -l < "$OUT/py_协作.tsv") - 1))
-PY_CIHA=$(($(wc -l < "$OUT/py_辞海.tsv") - 1))
-PY_DZ=$(($(wc -l < "$OUT/py_大宗师.tsv") - 1))
-echo "  条数：协作 $PY_COLL 辞海 $PY_CIHA 大宗师 $PY_DZ"
+PY_YUHUI=$(($(wc -l < "$OUT/py_语汇.tsv") - 1))
+PY_BAIKE=$(($(wc -l < "$OUT/py_百科.tsv") - 1))
+echo "  条数：协作 $PY_COLL 语汇 $PY_YUHUI 百科 $PY_BAIKE"
 
 # 2-5. 其他语言实现：当前只数条目（功能子集），对比条目数
 echo "[2/5] sh daybook.sh ..."
-cd "$OUT" && sh "$ROOT/daybook.sh" "协作=sample/协作卷.txt" "辞海=sample/辞海卷.txt" "大宗师=sample/大宗师卷.txt" 2>/dev/null | tee "$OUT/sh.log" || echo "  sh 跑失败（非阻塞）"
+cd "$OUT" && sh "$ROOT/daybook.sh" "协作=sample/协作卷.txt" "语汇=sample/语汇卷.txt" "百科=sample/百科卷.txt" 2>/dev/null | tee "$OUT/sh.log" || echo "  sh 跑失败（非阻塞）"
 
 echo "[3/5] C daybook.c ..."
-cc "$ROOT/daybook.c" -o "$OUT/daybook_c" 2>/dev/null && "$OUT/daybook_c" "$OUT/sample/协作卷.txt" "$OUT/sample/辞海卷.txt" "$OUT/sample/大宗师卷.txt" > "$OUT/c.tsv" 2>/dev/null && echo "  C 编译并跑通 ✓" || echo "  C 编译或运行失败（非阻塞）"
+cc "$ROOT/daybook.c" -o "$OUT/daybook_c" 2>/dev/null && "$OUT/daybook_c" "$OUT/sample/协作卷.txt" "$OUT/sample/语汇卷.txt" "$OUT/sample/百科卷.txt" > "$OUT/c.tsv" 2>/dev/null && echo "  C 编译并跑通 ✓" || echo "  C 编译或运行失败（非阻塞）"
 
 echo "[4/5] Fortran daybook.f ..."
 which gfortran >/dev/null 2>&1 && gfortran "$ROOT/daybook.f" -o "$OUT/daybook_f" 2>/dev/null && "$OUT/daybook_f" 2>/dev/null | tee "$OUT/f.log" || echo "  gfortran 不可用（非阻塞）"
@@ -79,11 +79,11 @@ which bwbasic >/dev/null 2>&1 && bwbasic "$ROOT/daybook.bas" 2>/dev/null | tee "
 echo ""
 echo "=== 验收 ==="
 # 主验收：Python 跑样本卷三卷都跑通且条数 5/5/5
-if [ "$PY_COLL" = "5" ] && [ "$PY_CIHA" = "5" ] && [ "$PY_DZ" = "5" ]; then
+if [ "$PY_COLL" = "5" ] && [ "$PY_YUHUI" = "5" ] && [ "$PY_BAIKE" = "5" ]; then
   echo "PASS: Python 权威版三卷条数 5/5/5 ✓"
   PASS=$((PASS+1))
 else
-  echo "FAIL: Python 权威版三卷条数 $PY_COLL/$PY_CIHA/$PY_DZ，预期 5/5/5"
+  echo "FAIL: Python 权威版三卷条数 $PY_COLL/$PY_YUHUI/$PY_BAIKE，预期 5/5/5"
   FAIL=$((FAIL+1))
 fi
 

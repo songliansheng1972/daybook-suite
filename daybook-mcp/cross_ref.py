@@ -68,7 +68,7 @@ class CrossRef:
 
     def _vol_path(self, vol):
         """按卷名找路径。先按文件名找·找不到报 KeyError。"""
-        # 与 daybook.conf 一致：协作卷.txt / 辞海卷.txt 等
+        # 与 daybook.conf 一致：协作卷.txt / 语汇卷.txt 等
         cand = os.path.join(self.root, vol + '.txt')
         if os.path.exists(cand):
             return cand
