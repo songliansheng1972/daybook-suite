@@ -70,25 +70,28 @@ daybook-suite/            ← this repo
 - **Want to change the code**: edit `src/`, then run `python3 src/pack.py` to repack (`--out` defaults to this repo root).
 - **Discipline**: the three packages are **artifacts**; hand-edits to artifacts are **silently wiped** by the next pack. `pack.py` ships with an "**artifacts == source**" consistency guard; any mismatch exits non-zero.
 
-## Version numbers (reproducible)
+## Version & build number (reproducible)
 
-A package's version number is **the sum of the line counts of that package's product `.py` files** — a **build fingerprint**, not a semantic version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels) and docs are **not** counted.
+- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v3.0**.
+- **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels) and docs are **not** counted.
 
-| Package | Product `.py` files | Version |
-| --------------- | ------------------- | ------- |
-| daybook         | 6                   | 1354    |
-| daybook-mcp     | 11                  | 2367    |
-| daybook-orch    | 9                   | 1746    |
+| Package | Version | Product `.py` files | Build number |
+| --------------- | ------- | ------------------- | ------------ |
+| daybook         | v3.0    | 6                   | 1354         |
+| daybook-mcp     | v3.0    | 11                  | 2367         |
+| daybook-orch    | v3.0    | 9                   | 1746         |
+
+**Code size**: **5,467 lines** across the three packages' product files (1,354 + 2,367 + 1,746).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
 ```bash
-python3 src/pack.py --dry     # prints every counted file's line count and each package's version
+python3 src/pack.py --dry     # prints every counted file's line count and each package's build number
 ```
 
 ## Release tags
 
-Every release tag is **annotated**, and its message states **all three package version numbers** — the tag alone pins the exact build:
+Every release tag is **annotated**, and its message states the **version** and **all three build numbers** — the tag alone pins the exact build:
 
 ```
 v3.0   daybook-suite v3.0 — 起居注 1354 / 璇玑 2367 / 司南 1746
@@ -180,25 +183,28 @@ daybook-suite/            ← 本仓
 - **想改代码**：改 `src/`，再跑 `python3 src/pack.py` 重打包（`--out` 默认＝本仓根）。
 - **纪律**：三包是**产物**；手改产物会被下次打包**静默抹掉**。`pack.py` 自带「**产物 == 源**」一致守卫，失配即非零退出。
 
-## 版本号口径（可复现）
+## 版本号与构建号（可复现）
 
-各包版本号 ＝ **该包「产品 `.py` 件」行数之和** —— 是**构建指纹**，不是语义版本。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
+- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v3.0**。
+- **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
 
-| 包       | 产品 `.py` 件 | 版本号  |
-| ------- | --------- | ---- |
-| 起居注     | 6         | 1354 |
-| 璇玑      | 11        | 2367 |
-| 司南      | 9         | 1746 |
+| 包       | 版本号  | 产品 `.py` 件 | 构建号  |
+| ------- | ----- | --------- | ---- |
+| 起居注     | v3.0  | 6         | 1354 |
+| 璇玑      | v3.0  | 11        | 2367 |
+| 司南      | v3.0  | 9         | 1746 |
+
+**代码规模**：三包产品件合计 **5,467 行**（1,354 ＋ 2,367 ＋ 1,746）。
 
 **权威件清单**在 `src/pack.py`（各包的 `prog` 列表）。随时复现：
 
 ```bash
-python3 src/pack.py --dry     # 逐件列出各行数与各包版本号
+python3 src/pack.py --dry     # 逐件列出各行数与各包构建号
 ```
 
 ## 发布 Tag
 
-每个发布 tag 均为 **annotated**，且说明里写明**三包版本号** —— 单看 tag 即可定位到确切构建：
+每个发布 tag 均为 **annotated**，且说明里写明**版本号与三包构建号** —— 单看 tag 即可定位到确切构建：
 
 ```
 v3.0   daybook-suite v3.0 — 起居注 1354 / 璇玑 2367 / 司南 1746

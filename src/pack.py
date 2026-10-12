@@ -35,6 +35,12 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# ── 套件版本号（语义版本·三包同源同发·统一）──────────────
+# 承老宋 2026-10-12 19:44 令：版本号改用标准语义版本（v3.0），以免与「行数」相混
+# （同仓两套号·行数非单调·一套件三个号，皆易误解）。原「产品 .py 件行数之和」
+# 降为「构建号」＝构建指纹，与之并列展示，不废。
+SUITE_VERSION = '3.0'
+
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # 每卷 5 条假条目·体例与生产卷一致。由 pack.py 随三包各装一份。
 # 三包皆装的理由：三包都含 cross_ref.py，其 _vol_path() 会回退到 <包>/sample/ 找卷，
@@ -208,7 +214,8 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
 
     prog_files = spec.get('prog', [])
     total = sum(count_lines(os.path.join(src, f)) for f in prog_files)
-    print('  产品 .py 件 %d 个，版本号（行数和）= %d' % (len(prog_files), total))
+    print('  版本号 v%s（语义）｜构建号 %d（＝本包 %d 个产品 .py 件行数之和）'
+          % (SUITE_VERSION, total, len(prog_files)))
     for f in prog_files:
         print('    %-26s %5d 行' % (f, count_lines(os.path.join(src, f))))
 
@@ -237,10 +244,13 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
     for pp in glob.glob(os.path.join(dest, '__pycache__')):
         shutil.rmtree(pp, ignore_errors=True)   # 承 #470 观察②·清缓存目录
     with io.open(os.path.join(dest, '版本.txt'), 'w', encoding='utf-8') as f:
-        f.write('daybook-suite · %s\n版本号 = %d（＝本包 %d 个产品 .py 件行数之和·构建指纹）\n'
-                '口径与复现：见仓根 README「版本号口径」；复现命令 python3 src/pack.py --dry\n'
+        f.write('daybook-suite v%s · %s\n'
+                '版本号 v%s（语义版本·三包同源同发·统一）\n'
+                '构建号 %d（＝本包 %d 个产品 .py 件行数之和·构建指纹·非版本号）\n'
+                '口径与复现：见仓根 README「版本号与构建号」；复现命令 python3 src/pack.py --dry\n'
                 '生成于 %s\n'
-                % (box, total, len(prog_files), time.strftime('%Y-%m-%d %H:%M')))
+                % (SUITE_VERSION, box, SUITE_VERSION, total, len(prog_files),
+                   time.strftime('%Y-%m-%d %H:%M')))
     print('  已生成：%s' % dest)
     return 0
 

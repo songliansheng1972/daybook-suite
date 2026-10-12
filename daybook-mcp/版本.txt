@@ -1,4 +1,5 @@
-daybook-suite · daybook-mcp
-版本号 = 2367（＝本包 11 个产品 .py 件行数之和·构建指纹）
-口径与复现：见仓根 README「版本号口径」；复现命令 python3 src/pack.py --dry
-生成于 2026-10-12 19:42
+daybook-suite v3.0 · daybook-mcp
+版本号 v3.0（语义版本·三包同源同发·统一）
+构建号 2367（＝本包 11 个产品 .py 件行数之和·构建指纹·非版本号）
+口径与复现：见仓根 README「版本号与构建号」；复现命令 python3 src/pack.py --dry
+生成于 2026-10-12 19:46
