@@ -91,6 +91,16 @@ echo "要记的话" | python3 daybook_append.py 卷.txt 作者   # 追加一条
 
 DAYBOOK起居注：记忆永存！智慧长明！
 
+## 版本号（可复现）
+
+本包版本号 ＝ **本包「产品 .py 件」行数之和**（构建指纹·非语义版本）；辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
+
+产品件清单以仓根 `src/pack.py` 的 `prog` 为权威；随时复现：
+
+```bash
+python3 src/pack.py --dry     # 逐件列出各行数与各包版本号
+```
+
 ## 许可记忆
 
 MIT。见 `LICENSE`。

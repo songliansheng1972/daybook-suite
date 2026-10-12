@@ -70,6 +70,32 @@ daybook-suite/            ← this repo
 - **Want to change the code**: edit `src/`, then run `python3 src/pack.py` to repack (`--out` defaults to this repo root).
 - **Discipline**: the three packages are **artifacts**; hand-edits to artifacts are **silently wiped** by the next pack. `pack.py` ships with an "**artifacts == source**" consistency guard; any mismatch exits non-zero.
 
+## Version numbers (reproducible)
+
+A package's version number is **the sum of the line counts of that package's product `.py` files** — a **build fingerprint**, not a semantic version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels) and docs are **not** counted.
+
+| Package | Product `.py` files | Version |
+| --------------- | ------------------- | ------- |
+| daybook         | 6                   | 1354    |
+| daybook-mcp     | 11                  | 2367    |
+| daybook-orch    | 9                   | 1746    |
+
+The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
+
+```bash
+python3 src/pack.py --dry     # prints every counted file's line count and each package's version
+```
+
+## Release tags
+
+Every release tag is **annotated**, and its message states **all three package version numbers** — the tag alone pins the exact build:
+
+```
+v3.0   daybook-suite v3.0 — 起居注 1354 / 璇玑 2367 / 司南 1746
+```
+
+Check: `git tag -n99` lists each tag together with its message.
+
 ## Contributing
 
 External contributions require signing the **CLA** first (`src/CLA.md`; also bundled in each of the three packages) — **otherwise this repository has no right to re-license code containing others' copyright under a commercial license**, and the commercial path for Daybook Orch would be irreversibly broken.
@@ -153,6 +179,32 @@ daybook-suite/            ← 本仓
 - **只想用**：直接进三个包目录跑，各包自包含、零依赖。
 - **想改代码**：改 `src/`，再跑 `python3 src/pack.py` 重打包（`--out` 默认＝本仓根）。
 - **纪律**：三包是**产物**；手改产物会被下次打包**静默抹掉**。`pack.py` 自带「**产物 == 源**」一致守卫，失配即非零退出。
+
+## 版本号口径（可复现）
+
+各包版本号 ＝ **该包「产品 `.py` 件」行数之和** —— 是**构建指纹**，不是语义版本。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
+
+| 包       | 产品 `.py` 件 | 版本号  |
+| ------- | --------- | ---- |
+| 起居注     | 6         | 1354 |
+| 璇玑      | 11        | 2367 |
+| 司南      | 9         | 1746 |
+
+**权威件清单**在 `src/pack.py`（各包的 `prog` 列表）。随时复现：
+
+```bash
+python3 src/pack.py --dry     # 逐件列出各行数与各包版本号
+```
+
+## 发布 Tag
+
+每个发布 tag 均为 **annotated**，且说明里写明**三包版本号** —— 单看 tag 即可定位到确切构建：
+
+```
+v3.0   daybook-suite v3.0 — 起居注 1354 / 璇玑 2367 / 司南 1746
+```
+
+核验：`git tag -n99` 列出 tag 及其说明。
 
 ## 贡献
 

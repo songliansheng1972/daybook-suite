@@ -237,8 +237,10 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
     for pp in glob.glob(os.path.join(dest, '__pycache__')):
         shutil.rmtree(pp, ignore_errors=True)   # 承 #470 观察②·清缓存目录
     with io.open(os.path.join(dest, '版本.txt'), 'w', encoding='utf-8') as f:
-        f.write('daybook-suite · %s\n版本号 = %d 个产品 .py 件行数之和\n生成于 %s\n'
-                % (box, total, time.strftime('%Y-%m-%d %H:%M')))
+        f.write('daybook-suite · %s\n版本号 = %d（＝本包 %d 个产品 .py 件行数之和·构建指纹）\n'
+                '口径与复现：见仓根 README「版本号口径」；复现命令 python3 src/pack.py --dry\n'
+                '生成于 %s\n'
+                % (box, total, len(prog_files), time.strftime('%Y-%m-%d %H:%M')))
     print('  已生成：%s' % dest)
     return 0
 
