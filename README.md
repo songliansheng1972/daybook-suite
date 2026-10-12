@@ -52,7 +52,7 @@ Each package is self-contained; `daybook.conf` lets you change volume paths.
 
 - **Daybook · Daybook MCP**: MIT (fully open source).
 - **Daybook Orch**: AGPL-3.0-or-later, or a separate commercial license (**closed-source embedding / hosted SaaS without open-sourcing / official support & compliance endorsement** — contact us).
-- **$9.9 download** = a convenience fee for the prebuilt bundle; **the source code is forever public, free for anyone to fetch**.
+- **$10.99 download** = a convenience fee for the prebuilt bundle; **the source code is forever public, free for anyone to fetch**.
 - The code is open, **but the name is not free to reuse** — `daybook` / `起居注` / `璇玑` / `司南` are attribution marks.
 
 ## Source & packages (one source, three artifacts)
@@ -162,7 +162,7 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 
 - **起居注 · 璇玑**：MIT（全开源）。
 - **司南**：AGPL-3.0-or-later，或另购商业许可（**闭源嵌入 / 对外 SaaS 而不开源 / 官方支持与合规背书** 另谈）。
-- **$9.9 下载** ＝ 整装包的**便利费**；**源码永远公开，人人可免费自取**。
+- **$10.99 下载** ＝ 整装包的**便利费**；**源码永远公开，人人可免费自取**。
 - 码可开源，**名不可乱用** —— `daybook` / `起居注` / `璇玑` / `司南` 为署名标识。
 
 ## 源与包（一源三产物）
