@@ -2,6 +2,11 @@
 
 **A ledger you can actually open.** Plain text · Zero dependencies · append-only — the truth lives in the volumes.
 
+> **⬇ Download · Quick start**
+> **Source — free forever, no signup:** `git clone https://github.com/songliansheng1972/daybook-suite.git`
+> **Prebuilt bundle:** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) — or the one-click bundle at **[daybooksuite.com](https://daybooksuite.com)** ($10.99 convenience fee; the source stays free).
+> **Run in 10 seconds:** `cd daybook && python3 daybook.py index`
+
 Three independent parts, one foundation, one source of truth:
 
 | Part                  | Box             | Role                                                           | License                 |
@@ -114,6 +119,11 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 # daybook-suite（中文）
 
 **一叠你能翻的账。** 纯文本 · 零依赖 · append-only —— 真相在卷里。
+
+> **⬇ 下载 · 快速开始**
+> **源码（永远免费·无需注册）：** `git clone https://github.com/songliansheng1972/daybook-suite.git`
+> **整装包：** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) —— 或到 **[daybooksuite.com](https://daybooksuite.com)** 一键下载整装（$10.99 便利费；源码始终免费）。
+> **十秒跑起来：** `cd daybook && python3 daybook.py index`
 
 三件分立，同一底座，同一份真相：
 
