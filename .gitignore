@@ -8,3 +8,6 @@
 # Python
 __pycache__/
 *.pyc
+
+# packaging/ 的生成物（pip 包树与 dist，不提交；模板与生成器要提交）
+packaging/_build/

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """MCP Prompts（W-DB-023-G2·第 4 项）
 ================================================
 - 暴露 daybook 模板 prompts

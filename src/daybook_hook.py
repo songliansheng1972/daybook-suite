@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """Daybook · HOOK-A 选择性追更（daybook 3.0）
 原理：扫对话卷新条目，关键词命中即追更到目标卷。
 设计纪律（老宋定）：

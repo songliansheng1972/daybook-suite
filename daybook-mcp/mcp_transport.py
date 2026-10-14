@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """MCP 传输层（W-DB-023-G2·第 1 项）
 ================================================
 - JSON-RPC 2.0 over newline-delimited stdio

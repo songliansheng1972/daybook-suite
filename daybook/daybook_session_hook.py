@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """Archive Copilot session events and changed source files for this workspace."""
 import argparse
 import datetime

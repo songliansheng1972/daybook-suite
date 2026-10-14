@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """MCP Subscribe（W-DB-023-G2·新增·修复版 r2）
 ================================================
 对照审核报告 P1+ 实现：

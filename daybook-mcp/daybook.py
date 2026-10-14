@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """DAYBOOK · 起居注体例发行版·索引器与触发器
 零依赖：只用 Python 标准库。
 用法：

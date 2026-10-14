@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """保存一条逐字消息/代码原件，并把其路径与摘要登记到 DAYBOOK。"""
 import argparse
 import hashlib
