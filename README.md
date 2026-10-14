@@ -39,6 +39,8 @@ We invented nothing. We just hung that two-thousand-year-old ledger on your AI.
 - **Append-only** — writes never corrupt history; the index is just a catalog, rebuildable from the source text at any time.
 - **One foundation for all three** — the same volumes, the same truth; **others can build compliant ledgers on their own — we don't need to be present**.
 
+> **The full feature list lives in the Daybook package README** — [`daybook/README.md`](daybook/README.md) (§ 特点, thirteen items). This root README stays a *pointer*, never a second copy, so the two cannot drift apart.
+
 ## Quick start
 
 ```bash
@@ -156,6 +158,8 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 - **零依赖** —— 只 Python 3 标准库；不联网。拷到任何机器即跑。
 - **只增不改** —— append-only，写不坏历史；索引是目录，可随时从原文重算。
 - **三件同底座** —— 同一批卷、同一份真相；**别人可自造合规之账，我们不必在场**。
+
+> **完整特点见旗舰包 README** —— [`daybook/README.md`](daybook/README.md)（「## 特点」段·十三条）。本仓根 README 只作**指路**，不复制正文 —— 两处不各自漂移。
 
 ## 怎么跑
 
