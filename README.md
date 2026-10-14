@@ -15,6 +15,23 @@ Three independent parts, one foundation, one source of truth:
 | **Daybook MCP** (璇玑)  | `daybook-mcp/`  | Query · exposes the volumes to any MCP client                  | MIT (fully open source) |
 | **Daybook Orch** (司南) | `daybook-orch/` | Command · deterministic orchestration for multi-agent systems  | AGPL-3.0 + commercial   |
 
+## Daybook's Eight Facets
+
+Named after the *Eight Entries* of the Great Learning — **from within, outward: wisdom grown out of memory.** Eight axes, one meaning each, each aimed at a known weakness of today's AI-memory stacks.
+
+| # | Facet | What it means | vs. mainstream AI memory / vector stores |
+|:--|:--|:--|:--|
+| 1 | **Textuality** | Plain text (TXT/UTF-8), not binary — human- and machine-readable, auditable, verifiable, traceable | A vector DB is a float32 matrix; step outside the framework and it is noise |
+| 2 | **Transparency** | A white box — double-click and you see code + index + source | Embeddings cannot be read, and cannot be traced back |
+| 3 | **Formality** | A strict entry format (type / title / author / time / recipient), validated by 2,000 years of *qijuzhu* practice | Chat history appended ad hoc, no schema |
+| 4 | **Append-only** | Append-only: no rewriting, no deletion; corrections are new entries; the whole archive reversible and verifiable | Update/delete allowed; silent tampering goes undetected |
+| 5 | **Queryability** | Milliseconds on a single machine — grep / awk / sqlite straight through; still milliseconds at five million entries | Needs an index server or GPU, and returns "similar" rather than "confirmed" |
+| 6 | **Density** | Small entries, small files — millions of entries ≈ a few hundred megabytes | A hundred million embeddings = several GB to tens of GB |
+| 7 | **Locality** | Fully local: standard library only, no network, no upload, no version-compatibility treadmill | Framework dependencies, cloud hosting, SDK-version hell, data leaving the machine |
+| 8 | **Persistence** | It does not parasitize the AI — if the model crashes, is swapped out, or shuts down, the memory loses not one character; it moves with the project, any agent can pick it up and go to work, and it outlives machine generations | Memory lives in model weights or a cloud account — swap or shut down, and it forgets |
+
+**Daybook's Eight Facets — a drop-in replacement for the context window. Permanent memory for agents.**
+
 ## Why "Daybook" (起居注, Qǐjūzhù)
 
 For nearly two thousand years, Chinese court historians kept the **qijuzhu** — the day-by-day record of the emperor's own words and deeds. **The name goes back to the Han dynasty (1st century AD); as a full institution it was formalized in the Tang, and such records were kept, on and off, until 1910.**
