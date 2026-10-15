@@ -38,6 +38,7 @@ daybook 有两条产品线：① 账本本体（纯文本 append-only）；② M
     python3 orchestrator.py review T001 ag-yyyy 通过
     python3 orchestrator.py board
     python3 orchestrator.py alarm
+    python3 orchestrator.py digest [--vol 卷] [--cls 类] [--push 收件人]   # v3.1 读多级目录·分发摘要
     python3 orchestrator.py selftest
 退出码：0 正常；1 alarm 有硬警；2 参数/文件错。
 """
@@ -63,6 +64,28 @@ DEFAULT_ROLES = os.path.join(HERE, 'orchestration_roles.conf')
 HEAD = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]\s*(\[.*)$')
 BRK = re.compile(r'\[([^\]]*)\]')
 SPLIT_TO = re.compile(r'[,，/]')
+
+
+def make_entry_ref(root, vol, lineno):
+    """生成互见引用 [卷#L行-SHA8]（v3.1）。复用 cross_ref 哈希算法·卷路径按 conf 卷表解析。失败返 ''。"""
+    try:
+        from cross_ref import CrossRef
+    except Exception:
+        return ''
+    vols = _load_volumes(root)
+
+    def _vp(v, _vols=vols, _root=root):
+        rel = _vols.get(v)
+        if not rel:
+            raise KeyError('卷 %s 不在 conf 卷表' % v)
+        return rel if os.path.isabs(rel) else os.path.join(_root, rel)
+
+    try:
+        cr = CrossRef(root=root)
+        cr._vol_path = _vp
+        return cr.make_ref(vol, int(lineno))
+    except Exception:
+        return ''
 
 
 # ── 路由：类[：关键词] → 角色；角色 → 人 ──────────────────────────────
@@ -95,6 +118,91 @@ def load_roles(path):
         k, v = line.split('=', 1)
         roles[k.strip()] = v.strip()
     return roles
+
+
+# ── v3.1 四库式多级目录：分发接上目录（读派生件·缺则原文兜底）──────────
+def _load_volumes(root):
+    """读 <root>/daybook.conf [卷] 表 → {卷名: 相对/绝对路径}。缺则 {}。"""
+    path = os.path.join(root, 'daybook.conf')
+    vols, sec = {}, None
+    if not os.path.exists(path):
+        return vols
+    for line in io.open(path, encoding='utf-8'):
+        line = line.rstrip('\n')
+        if not line.strip() or line.lstrip().startswith('#'):
+            continue
+        m = re.match(r'^\[(.+)\]$', line.strip())
+        if m:
+            sec = m.group(1)
+            continue
+        if sec == '卷' and '=' in line:
+            k, v = line.split('=', 1)
+            vols[k.strip()] = v.strip()
+    return vols
+
+
+def read_multidx_rows(root):
+    """读 <root>/多级/*_目录.tsv（daybook_multidx 之产出）。
+    返回 (rows, 来源)。来源 ∈ {'目录','原文兜底'}。"""
+    d = os.path.join(root, '多级')
+    rows = []
+    if os.path.isdir(d):
+        for fn in sorted(os.listdir(d)):
+            if not fn.endswith('_目录.tsv'):
+                continue
+            try:
+                lines = [l.rstrip('\n') for l in io.open(os.path.join(d, fn), encoding='utf-8')
+                         if l.strip()]
+            except OSError:
+                continue
+            if not lines:
+                continue
+            hdr = lines[0].split('\t')
+            for l in lines[1:]:
+                cells = l.split('\t')
+                if len(cells) < len(hdr):
+                    cells = cells + [''] * (len(hdr) - len(cells))
+                rows.append(dict(zip(hdr, cells)))
+    if rows:
+        return rows, '目录'
+    # 兜底：直读在册卷原文·自建 部(卷)/类(kind)/属(条目)（orch 单包自持可跑）
+    for name, rel in _load_volumes(root).items():
+        path = rel if os.path.isabs(rel) else os.path.join(root, rel)
+        if not os.path.exists(path):
+            continue
+        _, entries = _scan_vol_rows(path)
+        for e in entries:
+            rows.append({'卷': name, '二级': e['kind'], '行号': str(e['lineno']),
+                         '时间': e['time'], '类': e['kind'],
+                         '作者': e['author'], '标题': e['title']})
+    return rows, '原文兜底'
+
+
+def _scan_vol_rows(path):
+    """轻量扫卷：逐行找条目头·记录行号与条头字段。返回 (text, entries)。"""
+    from safeio import read_vol
+    text, _enc, _why = read_vol(path)
+    entries, cur = [], None
+    for i, line in enumerate(text.splitlines(), 1):
+        m = HEAD.match(line.rstrip('\n'))
+        if m:
+            if cur is not None:
+                entries.append(cur)
+            hm = re.match(r'^((?:\s*\[[^\]]*\])+)', m.group(2))
+            segs = BRK.findall(hm.group(1)) if hm else []
+            kind = segs[0] if len(segs) > 0 else ''
+            title = segs[1] if len(segs) > 1 else ''
+            author = ''
+            for s in segs[2:]:
+                if s.startswith('致='):
+                    continue
+                if not author:
+                    author = s
+            cur = {'lineno': i, 'time': m.group(1), 'kind': kind,
+                   'title': title, 'author': author}
+    if cur is not None:
+        entries.append(cur)
+    return text, entries
 
 
 def route(kind, title, body, author, to, rules, roles):
@@ -295,6 +403,49 @@ class Hub:
                 pend.append((e, person, why))
         return pend
 
+    # —— 分发接上目录（v3.1·派生视图·可删可重建） ——
+    def digest(self, vol=None, cls=None, limit=20):
+        """变动摘要：读多级目录（部→类→属）·给出「新条已挂进层级·带提要」的分发摘要。
+        返回 (lines, rows, src)。src ∈ {'目录','原文兜底'}。"""
+        rows, src = read_multidx_rows(self.root)
+        if vol:
+            rows = [r for r in rows if r.get('卷') == vol]
+        if cls:
+            rows = [r for r in rows if cls in (r.get('类') or '')]
+
+        def _ln(r):
+            try:
+                return int(r.get('行号') or 0)
+            except ValueError:
+                return 0
+        rows = sorted(rows, key=lambda r: (r.get('时间', ''), _ln(r)))
+        shown = rows[-limit:] if limit and len(rows) > limit else rows  # 取最近（尾部）
+
+        head = '变动摘要（%s·%d 条%s）' % (
+            src, len(rows), '' if not vol else '·卷=%s' % vol)
+        lines = [head]
+        for r in shown:
+            ref = make_entry_ref(self.root, r.get('卷', ''), r.get('行号', '0'))  # 互见层来源
+            lines.append('  部.%s ▸ 类.%s ▸ 属.%s  [%s#L%s]%s' % (
+                r.get('卷', ''), r.get('二级', '') or r.get('类', ''),
+                r.get('标题', ''), r.get('卷', ''), r.get('行号', '0'),
+                ('  ↪%s' % ref) if ref else ''))
+        return lines, rows, src
+
+    def push_digest(self, to, vol=None, cls=None, limit=20):
+        """把 digest 摘要经 agent_message 推送（不在线则仅落编排卷·不阻断）。"""
+        lines, _rows, src = self.digest(vol=vol, cls=cls, limit=limit)
+        summary = '\n'.join(lines)
+        self._log('推', '变动摘要', summary, self._aid_of('司南'))
+        for t in [x for x in SPLIT_TO.split(to or '') if x.strip()]:
+            try:
+                import agent_message as _am
+                ok, info = _am.send('司南', t, 'notify', summary)
+            except Exception as e:
+                ok, info = False, '%s: %s' % (type(e).__name__, e)
+            print('  推送 → %s：%s %s' % (t, 'OK' if ok else 'FAIL', info if not ok else ''))
+        return summary, src
+
     # —— 体检 ——
     def alarm(self):
         issues = []
@@ -374,6 +525,11 @@ def main(argv=None):
     p = sub.add_parser('pull'); p.add_argument('who')
     sub.add_parser('board')
     sub.add_parser('alarm')
+    p = sub.add_parser('digest')            # v3.1：读多级目录·分发摘要
+    p.add_argument('--vol', default='')
+    p.add_argument('--cls', default='')
+    p.add_argument('--limit', type=int, default=20)
+    p.add_argument('--push', default='', help='推送给收件人（逗号分隔·走 agent_message·不在线不阻断）')
     sub.add_parser('selftest')
 
     args = ap.parse_args(argv)
@@ -408,6 +564,16 @@ def main(argv=None):
         print('裁决 %s：→ %s' % (args.tid, st))
     elif args.cmd == 'pull':
         _print_pull(hub, args.who)
+    elif args.cmd == 'digest':
+        if args.push:
+            _summary, src = hub.push_digest(args.push, args.vol or None,
+                                            args.cls or None, args.limit)
+            print('摘要来源：%s（已推 %s）' % (src, args.push))
+        else:
+            lines, _rows, src = hub.digest(args.vol or None, args.cls or None, args.limit)
+            print('来源：%s' % src)
+            for l in lines:
+                print(l)
     elif args.cmd == 'board':
         _print_board(hub)
     elif args.cmd == 'alarm':
@@ -467,6 +633,20 @@ def _selftest():
         hub.submit(tid2, aid, '初版')
         hub.review(tid2, bid, '驳回', '不行')
         chk(hub.tv.get(tid2)[-1][1] == '进行中', '驳回 → 返工（进行中）')
+
+        # v3.1：分发接上目录——造多级目录 tsv → digest 应出「部▸类▸属」摘要
+        mdir = os.path.join(root, '多级')
+        if not os.path.isdir(mdir):
+            os.makedirs(mdir)
+        with io.open(os.path.join(mdir, '协作_目录.tsv'), 'w', encoding='utf-8') as f:
+            f.write('卷\t二级\t行号\t时间\t类\t作者\t标题\n')
+            f.write('协作\t报\t12\t2026-10-15 09:00\t报\t汤姆\t交活 T001\n')
+            f.write('协作\t核\t20\t2026-10-15 10:00\t核\t皮特\t核 T001\n')
+        dl, drows, dsrc = hub.digest(vol='协作')
+        chk(dsrc == '目录' and len(drows) == 2 and any('部.协作' in x for x in dl),
+            'digest：读多级目录 → 部▸类▸属 摘要（来源=%s）' % dsrc)
+        _dl2, drows2, _s2 = hub.digest(cls='核')
+        chk(len(drows2) == 1, 'digest：按类过滤命中 1 条')
 
         issues = hub.alarm()
         print('  体检：' + '；'.join(issues))

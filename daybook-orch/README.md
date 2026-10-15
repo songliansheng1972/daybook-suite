@@ -14,16 +14,27 @@
 - **不自审** —— `@非作者` 保证裁决者不是作者本人。
 - **只增不改** —— 身份 / 任务 / 消息 / 心跳皆落 append-only 卷；看板、收件箱皆派生件，可删可重建。
 
-## 十一动词 · 六原语
+## 十二动词 · 六原语
 
-- **verbs（11）**：`join` `leave` `who` `open` `claim` `submit` `review` `pull` `board` `alarm` `selftest`
+- **verbs（12）**：`join` `leave` `who` `open` `claim` `submit` `review` `pull` `board` `alarm` `digest` `selftest`
 - **原语（6）**：身份 `agent_registry` · 任务 `task_volume` · 锁 `agent_lock` · 在场 `agent_heartbeat` · 消息 `agent_message` · 引用 `cross_ref`（＋ 路由 `orchestrator`）
+
+## 分发接上目录（v3.1）
+
+账本侧生成**部(卷)→类→属(条目)** 多级目录后，分发不再只是「有新条」，而是「**有新条，且已挂进层级、带提要**」：
+
+```bash
+python3 orchestrator.py digest --vol 协作 --limit 5      # 变动摘要（部▸类▸属 ＋ 互见引用）
+python3 orchestrator.py digest --cls 核 --push 皮特      # 按类过滤·经 agent_message 推送
+```
+
+摘要每条附**互见引用** `↪[卷#L行-SHA8]`（可校验）。缺多级目录件时**按在册卷原文兜底**（自持可跑）；`--push` 收件人不在线**不阻断**（摘要落编排卷）。
 
 ## 怎么跑
 
 ```bash
 cd daybook-orch
-python3 orchestrator.py selftest      # 端到端自检 9/9
+python3 orchestrator.py selftest      # 端到端自检（含 digest 2 项）
 python3 orchestrator.py join 汤姆
 python3 orchestrator.py open "实现 X" --by 汤姆
 python3 orchestrator.py pull 皮特      # 取件（查表算下一手）

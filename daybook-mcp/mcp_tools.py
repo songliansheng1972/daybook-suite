@@ -107,6 +107,180 @@ def _write_cursor(agent_id, vol, resume_byte):
         json.dump(cur, f, ensure_ascii=False)
 
 
+# ── v3.1 多级目录下钻（四库式：部=卷／类·作者／属=条目）──────
+def _multidx_dir():
+    return os.path.join(_root(), '多级')
+
+
+def _read_multidx_tsv():
+    """读 <根>/多级/*_目录.tsv → [dict(卷,二级,行号,时间,类,作者,标题)]。
+    目录未生成返 []（调用方给友好提示）。"""
+    d = _multidx_dir()
+    rows = []
+    if not os.path.isdir(d):
+        return rows
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith('_目录.tsv'):
+            continue
+        p = os.path.join(d, fn)
+        try:
+            with open(p, encoding='utf-8') as f:
+                lines = [l.rstrip('\n') for l in f if l.strip()]
+        except OSError:
+            continue
+        if not lines:
+            continue
+        hdr = lines[0].split('\t')
+        for l in lines[1:]:
+            cells = l.split('\t')
+            if len(cells) < len(hdr):
+                cells = cells + [''] * (len(hdr) - len(cells))
+            rows.append(dict(zip(hdr, cells)))
+    return rows
+
+
+def _entry_full(vol, lineno):
+    """按卷+行号取条目原文（含续行·读到下一个条目头前）。"""
+    import re as _re
+    conf = _load_conf()
+    rel = conf.get('卷', {}).get(vol)
+    if not rel:
+        return ''
+    path = rel if os.path.isabs(rel) else os.path.join(_root(), rel)
+    from safeio import read_vol
+    txt, _enc, _why = read_vol(path)
+    lines = txt.splitlines(keepends=True)
+    i = int(lineno) - 1
+    if not (0 <= i < len(lines)):
+        return ''
+    head_re = (conf.get('条目', {}).get('头正则') or r'^\[').strip()
+    try:
+        pat = _re.compile(head_re)
+    except _re.error:
+        pat = _re.compile(r'\[')
+    out = [lines[i]]
+    for l in lines[i + 1:]:
+        if pat.match(l):
+            break
+        out.append(l)
+    return ''.join(out)
+
+
+def _entry_ref(vol, lineno):
+    """生成互见引用 [卷#L行-SHA8]（v3.1）。
+    复用 cross_ref 的哈希算法（保 verify_ref 兼容）·但卷路径按 daybook.conf 卷表解析
+    （cross_ref 默认按 <root>/<卷>.txt 找·与 conf 卷名不一致时须校正）。失败返 ''。"""
+    try:
+        from cross_ref import CrossRef
+    except Exception:
+        return ''
+    conf = _load_conf()
+
+    def _vp(v, _conf=conf, _root=_root()):
+        rel = _conf.get('卷', {}).get(v)
+        if not rel:
+            raise KeyError('卷 %s 不在 conf 卷表' % v)
+        return rel if os.path.isabs(rel) else os.path.join(_root, rel)
+
+    try:
+        cr = CrossRef(root=_root())
+        cr._vol_path = _vp          # 按 conf 校正卷定位（哈希算法仍用 cross_ref 原实现）
+        return cr.make_ref(vol, int(lineno))
+    except Exception:
+        return ''
+
+
+def _multi_query(args):
+    """四库式层级下钻。level=部→各卷概览；类→二级分组计数；属(默认)→条目提要行(可全文)。
+    附互见引用（cross_ref）·LLM 不必拉全卷。"""
+    vol = (args.get('volume') or '').strip()
+    cls = (args.get('cls') or '').strip()
+    author = (args.get('author') or '').strip()
+    timepfx = (args.get('time') or '').strip()
+    l2 = (args.get('l2') or '').strip()
+    level = (args.get('level') or '属').strip()
+    try:
+        limit = int(args.get('limit', 50))
+    except (TypeError, ValueError):
+        limit = 50
+    full = bool(args.get('full'))
+
+    rows = _read_multidx_tsv()
+    if not rows:
+        return ('多级目录为空或未生成。请先在账本侧执行 `python3 daybook.py multiindex`'
+                '（生成 <根>/多级/<卷>_目录.tsv）后再下钻；'
+                '或在 MCP 侧调 `daybook_index` 后由 watch/多级续建生成。')
+    if vol:
+        rows = [r for r in rows if r.get('卷') == vol]
+    if cls:
+        rows = [r for r in rows if cls in (r.get('类') or '')]
+    if author:
+        rows = [r for r in rows if author in (r.get('作者') or '')]
+    if timepfx:
+        rows = [r for r in rows if (r.get('时间') or '').startswith(timepfx)]
+    if l2:
+        rows = [r for r in rows if l2 in (r.get('二级') or '')]
+
+    scope = '卷=%s' % (vol or '全部') 
+    if cls:
+        scope += ' 类~%s' % cls
+    if author:
+        scope += ' 作者~%s' % author
+    if timepfx:
+        scope += ' 时间~%s' % timepfx
+    if l2:
+        scope += ' 二级~%s' % l2
+
+    if level == '部':
+        per = {}
+        for r in rows:
+            k = r.get('卷', '')
+            g = per.setdefault(k, {'n': 0, 'g': set()})
+            g['n'] += 1
+            g['g'].add(r.get('二级', ''))
+        out = ['【部级概览】%s ｜ 卷 %d 个 ｜ 命中条目 %d 条' % (scope, len(per), len(rows))]
+        for k in sorted(per):
+            out.append('  %s卷：%d 条 ／ %d 个二级组' % (k, per[k]['n'], len(per[k]['g'])))
+        return '\n'.join(out)
+
+    if level == '类':
+        g = {}
+        for r in rows:
+            k = r.get('二级', '') if vol else '%s·%s' % (r.get('卷', ''), r.get('二级', ''))
+            g[k] = g.get(k, 0) + 1
+        out = ['【类级分组】%s ｜ %d 组 ｜ 命中 %d 条' % (scope, len(g), len(rows))]
+        for k in sorted(g):
+            out.append('  %s：%d 条' % (k, g[k]))
+        return '\n'.join(out)
+
+    # level 属（默认）：条目提要行
+    def _ln(r):
+        try:
+            return int(r.get('行号') or 0)
+        except ValueError:
+            return 0
+    rows = sorted(rows, key=lambda r: (r.get('时间', ''), _ln(r)))
+    shown = rows[:limit] if limit else rows
+    out = ['【属级条目】%s ｜ 命中 %d 条 ｜ 显示 %d 条%s'
+           % (scope, len(rows), len(shown), '（含全文）' if full else '')]
+    for r in shown:
+        v = r.get('卷', '')
+        ln = r.get('行号', '0')
+        line = '- %s#L%s · [%s] [%s] %s' % (
+            v, ln, r.get('时间', ''), r.get('类', ''), r.get('标题', ''))
+        if r.get('作者'):
+            line += ' · %s' % r['作者']
+        ref = _entry_ref(v, ln)      # 互见层：附可校验的定位引用
+        if ref:
+            line += '  ↪%s' % ref
+        out.append(line)
+        if full:
+            t = _entry_full(v, ln)
+            if t:
+                out.append('    ' + t.rstrip('\n').replace('\n', '\n    '))
+    return '\n'.join(out)
+
+
 # ── 工具 schema（JSON Schema 风格） ──
 TOOLS = [
     {
@@ -237,6 +411,26 @@ TOOLS = [
                 'ref': {'type': 'string', 'description': '[卷名#L行-SHA8]'},
             },
             'required': ['ref'],
+        },
+    },
+    {
+        'name': 'daybook_multi_query',
+        'description': '按四库式层级「按需下钻」查询（v3.1）·读多级目录（部=卷／类／作者／时／二级）·'
+                       'level=部→各卷概览｜类→二级分组计数｜属（默认）→条目提要行（可 full 回全文）·'
+                       '每条附互见引用 ↪[卷#L行-SHA8]。LLM 不必拉全卷 ⇒ 长上下文＝按需下钻。',
+        'inputSchema': {
+            'type': 'object',
+            'properties': {
+                'volume': {'type': 'string', 'description': '卷名（省略＝跨全部在册卷）'},
+                'cls': {'type': 'string', 'description': '类字段过滤（子串·如 报/核/工）'},
+                'author': {'type': 'string', 'description': '作者过滤（子串）'},
+                'time': {'type': 'string', 'description': '时间前缀过滤·如 2026-10 或 2026-10-15'},
+                'l2': {'type': 'string', 'description': '二级键值过滤（二级＝类或作者·按 conf[多级]二级键）'},
+                'level': {'type': 'string', 'enum': ['部', '类', '属'], 'description': '下钻层级·默认 属'},
+                'limit': {'type': 'integer', 'description': '最多返回条数（属级）·默认 50'},
+                'full': {'type': 'boolean', 'description': '属级命中回全文（默认 false·只回提要行·省上下文）'},
+            },
+            'required': [],
         },
     },
 ]
@@ -461,6 +655,14 @@ def call_tool(name, args, agent_id=None, signature=None):
             ok = cr.verify_ref(args['ref'])
             _audit('cross_ref_verify', agent_id, 'ref=%s → %s' % (args['ref'][:60], ok))
             return _tool_ok('true' if ok else 'false')
+
+        if name == 'daybook_multi_query':
+            # v3.1 四库式层级下钻（只读·不需要验签）
+            out = _multi_query(args)
+            _audit('multi_query', agent_id,
+                   'vol=%s level=%s → %s' % (args.get('volume', ''), args.get('level', '属'),
+                                             out.split('\n')[0][:80]))
+            return _tool_ok(out)
 
         # 未知工具
         _audit(name, agent_id, '未知工具', ok=False)

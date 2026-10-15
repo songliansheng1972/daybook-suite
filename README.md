@@ -96,16 +96,16 @@ daybook-suite/            ← this repo
 
 ## Version & build number (reproducible)
 
-- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v3.0**.
+- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v3.1**.
 - **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels) and docs are **not** counted.
 
 | Package | Version | Product `.py` files | Build number |
 | --------------- | ------- | ------------------- | ------------ |
-| daybook         | v3.0    | 6                   | 1354         |
-| daybook-mcp     | v3.0    | 11                  | 2367         |
-| daybook-orch    | v3.0    | 9                   | 1746         |
+| daybook         | v3.1    | 7                   | 1653         |
+| daybook-mcp     | v3.1    | 12                  | 2962         |
+| daybook-orch    | v3.1    | 9                   | 1926         |
 
-**Code size**: **5,467 lines** across the three packages' product files (1,354 + 2,367 + 1,746).
+**Code size**: **6,541 lines** across the three packages' product files (1,653 + 2,962 + 1,926).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -118,6 +118,7 @@ python3 src/pack.py --dry     # prints every counted file's line count and each 
 Every release tag is **annotated**, and its message states the **version** and **all three build numbers** — the tag alone pins the exact build:
 
 ```
+v3.1   daybook-suite v3.1 — 起居注 1653 / 璇玑 2962 / 司南 1926
 v3.0   daybook-suite v3.0 — 起居注 1354 / 璇玑 2367 / 司南 1746
 ```
 
@@ -216,19 +217,21 @@ daybook-suite/            ← 本仓
 
 ## 版本号与构建号（可复现）
 
-- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v3.0**。
+- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v3.1**。
 - **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
 
 | 包       | 版本号  | 产品 `.py` 件 | 构建号  |
 | ------- | ----- | --------- | ---- |
-| 起居注     | v3.0  | 6         | 1362 |
-| 璇玑      | v3.0  | 11        | 2381 |
-| 司南      | v3.0  | 9         | 1746 |
+| 起居注     | v3.1  | 7         | 1653 |
+| 璇玑      | v3.1  | 12        | 2962 |
+| 司南      | v3.1  | 9         | 1926 |
 
-**代码规模**：三包产品件合计 **5,489 行**（1,362 ＋ 2,381 ＋ 1,746）。
+**代码规模**：三包产品件合计 **6,541 行**（1,653 ＋ 2,962 ＋ 1,926）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。
+> 2026-10-15 **v3.1**：新增 `daybook_multidx.py`（四库式多级索引）⇒ 起居注 1362→1653（6→7 件）、璇玑 2381→2962（11→12 件）；
+> 司南加 `digest` 子命令 ⇒ 1746→1926。
 
 **权威件清单**在 `src/pack.py`（各包的 `prog` 列表）。随时复现：
 
@@ -241,6 +244,7 @@ python3 src/pack.py --dry     # 逐件列出各行数与各包构建号
 每个发布 tag 均为 **annotated**，且说明里写明**版本号与三包构建号** —— 单看 tag 即可定位到确切构建：
 
 ```
+v3.1   daybook-suite v3.1 — 起居注 1653 / 璇玑 2962 / 司南 1926
 v3.0   daybook-suite v3.0 — 起居注 1354 / 璇玑 2367 / 司南 1746
 ```
 

@@ -19,12 +19,13 @@ the same volumes: truth stays in the volumes — it only **reads them out and wr
 
 ## Feature highlights
 
-### 1. Ten tools
+### 1. Eleven tools
 
 | Tool | Purpose | Requires signature |
 |---|---|---|
 | `daybook_list` | List every volume registered in `daybook.conf [卷]` (path / lines / bytes) | no |
 | `daybook_query` | Query entry text by field (volume / lineno / time / tag / title / author; substring match) | no |
+| `daybook_multi_query` | **Hierarchical drill-down** over the four-store directory (part→class→entry; `level=部/类/属`) · each hit carries a cross-ref `↪[volume#Lline-SHA8]` (v3.1) | no |
 | `daybook_append` | **Append** one entry · append-only · atomic · **author-ID red line** (`author ≡ agent_id` + signature) | **yes** |
 | `daybook_unread` | Unread entries for an agent on a volume (after its cursor) | **yes** |
 | `daybook_mark_read` | Advance the read cursor to the end of the volume | **yes** |
@@ -37,12 +38,16 @@ the same volumes: truth stays in the volumes — it only **reads them out and wr
 ### 2. Volumes as resources + subscription
 
 - **`resources/list`**: exposes **every volume** registered in `daybook.conf [卷]` as
-  `daybook://<volume>` with size / lines / mtime.
+  `daybook://<volume>` with size / lines / mtime, plus — after `python3 daybook.py multiindex` —
+  the **four-store directory** as `daybook://目录/<volume>` and `daybook://目录/总目` (text/markdown).
 - **`resources/read`**: `daybook://<volume>` supports **line ranges** (offset / limit); reads are
-  **written to the audit volume**.
+  **written to the audit volume**. Directory resources support line ranges too.
 - **`resources/subscribe` / `unsubscribe`**: subscribe to a volume → **mtime polling** → on change,
   push `notifications/resources/updated`. Zero dependency (no watchdog); the subscription table is
   **in-memory** and cleared on restart (per the MCP spec).
+
+⇒ **Long context = query on demand**: an LLM need not pull a whole volume; it drills down by level.
+Absent a directory, resources are not listed and the tool returns a friendly hint (never crashes).
 
 ### 3. Four prompts
 

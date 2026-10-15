@@ -1,6 +1,6 @@
 # QIJUZHU · DAYBOOK
 
-> **Version note:** v3.0 is a single-machine prototype for a local plain-text memory workflow. Concurrency recovery, permission control, identity authorization, and formal enterprise stress testing have not been completed.
+> **Version note:** v3.1 is a single-machine prototype for a local plain-text memory workflow. Concurrency recovery, permission control, identity authorization, and formal enterprise stress testing have not been completed.
 
 ## Three numbers
 
@@ -151,6 +151,18 @@ Volumes can be indexed separately. The benchmark in this README measures local p
 ### Visible, portable files
 
 Volumes can be stored at a user-chosen path and opened with standard text editors. Data location alone does not provide access control, backup, or protection from other tools that may transmit data.
+
+### Hierarchical directory (four-branch, 四库式)
+
+On top of the flat index, an optional **hierarchical directory** supports drill-down without pulling a whole volume:
+
+```bash
+python3 daybook.py multiindex              # 多级/<volume>_目录.md(.tsv) + 总目录.md
+python3 daybook.py multiindex --卷 协作     # only that volume (smaller output)
+python3 daybook.py multiindex --序 子       # cross-volume digest, "by class" view only
+```
+
+Levels run **volume → class (second level) → entry**; the cross-volume digest adds three views — **by class / by month / by author**. All output is **derived data** (deletable and rebuildable); *the index is a catalogue, not the record*. In `watch` mode the directory is rebuilt automatically after a volume changes. Zero dependencies, deterministic (same index source yields the same output).
 
 ## Five deployment considerations
 

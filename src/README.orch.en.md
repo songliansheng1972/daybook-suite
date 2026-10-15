@@ -20,7 +20,7 @@ table lookup** for "who should act, and up to which step"; truth stays in the vo
 
 ## Feature highlights
 
-### 1. Eleven verbs
+### 1. Twelve verbs
 
 | Verb | Effect |
 |---|---|
@@ -34,7 +34,8 @@ table lookup** for "who should act, and up to which step"; truth stays in the vo
 | `pull` | Pull your queue (**table lookup** for the next hand = non-author) |
 | `board` | Board (by state) |
 | `alarm` | Health check (lost / orphaned / stalled) |
-| `selftest` | End-to-end self-test (**9/9**) |
+| `digest` | Change digest from the four-store directory (part▸class▸entry + cross-ref) · `--push` via `agent_message` (v3.1) |
+| `selftest` | End-to-end self-test (**all green** · incl. 2 digest checks) |
 
 ### 2. Six primitives (welded into one loop)
 

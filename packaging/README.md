@@ -43,15 +43,15 @@ python3 src/pack.py                          # 1) 先出整装目录（源改了
 python3 packaging/pack_pypi.py --pkg all     # 2) 生成三棵 pip 包树（自带一致校验）
 python3 packaging/pack_pypi.py --pkg all --build   # 3) 顺带 python -m build 出 dist
 python3 packaging/pack_pypi.py --pkg mcp --verify  #    只核 payload == 整装目录（md5）
-python3 packaging/pack_pypi.py --version 3.0.0rc1 --pkg daybook --build  # 指定版本
+python3 packaging/pack_pypi.py --version 3.1.0rc1 --pkg daybook --build  # 指定版本
 ```
 
 依赖（**不入仓、装在本机隔离环境**）：`build`、`twine`、`setuptools>=77`。
 
 ## 版本号口径
 
-仓内语义版本（`src/pack.py` 的 `SUITE_VERSION`，现为 `v3.0`）→ PyPI 版本号**补成三段**：`3.0` → `3.0.0`。
-预发布显式传 `--version 3.0.0rc1`。
+仓内语义版本（`src/pack.py` 的 `SUITE_VERSION`，现为 `v3.1`）→ PyPI 版本号**补成三段**：`3.1` → `3.1.0`。
+预发布显式传 `--version 3.1.0rc1`。
 
 > 为何补三段：PEP 440 下 `3.0` 与 `3.0.0` 数值相等，但**文件名不同**；而**正式 PyPI 同一文件名不可覆盖、不可重传**。
 > 若一会儿发 `3.0`、一会儿发 `3.0.0`，等于白白烧掉一个版号。统一补三段即免此坑。

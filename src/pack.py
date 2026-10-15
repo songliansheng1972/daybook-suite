@@ -39,7 +39,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 承老宋 2026-10-12 19:44 令：版本号改用标准语义版本（v3.0），以免与「行数」相混
 # （同仓两套号·行数非单调·一套件三个号，皆易误解）。原「产品 .py 件行数之和」
 # 降为「构建号」＝构建指纹，与之并列展示，不废。
-SUITE_VERSION = '3.0'
+SUITE_VERSION = '3.1'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # 每卷 5 条假条目·体例与生产卷一致。由 pack.py 随三包各装一份。
@@ -67,7 +67,9 @@ PACKAGES = {
     'daybook': {
         'box': 'daybook',
         'prog': ['daybook.py', 'daybook_append.py', 'safeio.py',
-                 'daybook_record.py', 'daybook_session_hook.py', 'daybook_hook.py'],
+                 'daybook_record.py', 'daybook_session_hook.py', 'daybook_hook.py',
+                 # v3.1：四库式多级索引（部→类→属）·daybook.py multiindex 子命令懒 import
+                 'daybook_multidx.py'],
         'prog_aux': ['daybook.sh', 'daybook.c', 'daybook.bas', 'daybook.f',
                      'sentinel.sh', 'sentinel-daemon.sh'],
         'conf_rename': [
@@ -87,8 +89,10 @@ PACKAGES = {
                  # 下两件为 mcp_tools 顶层 import 所需（daybook＋agent_registry）
                  # 工单 §四 S1 mcp 核心件清单缺此两件·不补则 J3 自包含/J4 可启 不成立·订正
                  'daybook.py', 'agent_registry.py',
-                 # #312·mcp_tools L431/L439 函数内懒 import cross_ref·须入包·订正
-                 'cross_ref.py'],
+                # #312·mcp_tools L431/L439 函数内懒 import cross_ref·须入包·订正
+                'cross_ref.py',
+                # v3.1：多级目录下钻（璇玑侧 multi_query/resources）所需·本包含 daybook.py 全体
+                'daybook_multidx.py'],
         'conf_rename': [
             # #314-C·mcp 包样板 conf·改名拷为 daybook.conf·不污染源真账 daybook.conf
             (['daybook.sample.conf'], 'daybook.conf'),
@@ -243,6 +247,10 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
                 pass
     for pp in glob.glob(os.path.join(dest, '__pycache__')):
         shutil.rmtree(pp, ignore_errors=True)   # 承 #470 观察②·清缓存目录
+    for d in ('多级',):                          # v3.1·多级目录为运行时派生件·不随包发
+        dp = os.path.join(dest, d)
+        if os.path.isdir(dp):
+            shutil.rmtree(dp, ignore_errors=True)
     with io.open(os.path.join(dest, '版本.txt'), 'w', encoding='utf-8') as f:
         f.write('daybook-suite v%s · %s\n'
                 '版本号 v%s（语义版本·三包同源同发·统一）\n'

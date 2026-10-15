@@ -6,7 +6,8 @@
 零依赖：只用 Python 标准库。
 用法：
   python3 daybook.py index        生成/刷新索引
-  python3 daybook.py watch [秒]   监视各卷，变动即自动重算索引 + 自动备份
+  python3 daybook.py multiindex   生成四库式多级目录（部/类/属·跨卷总目）·派生件
+  python3 daybook.py watch [秒]   监视各卷，变动即自动重算索引 + 自动续建多级目录 + 自动备份
   python3 daybook.py backup       手动备份：把所有卷复制到 备份/YYYY-MM-DD_HHMMSS/
   python3 daybook.py query key=value ...  按字段精确查询条目原文（E-11 工具）
      字段：卷/行号/时间/类/标题。值为子串匹配，留空表示不过滤。
@@ -476,6 +477,10 @@ def main():
         per, total, rep = build(conf, root)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
+    elif cmd in ('multiindex', '多级索引'):
+        # 四库式多级目录（部/类/属·跨卷总目）·派生件·零依赖·与 index 同源同入口
+        import daybook_multidx
+        sys.exit(daybook_multidx.main(sys.argv[2:]))
     elif cmd == 'backup':
         bdir, n = backup(conf, root)
         print('备份完成：%s（%d 卷）' % (bdir, n), flush=True)
@@ -490,9 +495,18 @@ def main():
             if cur != last:
                 try:
                     per, total, _rep = build(conf, root)
+                    # [多级] 变动续建：索引后自动重算四库式多级目录（失败不挡索引与备份）
+                    m_note = ''
+                    if conf.get('多级', {}).get('多级索引', '是') in ('是', '1', 'true', 'True'):
+                        try:
+                            import daybook_multidx
+                            _mp, _mt = daybook_multidx.build(conf, root)
+                            m_note = ' + 多级目录 %d 条' % _mt
+                        except Exception as me:
+                            m_note = '（多级目录失败：%s）' % me
                     bdir, n = backup(conf, root)
-                    print('[%s] 变动 %s ⇒ 索引重算，合计 %d 条 + 备份 %d 卷 ⇒ %s' % (
-                        time.strftime('%H:%M:%S'), cur, total, n, os.path.basename(bdir)), flush=True)
+                    print('[%s] 变动 %s ⇒ 索引重算，合计 %d 条%s + 备份 %d 卷 ⇒ %s' % (
+                        time.strftime('%H:%M:%S'), cur, total, m_note, n, os.path.basename(bdir)), flush=True)
                 except Exception as e:
                     print('[%s] 变动 %s ⇒ 重算失败（卷可能正在被写入）：%s' % (
                         time.strftime('%H:%M:%S'), cur, e), flush=True)
