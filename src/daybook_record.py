@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
-"""保存一条逐字消息/代码原件，并把其路径与摘要登记到 DAYBOOK。"""
+"""保存一条逐字消息/代码原件，并把其路径与摘要登记到 DAYBOOK。
+Save one verbatim message/code original and register its path and digest into DAYBOOK."""
 import argparse
 import hashlib
 import os
@@ -28,6 +29,8 @@ def record(role, title, content, stamp=None, update_index=True):
     archive_path = os.path.join(archive_dir, name)
     relative_path = os.path.relpath(archive_path, HERE)
 
+    # 每个原件都是独立的 UTF-8 产物；经临时文件写入，
+    # 使中断的写入不会留下写了一半的最终产物。
     # Each original is a separate UTF-8 artifact; write through a temporary
     # file so an interrupted write cannot leave a half-written final artifact.
     temporary_path = archive_path + '.tmp'

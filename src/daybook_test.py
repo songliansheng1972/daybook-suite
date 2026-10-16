@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Daybook · concurrency smoke test
+Daybook · 并发冒烟测试
 Run 600 concurrent appends and verify that every record is complete exactly once.
+跑 600 次并发追加，验证每条记录恰好完整一次。
 This is an empirical test of the current local filesystem, not a POSIX PIPE_BUF
 guarantee for regular files.
+这是对当前本地文件系统的经验性测试，并非普通文件（regular file）的 POSIX PIPE_BUF 保证。
 跑法：python3 daybook_test.py
+Run: python3 daybook_test.py
 退出码：0 = PASS，1 = FAIL。
+Exit code: 0 = PASS, 1 = FAIL.
 """
 import os, sys, tempfile, subprocess, time
 import re
 
 NPROC = 20
 NPER = 30
-EXPECTED = NPROC * NPER  # 600
+EXPECTED = NPROC * NPER  # 600 · 期望条数 / expected count
 
 
 def run_concurrency_test(vol_path, append_path):
-    """起 NPROC 进程各写 NPER 条，验证零交错。"""
+    """起 NPROC 进程各写 NPER 条，验证零交错。
+    Spawn NPROC processes each writing NPER records; verify zero interleaving."""
     procs = []
     for i in range(1, NPROC + 1):
         author = 'p%d' % i
@@ -33,7 +39,8 @@ def run_concurrency_test(vol_path, append_path):
 
 
 def verify(vol_path):
-    """数条目数、数 --- 分隔、验证每条完整性。"""
+    """数条目数、数 --- 分隔、验证每条完整性。
+    Count records, count --- separators, and verify each record's integrity."""
     with open(vol_path, encoding='utf-8') as f:
         content = f.read()
     record_re = re.compile(
@@ -53,6 +60,7 @@ def verify(vol_path):
     if len(seen) != EXPECTED:
         return False, '唯一记录数 = %d, 期望 %d' % (len(seen), EXPECTED)
     # Verify no partial/foreign non-empty lines were interleaved.
+    # 验证没有残缺的或外来的非空行被交错插入。
     valid_lines = len(records)
     actual_lines = sum(1 for line in content.splitlines() if line.strip())
     if actual_lines != valid_lines:

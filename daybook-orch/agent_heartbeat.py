@@ -3,16 +3,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """Agent 心跳卷（W-DB-023-G3·第 6 项）
+Agent heartbeat volume (W-DB-023-G3 · item 6)
 ================================================
 - 心跳卷 append-only：[时间] [心跳] [agent_id] alive
+  The heartbeat volume is append-only: [时间] [心跳] [agent_id] alive
 - 缺心跳 > 3 周期 → 标 dead → 触发恢复
+  Missing heartbeat > 3 periods → mark dead → trigger recovery
 - 零依赖：仅用 Python 3 标准库（os/time）
+  Zero dependencies: only the Python 3 standard library (os/time)
 
 用法：
-  hb = Heartbeat(period=10)         # 周期 10 秒
-  hb.beat('agent_xxx')              # Agent 自报心跳
-  alive = hb.is_alive('agent_xxx')  # 查活/死
-  dead = hb.dead_agents()           # 列出所有 dead
+Usage:
+  hb = Heartbeat(period=10)         # 周期 10 秒 · period 10 seconds
+  hb.beat('agent_xxx')              # Agent 自报心跳 · agent reports its own heartbeat
+  alive = hb.is_alive('agent_xxx')  # 查活/死 · check alive/dead
+  dead = hb.dead_agents()           # 列出所有 dead · list all dead agents
 """
 import os, time
 
@@ -29,7 +34,8 @@ def _now_ts():
 
 class Heartbeat:
     def __init__(self, path=None, period=10, dead_after=3):
-        """period：心跳周期（秒）。dead_after：缺多少周期判定 dead。"""
+        """period：心跳周期（秒）。dead_after：缺多少周期判定 dead。
+        period: heartbeat period (in seconds). dead_after: how many missed periods count as dead."""
         self.path = path or os.path.join(HERE, '心跳卷.txt')
         self.period = period
         self.dead_after = dead_after
@@ -37,14 +43,16 @@ class Heartbeat:
             open(self.path, 'a', encoding='utf-8').close()
 
     def beat(self, agent_id):
-        """Agent 自报心跳·append-only。"""
+        """Agent 自报心跳·append-only。
+        Agent reports its own heartbeat · append-only."""
         from safeio import atomic_append
         rec = '[%s] [心跳] [%s] alive\n' % (_now(), agent_id)
         atomic_append(self.path, rec)
         return True
 
     def _last_beat(self, agent_id):
-        """单遍扫描心跳卷·返回 agent 最后心跳时间戳。"""
+        """单遍扫描心跳卷·返回 agent 最后心跳时间戳。
+        Single-pass scan of the heartbeat volume · return the agent's last heartbeat timestamp."""
         import re as _re
         _aid_pat = _re.compile(r'^\[[^\]]+\] \[心跳\] \[%s\] ' % _re.escape(agent_id))
         last_str = None
@@ -52,6 +60,7 @@ class Heartbeat:
         text, _enc, _why = read_vol(self.path)
         for line in text.splitlines():
             # [时间] [心跳] [agent_id] alive
+            # Entry format: [time] [heartbeat] [agent_id] alive
             if _aid_pat.match(line) and 'alive' in line:
                 try:
                     ts_str = line.split(']')[0].lstrip(' [').strip()
@@ -66,21 +75,23 @@ class Heartbeat:
             return None
 
     def is_alive(self, agent_id):
-        """缺心跳 > dead_after 周期 → False。"""
+        """缺心跳 > dead_after 周期 → False。
+        Missing heartbeat > dead_after periods → False."""
         last = self._last_beat(agent_id)
         if last is None:
             return False
         return (_now_ts() - last) < (self.period * self.dead_after)
 
     def dead_agents(self):
-        """扫所有出现过的 agent_id·返回 dead 列表。"""
+        """扫所有出现过的 agent_id·返回 dead 列表。
+        Scan all agent_ids ever seen · return the dead list."""
         agents = set()
         from safeio import read_vol
         text, _enc, _why = read_vol(self.path)
         for line in text.splitlines():
             if '[心跳]' not in line or 'alive' not in line:
                 continue
-            # [时间] [心跳] [agent_id] alive → parts[2] 是 agent_id
+            # [时间] [心跳] [agent_id] alive → parts[2] 是 agent_id · parts[2] is the agent_id
             parts = [p.strip(' []') for p in line.split(']') if p.strip()]
             if len(parts) < 3:
                 continue
@@ -90,7 +101,8 @@ class Heartbeat:
         return [a for a in agents if not self.is_alive(a)]
 
     def recover(self, agent_id):
-        """恢复：写一条 alive 条目·reset 计时。"""
+        """恢复：写一条 alive 条目·reset 计时。
+        Recovery: write an alive entry · reset the timer."""
         return self.beat(agent_id)
 
 

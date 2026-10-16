@@ -1,25 +1,32 @@
 #!/bin/sh
 # Daybook · 哨（sentinel）
+# Daybook · the sentinel
 # 职：不写，只看。监视你指定的卷，有变动就报。
+# Duty: never writes, only looks. Watches the volumes you name and reports any change.
 #     —— 记的人与被记的人必须分开；钩子与签名都是写的人自己的机制，哨是第三方。
+#     —— The recorder and the recorded must be kept separate; hooks and signatures are the writer's own mechanisms, the sentinel is a third party.
 # 用法：
+# Usage:
 #   sh sentinel.sh 卷1.txt 卷2.txt ...   监视并常驻
+#   sh sentinel.sh vol1.txt vol2.txt ...   watch and stay resident
 #   sh sentinel.sh --one 卷1.txt         只查一次
+#   sh sentinel.sh --one vol1.txt         check once only
 # 日志：.sentinel.log
+# Log: .sentinel.log
 ROOT=$(cd "$(dirname "$0")" && pwd)
 LOG="$ROOT/.sentinel.log"
 ONE=0
 [ "$1" = "--one" ] && ONE=1 && shift
 [ $# -eq 0 ] && { echo "Usage: sh sentinel.sh [--one] volume-file..."; exit 1; }
 
-sig() {                        # 每个卷的 字节数:mtime
+sig() {                        # 每个卷的 字节数:mtime · per volume: bytes:mtime
   for f in "$@"; do
     if [ -f "$f" ]; then
       printf '%s:%s:%s ' "$f" "$(wc -c < "$f" | tr -d ' ')" "$(stat -f%m "$f" 2>/dev/null || stat -c%Y "$f")"
     fi
   done
 }
-report() {                     # 报：哪一卷动了、字节数、最后一条签发人
+report() {                     # 报：哪一卷动了、字节数、最后一条签发人 · report: which volume changed, bytes, signer of the last record
   for f in "$@"; do
     [ -f "$f" ] || continue
     n=$(wc -c < "$f" | tr -d ' ')

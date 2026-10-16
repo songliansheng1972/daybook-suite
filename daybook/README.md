@@ -88,16 +88,16 @@ echo "要记的话" | python3 daybook_append.py 卷.txt 作者   # 追加一条
 平铺索引之上加一层**层级目录**，按需下钻取上下文（大账本不必拉全卷）：
 
 ```bash
-python3 daybook.py multiindex              # 生成 多级/<卷>_目录.md(.tsv) + 总目录.md
-python3 daybook.py multiindex --卷 协作     # 只出该卷目录（大账本省体积）
-python3 daybook.py multiindex --序 子       # 总目录只出「按类」一序
+python3 daybook.py multiindex              # 生成 multilevel/<卷>_catalog.md(.tsv) + catalog.md
+python3 daybook.py multiindex --volume 协作     # 只出该卷目录（大账本省体积）
+python3 daybook.py multiindex --order 子       # 总目录只出「按类」一序
 ```
 
 **部(卷) → 类(二级) → 属(条目)**；总目录另按 **子(按类)／史(按年月)／集(按作者)** 三序跨卷汇总。
 产出**全为派生件**（可删可重建），**索引是目录不是真相**——三条账形一字未动。
-`watch` 模式卷变动后自动续建（`[多级] 多级索引=是`）。零依赖·确定性（同索引源⇒同产出）。
+`watch` 模式卷变动后自动续建（`[multilevel] multilevel_enabled=是`）。零依赖·确定性（同索引源⇒同产出）。
 
-**下游**：`daybook-mcp` 把目录挂成资源（`daybook://目录/<卷>`）并按层级下钻（`daybook_multi_query`）；
+**下游**：`daybook-mcp` 把目录挂成资源（`daybook://catalog/<卷>`）并按层级下钻（`daybook_multi_query`）；
 `daybook-orch` 用它出变动摘要（`digest --push`）——**长上下文＝按需下钻**，**分发＝带层级的提要**。
 
 ## 边界（诚实）
@@ -110,7 +110,7 @@ DAYBOOK起居注：记忆永存！智慧长明！
 
 ## 版本号与构建号（可复现）
 
-- **版本号**：标准**语义版本**，三包统一（同源同发）：**v3.1**。
+- **版本号**：标准**语义版本**，三包统一（同源同发）：**v3.2**。
 - **构建号**：本包「产品 .py 件」行数之和（构建指纹·**非版本号**）；辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
 
 产品件清单以仓根 `src/pack.py` 的 `prog` 为权威；随时复现：

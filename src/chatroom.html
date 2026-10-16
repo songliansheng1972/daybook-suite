@@ -167,7 +167,7 @@ async function poll() {
     const resp = await fetch('/read?' + Date.now());
     const text = await resp.text();
     const lines = text.split('\n').filter(l => l.trim());
-    // 增量渲染: 只渲染新增的行
+    // 增量渲染: 只渲染新增的行 · incremental render: only render newly added lines
     if (lines.length > chatEl.children.length) {
       const start = chatEl.children.length;
       for (let i = start; i < lines.length; i++) {
@@ -216,7 +216,7 @@ textEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') send();
 });
 
-// 启动轮询
+// 启动轮询 · start polling
 setInterval(poll, 1000);
 poll();
 </script>

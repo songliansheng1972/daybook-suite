@@ -16,7 +16,7 @@
 ## 十一个工具 · 资源 · 提示
 
 - **tools（11）**：`daybook_list` `daybook_query` `daybook_append` `daybook_unread` `daybook_mark_read` `daybook_heartbeat` `daybook_alive` `daybook_index` `cross_ref_make` `cross_ref_verify` **`daybook_multi_query`**
-- **resources**：`daybook://<卷名>`（list / read 行范围 / subscribe）＋ **`daybook://目录/<卷>`、`daybook://目录/总目`**（四库式多级目录·text/markdown）
+- **resources**：`daybook://<卷名>`（list / read 行范围 / subscribe）＋ **`daybook://catalog/<卷>`、`daybook://catalog/catalog`**（四库式多级目录·text/markdown）
 - **prompts（4）**：`daily_journal` `weekly_review` `cross_ref_audit` `agent_handover`
 
 ### 多级目录 · 按需下钻（v3.1）

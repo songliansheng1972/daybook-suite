@@ -23,9 +23,9 @@ the same volumes: truth stays in the volumes — it only **reads them out and wr
 
 | Tool | Purpose | Requires signature |
 |---|---|---|
-| `daybook_list` | List every volume registered in `daybook.conf [卷]` (path / lines / bytes) | no |
+| `daybook_list` | List every volume registered in `daybook.conf [volumes]` (path / lines / bytes) | no |
 | `daybook_query` | Query entry text by field (volume / lineno / time / tag / title / author; substring match) | no |
-| `daybook_multi_query` | **Hierarchical drill-down** over the four-store directory (part→class→entry; `level=部/类/属`) · each hit carries a cross-ref `↪[volume#Lline-SHA8]` (v3.1) | no |
+| `daybook_multi_query` | **Hierarchical drill-down** over the four-store directory (part→class→entry; `level=volume/category/entry`) · each hit carries a cross-ref `↪[volume#Lline-SHA8]` (v3.1) | no |
 | `daybook_append` | **Append** one entry · append-only · atomic · **author-ID red line** (`author ≡ agent_id` + signature) | **yes** |
 | `daybook_unread` | Unread entries for an agent on a volume (after its cursor) | **yes** |
 | `daybook_mark_read` | Advance the read cursor to the end of the volume | **yes** |
@@ -37,9 +37,9 @@ the same volumes: truth stays in the volumes — it only **reads them out and wr
 
 ### 2. Volumes as resources + subscription
 
-- **`resources/list`**: exposes **every volume** registered in `daybook.conf [卷]` as
+- **`resources/list`**: exposes **every volume** registered in `daybook.conf [volumes]` as
   `daybook://<volume>` with size / lines / mtime, plus — after `python3 daybook.py multiindex` —
-  the **four-store directory** as `daybook://目录/<volume>` and `daybook://目录/总目` (text/markdown).
+  the **four-store directory** as `daybook://catalog/<volume>` and `daybook://catalog/catalog` (text/markdown).
 - **`resources/read`**: `daybook://<volume>` supports **line ranges** (offset / limit); reads are
   **written to the audit volume**. Directory resources support line ranges too.
 - **`resources/subscribe` / `unsubscribe`**: subscribe to a volume → **mtime polling** → on change,
@@ -86,7 +86,7 @@ The `DAYBOOK_ROOT` environment variable sets the volume root (defaults to the sc
 
 ## What you can change
 
-- **Volume table**: edit `daybook.conf [卷]` (one volume per line: `name = path`).
+- **Volume table**: edit `daybook.conf [volumes]` (one volume per line: `name = path`).
 - **Audit**: read `MCP审计卷.txt` (append-only).
 
 ## Boundaries (honest)
@@ -107,7 +107,7 @@ All three share **one base** (append-only volumes), **one promise** (zero depend
 
 ## Version
 
-`版本.txt`: a package's version = **the sum of lines of its product `.py` files** (daybook's old rule; recomputable).
+`version.txt` (formerly `版本.txt`): a package's version = **the sum of lines of its product `.py` files** (daybook's old rule; recomputable).
 
 ## License
 

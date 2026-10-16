@@ -10,11 +10,19 @@ __pycache__/
 *.pyc
 
 # 三包内的运行时残留（index / multiindex 产物·非发布件；pack.py 打包时亦清）
+# Runtime residue inside the three packages (index / multiindex artifacts · not published; pack.py also clears them)
+# 英文名为主（v3.2 起）·旧中文名保留兼容
+# English names are canonical (since v3.2) · legacy Chinese names kept for compatibility
+index_*
 索引_*
 volumes.md
+multilevel/
 多级/
 .safeio_lock.*
+.cursor_*.json
 .游标_*.json
+backup/
+备份/
 
 # packaging/ 的生成物（pip 包树与 dist，不提交；模板与生成器要提交）
 packaging/_build/

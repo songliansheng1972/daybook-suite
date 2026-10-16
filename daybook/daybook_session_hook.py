@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
-"""Archive Copilot session events and changed source files for this workspace."""
+"""归档本工作区的 Copilot 会话事件与发生变更的源码文件。
+Archive Copilot session events and changed source files for this workspace."""
 import argparse
 import datetime
 import glob

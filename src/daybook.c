@@ -1,5 +1,7 @@
 /* Daybook - qijuzhu indexer.  K&R C, works on 1970s Unix to today.
+ * Daybook - 起居注索引器。K&R C，从 1970 年代的 Unix 一直用到今天。
  * cc daybook.c -o daybook ; ./daybook file1 file2 ...
+ * 编译：cc daybook.c -o daybook ; 运行：./daybook file1 file2 ...
  */
 #include <stdio.h>
 #define MAXL 4096
@@ -8,7 +10,7 @@ int argc; char **argv;
 {
     int i, ln, n;
     char line[MAXL], t[24], cls[64], title[128], *p, *q;
-    printf("卷\t行号\t时间\t类\t标题\n");
+    printf("volume\tline\ttime\tcategory\ttitle\n");
     for (i = 1; i < argc; i++) {
         FILE *f = fopen(argv[i], "r");
         if (f == NULL) continue;

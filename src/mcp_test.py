@@ -1,22 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """MCP 接口集成测试（W-DB-023-G2·第 6 项·修复版 r2）
+MCP interface integration test (W-DB-023-G2 · Item 6 · fix revision r2)
 ================================================
 对照审核报告 P0-3 关闭测试盲区 + 新增 P1+/P2-1 测试：
+Closes the test blind spots from review report P0-3 + adds P1+/P2-1 tests:
   1. JSON-RPC 2.0 编解码
+  1. JSON-RPC 2.0 encode/decode
   2. initialize 握手
+  2. initialize handshake
   3. resources/list 读 daybook.conf 卷表 + resources/read
+  3. resources/list reads the daybook.conf volume table + resources/read
+  4. tools/list schema
   4. tools/list schema
   5. tools/call daybook_query 按字段过滤（P0-2 验证）
+  5. tools/call daybook_query field filtering (P0-2 verification)
   6. tools/call daybook_append 匿名 + 带 G3 签名（P1-1 验证）
+  6. tools/call daybook_append anonymous + with G3 signature (P1-1 verification)
   7. tools/call daybook_index 重建
+  7. tools/call daybook_index rebuild
   8. tools/call 失败返 isError:true（P2-1 验证）
+  8. tools/call failure returns isError:true (P2-1 verification)
   9. 路径穿越 ../ 拒绝（P1-3 验证）
+  9. Path traversal ../ rejection (P1-3 verification)
  10. resources/subscribe + mtime push（P1+ 验证）
+ 10. resources/subscribe + mtime push (P1+ verification)
+ 11. prompts/list + prompts/get
  11. prompts/list + prompts/get
  12. notification/batch
+ 12. notification/batch
  13. 零第三方依赖
+ 13. Zero third-party dependencies
 退出码：0=PASS 1=FAIL
+Exit code: 0=PASS 1=FAIL
 """
 import os, sys, json, subprocess, tempfile, shutil, time, threading, hashlib, hmac
 
@@ -24,23 +40,24 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, 'mcp_server.py')
 
 # 测试用 daybook.conf 模板
-CONF_TMPL = """[卷]
+# daybook.conf template for tests
+CONF_TMPL = """[volumes]
 测试MCP=测试MCP.txt
 
-[条目]
-头正则=^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2})\\]
-标正则=^\\[[^\\]]+\\]\\s*\\[([^\\]]+)\\]\\s*\\[([^\\]]*)\\](?:\\s*\\[([^\\]]*)\\])?
-字段=卷,行号,时间,类,标题,作者
+[entries]
+head_regex=^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2})\\]
+tag_regex=^\\[[^\\]]+\\]\\s*\\[([^\\]]+)\\]\\s*\\[([^\\]]*)\\](?:\\s*\\[([^\\]]*)\\])?
+fields=volume,line,time,category,title,author
 
-[规则]
-类=tag:1
-标题=tag:2
-作者=tag:3
+[rules]
+category=tag:1
+title=tag:2
+author=tag:3
 
-[索引]
-输出目录=开发卷
-索引前缀=索引_
-增量索引=是
+[index]
+out_dir=开发卷
+index_prefix=index_
+incremental=是
 """
 
 
@@ -52,7 +69,9 @@ def _ok(name, cond, detail=''):
 
 
 def _rpc(req_lines):
-    """跑 mcp_server·喂 lines·返 list of parsed response。"""
+    """跑 mcp_server·喂 lines·返 list of parsed response。
+    Run mcp_server · feed it lines · return a list of parsed responses.
+    """
     stdin_data = '\n'.join(json.dumps(r) for r in req_lines) + '\n'
     p = subprocess.run([sys.executable, SERVER],
                        input=stdin_data, capture_output=True, text=True, timeout=15)
@@ -69,7 +88,9 @@ def _rpc(req_lines):
 
 
 def _setup_tmp_root():
-    """造 tmp_root·写 daybook.conf + 测试MCP.txt + 注册卷.txt。"""
+    """造 tmp_root·写 daybook.conf + 测试MCP.txt + 注册卷.txt。
+    Create tmp_root · write daybook.conf + 测试MCP.txt + 注册卷.txt.
+    """
     tmp_root = tempfile.mkdtemp(prefix='daybook_mcp_test_')
     with open(os.path.join(tmp_root, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF_TMPL)
@@ -78,13 +99,16 @@ def _setup_tmp_root():
         f.write('[2026-10-08 03:01] [决策] [条目2] [GLM-5.2] body-b\n')
         f.write('[2026-10-08 03:02] [测试] [条目3] [GLM-5.2] body-c\n')
     # 注册卷·含 1 个测试 agent
+    # Registration volume · contains 1 test agent
     with open(os.path.join(tmp_root, '注册卷.txt'), 'w', encoding='utf-8') as f:
         f.write('# G3 注册卷\n')
     return tmp_root
 
 
 def _register_test_agent(tmp_root, name='测试Agent'):
-    """在 tmp_root 注册一个 agent·返 (agent_id, secret)。"""
+    """在 tmp_root 注册一个 agent·返 (agent_id, secret)。
+    Register an agent in tmp_root · returns (agent_id, secret).
+    """
     sys.path.insert(0, HERE)
     from agent_registry import Registry
     reg = Registry(os.path.join(tmp_root, '注册卷.txt'))
@@ -92,13 +116,17 @@ def _register_test_agent(tmp_root, name='测试Agent'):
 
 
 def _sign(secret, payload):
-    """HMAC-SHA256 hex 签名。"""
+    """HMAC-SHA256 hex 签名。
+    HMAC-SHA256 hex signature.
+    """
     return hmac.new(secret.encode('utf-8'),
                     payload.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
 def test_transport():
-    """验收 1：JSON-RPC 2.0 编解码。"""
+    """验收 1：JSON-RPC 2.0 编解码。
+    Acceptance 1: JSON-RPC 2.0 encode/decode.
+    """
     sys.path.insert(0, HERE)
     import mcp_transport as tr
     msg, err = tr.decode_frame('not json')
@@ -116,7 +144,9 @@ def test_transport():
 
 
 def test_initialize(tmp_root):
-    """验收 2：initialize 握手 + protocolVersion 协商。"""
+    """验收 2：initialize 握手 + protocolVersion 协商。
+    Acceptance 2: initialize handshake + protocolVersion negotiation.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     req = {'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
            'params': {'protocolVersion': '2024-11-05'}}
@@ -135,7 +165,9 @@ def test_initialize(tmp_root):
 
 
 def test_resources(tmp_root):
-    """验收 3：resources/list 读 conf 卷表 + resources/read。"""
+    """验收 3：resources/list 读 conf 卷表 + resources/read。
+    Acceptance 3: resources/list reads the conf volume table + resources/read.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, err = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'resources/list'}])
     if not _ok('3.1 resources/list 有响应', len(out) == 1, err):
@@ -154,13 +186,18 @@ def test_resources(tmp_root):
 
 
 def test_daybook_index(tmp_root):
-    """验收 7：daybook_index 重建索引·供 query 用。写工具强制验签。"""
+    """验收 7：daybook_index 重建索引·供 query 用。写工具强制验签。
+    Acceptance 7: daybook_index rebuilds the index · used by query. Write tools force signature verification.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
-    sig = _sign(secret, 'reindex')
+    # W-75 修④：写工具须带 ts，签名覆盖 "reindex:<ts>"（防重放）
+    # W-75 fix ④: write tools must carry ts; the signature covers "reindex:<ts>" (anti-replay)
+    ts = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_index',
-                               'arguments': {'agent_id': agent_id, 'signature': sig}}}])
+                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     if not _ok('7.1 daybook_index 有响应', len(out) == 1):
         return False
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
@@ -168,18 +205,25 @@ def test_daybook_index(tmp_root):
 
 
 def test_daybook_query(tmp_root):
-    """验收 5/P0-2：daybook_query 按字段过滤·不再全量返回。"""
+    """验收 5/P0-2：daybook_query 按字段过滤·不再全量返回。
+    Acceptance 5/P0-2: daybook_query filters by field · no longer returns everything.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     # 先建索引（也要验签）
+    # Build the index first (also requires signature verification)
     agent_id, secret = _register_test_agent(tmp_root)
-    sig = _sign(secret, 'reindex')
+    # W-75 修④：同上，建索引须带 ts 且签名覆盖 "reindex:<ts>"
+    # W-75 fix ④: same as above · the index build must carry ts with a signature over "reindex:<ts>"
+    ts0 = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts0)
     _rpc([{'jsonrpc': '2.0', 'id': 0, 'method': 'tools/call',
            'params': {'name': 'daybook_index',
-                      'arguments': {'agent_id': agent_id, 'signature': sig}}}])
+                      'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts0}}}])
     # 查 类=决策 → 只应命中 1 条（条目2）
+    # Query category=决策 → should match only 1 entry (条目2)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_query',
-                               'arguments': {'field': '类', 'value': '决策'}}}])
+                               'arguments': {'field': 'category', 'value': '决策'}}}])
     if not _ok('5.1 daybook_query 有响应', len(out) == 1):
         return False
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
@@ -188,15 +232,18 @@ def test_daybook_query(tmp_root):
     if not _ok('5.3 命中条目2·不含条目1/3', '条目2' in text and '条目1' not in text and '条目3' not in text, text):
         return False
     # 反例：查 类=测试 → 命中 2 条
+    # Counterexample: query category=测试 → matches 2 entries
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
                     'params': {'name': 'daybook_query',
-                               'arguments': {'field': '类', 'value': '测试'}}}])
+                               'arguments': {'field': 'category', 'value': '测试'}}}])
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    return _ok('5.4 类=测试 命中 2 条', '命中 2 条' in text, text[:80])
+    return _ok('5.4 category=测试 命中 2 条', '命中 2 条' in text, text[:80])
 
 
 def test_daybook_list(tmp_root):
-    """验收 P0-1：daybook_list 返卷列表·不再是帮助文档。"""
+    """验收 P0-1：daybook_list 返卷列表·不再是帮助文档。
+    Acceptance P0-1: daybook_list returns the volume list · no longer a help document.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_list', 'arguments': {}}}])
@@ -204,6 +251,7 @@ def test_daybook_list(tmp_root):
         return False
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
     # 不能再是帮助文档（含 "用法:" 或 "Usage:"）
+    # Must no longer be a help document (contains "用法:" or "Usage:")
     is_help = ('用法' in text and 'python3' in text) or 'Usage' in text
     if not _ok('P0-1.2 不是帮助文档', not is_help, 'text=%r' % text[:100]):
         return False
@@ -212,7 +260,10 @@ def test_daybook_list(tmp_root):
 
 def test_daybook_append_anon_rejected(tmp_root):
     """验收 P1-1 监理 r3：匿名 append 必须被拒·返 isError:true。
-    这是监理探针发现的漏洞——此前匿名调用成功落盘·违背作者 ID 红线。"""
+    Acceptance P1-1 supervision r3: an anonymous append must be rejected · returns isError:true.
+    这是监理探针发现的漏洞——此前匿名调用成功落盘·违背作者 ID 红线。
+    This is the hole found by the supervision probe — previously anonymous calls were written to disk successfully · violating the author-ID red line.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
@@ -230,7 +281,10 @@ def test_daybook_append_anon_rejected(tmp_root):
 
 def test_daybook_append_impersonation(tmp_root):
     """验收 P1-1 监理 r3：author != agent_id 冒名检测。
-    用合法 agent_id+signature·但 author 填别人 → 拒。"""
+    Acceptance P1-1 supervision r3: impersonation detection when author != agent_id.
+    用合法 agent_id+signature·但 author 填别人 → 拒。
+    Uses a valid agent_id+signature · but author is someone else → rejected.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
     content = '冒名测试'
@@ -248,7 +302,9 @@ def test_daybook_append_impersonation(tmp_root):
 
 
 def test_daybook_append_signed(tmp_root):
-    """验收 P1-1：daybook_append 带 agent_id+signature 验签成功。"""
+    """验收 P1-1：daybook_append 带 agent_id+signature 验签成功。
+    Acceptance P1-1: daybook_append with agent_id+signature passes signature verification.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
     content = '签名追加的条目'
@@ -265,7 +321,9 @@ def test_daybook_append_signed(tmp_root):
 
 
 def test_daybook_append_bad_sig(tmp_root):
-    """验收 P1-1：错误签名返 isError:true。"""
+    """验收 P1-1：错误签名返 isError:true。
+    Acceptance P1-1: a wrong signature returns isError:true.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
     bad_sig = '0' * 64
@@ -284,12 +342,20 @@ def test_daybook_append_bad_sig(tmp_root):
 
 
 def test_path_traversal(tmp_root):
-    """验收 P1-3：../ 穿越拒绝。"""
+    """验收 P1-3：../ 穿越拒绝。
+    Acceptance P1-3: ../ traversal rejection.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
+    # W-75 修④：先验签后取卷名 ⇒ 须先过鉴权，方能触达「非法卷名」校验
+    # W-75 fix ④: the signature is verified before the volume name ⇒ authenticate first to reach the "illegal volume name" check
+    aid, sec = _register_test_agent(tmp_root, '穿越Agent')
+    content = 'x'
+    sig = _sign(sec, content)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '../etc/passwd', 'tag': 'x',
-                                             'author': 'x', 'content': 'x'}}}])
+                                             'author': aid, 'content': content,
+                                             'agent_id': aid, 'signature': sig}}}])
     r = out[0].get('result', {})
     if not _ok('P1-3.1 ../ 返 isError:true', r.get('isError') is True, str(r)):
         return False
@@ -298,7 +364,9 @@ def test_path_traversal(tmp_root):
 
 
 def test_unknown_tool_iserror(tmp_root):
-    """验收 P2-1：未知工具返 isError:true 而非 -32603。"""
+    """验收 P2-1：未知工具返 isError:true 而非 -32603。
+    Acceptance P2-1: an unknown tool returns isError:true rather than -32603.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': '不存在的工具', 'arguments': {}}}])
@@ -312,7 +380,9 @@ def test_unknown_tool_iserror(tmp_root):
 
 
 def test_cross_ref(tmp_root):
-    """验收 4+5：tools/list schema + cross_ref_make/verify。"""
+    """验收 4+5：tools/list schema + cross_ref_make/verify。
+    Acceptance 4+5: tools/list schema + cross_ref_make/verify.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}])
     if not _ok('4.1 tools/list 有响应', len(out) == 1):
@@ -342,16 +412,19 @@ def test_cross_ref(tmp_root):
 
 
 def test_subscribe_push(tmp_root):
-    """验收 P1+：resources/subscribe + mtime 变 → push notifications/resources/updated。"""
+    """验收 P1+：resources/subscribe + mtime 变 → push notifications/resources/updated。
+    Acceptance P1+: resources/subscribe + mtime change → push notifications/resources/updated.
+    """
     sys.path.insert(0, HERE)
     # 在进程内测 SubscriptionManager（subprocess 难测异步 push）
+    # Test SubscriptionManager in-process (asynchronous push is hard to test via subprocess)
     from mcp_subscribe import SubscriptionManager
     import mcp_resources as _res
-    _res.HERE = tmp_root  # 让 _root() 走 tmp_root
+    _res.HERE = tmp_root  # 让 _root() 走 tmp_root · make _root() use tmp_root
     os.environ['DAYBOOK_ROOT'] = tmp_root
 
     mgr = SubscriptionManager()
-    mgr.POLL_INTERVAL = 0.3  # 加速测试
+    mgr.POLL_INTERVAL = 0.3  # 加速测试 · speed up the test
 
     pushed = []
     push_lock = threading.Lock()
@@ -362,14 +435,16 @@ def test_subscribe_push(tmp_root):
 
     uri = 'daybook://测试MCP'
     mgr.subscribe(uri, push)
-    time.sleep(0.5)  # 等初始化 mtime
+    time.sleep(0.5)  # 等初始化 mtime · wait for the initial mtime
 
     # 改卷文件触发 mtime 变
+    # Modify the volume file to trigger an mtime change
     vol_path = os.path.join(tmp_root, '测试MCP.txt')
     with open(vol_path, 'a', encoding='utf-8') as f:
         f.write('[2026-10-08 04:00] [触发] [新条目] [测试] pushed-test\n')
 
     # 等 watch 线程轮询
+    # Wait for the watch thread to poll
     deadline = time.time() + 3
     while time.time() < deadline:
         with push_lock:
@@ -388,7 +463,9 @@ def test_subscribe_push(tmp_root):
 
 
 def test_prompts():
-    """验收 11：prompts/list + prompts/get。"""
+    """验收 11：prompts/list + prompts/get。
+    Acceptance 11: prompts/list + prompts/get.
+    """
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'prompts/list'}])
     if not _ok('11.1 prompts/list 有响应', len(out) == 1):
         return False
@@ -399,12 +476,14 @@ def test_prompts():
                  'cross_ref_audit', 'agent_handover')), 'names=%s' % names):
         return False
     # get 缺 required
+    # get with missing required
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'prompts/get',
                     'params': {'name': 'daily_journal', 'arguments': {}}}])
     if not _ok('11.3 prompts/get 缺 required 报错',
                out[0].get('error', {}).get('code') == -32602, str(out[0])):
         return False
     # get 正常
+    # get normally
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'prompts/get',
                     'params': {'name': 'daily_journal',
                                'arguments': {'author': 'GLM-5.2', 'tag': 'MCP'}}}])
@@ -414,7 +493,9 @@ def test_prompts():
 
 
 def test_notification_batch(tmp_root):
-    """验收 12：notification 不回·batch 处理。"""
+    """验收 12：notification 不回·batch 处理。
+    Acceptance 12: notifications get no reply · batch handling.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'method': 'ping'}])
     if not _ok('12.1 notification 不回响应', len(out) == 0, 'out=%s' % out):
@@ -427,7 +508,9 @@ def test_notification_batch(tmp_root):
 
 
 def test_no_shutdown_method(tmp_root):
-    """验收 P2-2：shutdown 方法已删·应返 method not found。"""
+    """验收 P2-2：shutdown 方法已删·应返 method not found。
+    Acceptance P2-2: the shutdown method has been removed · should return method not found.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'shutdown'}])
     if not _ok('P2-2.1 shutdown 有响应', len(out) == 1):
@@ -438,31 +521,40 @@ def test_no_shutdown_method(tmp_root):
 
 
 def test_audit_vol_isolation(tmp_root):
-    """验收 监理 r4：AUDIT_VOL 走 _root()·隔离测试审计不混进生产。"""
+    """验收 监理 r4：AUDIT_VOL 走 _root()·隔离测试审计不混进生产。
+    Acceptance supervision r4: AUDIT_VOL goes through _root() · isolated test audits do not mix into production.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     # 跑一次 tools/call 触发审计
+    # Run tools/call once to trigger an audit
     _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
             'params': {'name': 'daybook_list', 'arguments': {}}}])
     # tmp_root 应有 MCP审计卷.txt
+    # tmp_root should have MCP审计卷.txt
     tmp_audit = os.path.join(tmp_root, 'MCP审计卷.txt')
     if not _ok('r4.1 隔离卷有审计记录', os.path.exists(tmp_audit), tmp_audit):
         return False
     # 生产 HERE 不应被这次调用污染（只看本次调用后的新增）
+    # The production HERE must not be polluted by this call (only look at additions after this call)
     prod_audit = os.path.join(HERE, 'MCP审计卷.txt')
     if os.path.exists(prod_audit):
         with open(prod_audit, 'r', encoding='utf-8') as f:
             content = f.read()
         # 不应含本次调用的标记（daybook_list 在隔离 tmp 跑）
+        # Must not contain this call's marker (daybook_list ran in the isolated tmp)
         return _ok('r4.2 生产审计卷无本次隔离调用残留',
                    'r4-isolation-marker' not in content, '生产审计卷仍含新写入')
     return True
 
 
 def test_zero_deps():
-    """验收 13：零第三方依赖。"""
+    """验收 13：零第三方依赖。
+    Acceptance 13: zero third-party dependencies.
+    """
     third_party = ('fastapi', 'uvicorn', 'pydantic', 'aiohttp', 'starlette',
                    'httpx', 'anyio')
     # mcp_* 内部互引不违规·只看是否引外部第三方
+    # mcp_* cross-imports are not violations · only check whether external third parties are imported
     bad = []
     for f in ('mcp_transport.py', 'mcp_resources.py', 'mcp_tools.py',
               'mcp_prompts.py', 'mcp_server.py', 'mcp_subscribe.py'):
@@ -476,9 +568,12 @@ def test_zero_deps():
 
 
 def test_append_to_field(tmp_root):
-    """F1：daybook_append 带 [致] 字段·收件人寻址。"""
+    """F1：daybook_append 带 [致] 字段·收件人寻址。
+    F1: daybook_append with the [致] field · recipient addressing.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     # 先注册两个 agent：发送者 + 收件人
+    # Register two agents first: sender + recipient
     aid1, sec1 = _register_test_agent(tmp_root, '发送者')
     aid2, _ = _register_test_agent(tmp_root, '收件人')
     content = 'F1 测试·带收件人'
@@ -492,15 +587,19 @@ def test_append_to_field(tmp_root):
     if not _ok('F1.1 append 带 to 成功', not r.get('isError'), str(r)):
         return False
     # 读卷·验证含 [致=...] 段（倒数第 2 行·因 append_one 后有空行）
+    # Read the volume · verify it contains a [致=...] section (the second-to-last line · because append_one leaves a blank line)
     with open(os.path.join(tmp_root, '测试MCP.txt'), 'r', encoding='utf-8') as f:
         lines = f.read().splitlines()
     # 找最后一条含 [致= 的行
+    # Find the last line containing [致=
     to_line = next((l for l in reversed(lines) if '[致=' in l), '')
     return _ok('F1.2 卷里含 [致=%s]', '[致=%s]' % aid2 in to_line, to_line)
 
 
 def test_append_to_unknown_rejected(tmp_root):
-    """F1：收件人未注册·被拒·防垃圾寻址。"""
+    """F1：收件人未注册·被拒·防垃圾寻址。
+    F1: an unregistered recipient is rejected · prevents spam addressing.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     aid, sec = _register_test_agent(tmp_root, '发送者')
     content = 'F1 拒测'
@@ -516,10 +615,13 @@ def test_append_to_unknown_rejected(tmp_root):
 
 
 def test_unread_mark_read(tmp_root):
-    """F2：已读未读游标推进。"""
+    """F2：已读未读游标推进。
+    F2: read/unread cursor advancement.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     aid, sec = _register_test_agent(tmp_root, '读者')
     # 先写 2 条新内容
+    # Write 2 new pieces of content first
     sig1 = _sign(sec, 'F2 条目1')
     _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
            'params': {'name': 'daybook_append',
@@ -533,15 +635,19 @@ def test_unread_mark_read(tmp_root):
                                     'author': aid, 'content': 'F2 条目2',
                                     'agent_id': aid, 'signature': sig2}}}])
     # 查未读·应含刚写的 2 条 F2 内容（可能含初始 3 条·因游标从 0 起）
-    sig_q = _sign(sec, aid)  # 签 agent_id 自己
+    # Query unread · should contain the 2 just-written F2 entries (may include the initial 3 · because the cursor starts at 0)
+    ts_q = int(time.time())
+    sig_q = _sign(sec, 'unread:%s:%d' % (aid, ts_q))  # W-75 修④：签名覆盖 "unread:<agent>:<ts>"
+                                                      # W-75 fix ④: the signature covers "unread:<agent>:<ts>"
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
                     'params': {'name': 'daybook_unread',
-                               'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_q}}}])
+                               'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_q, 'ts': ts_q}}}])
     r = out[0].get('result', {})
     text = r.get('content', [{}])[0].get('text', '')
     if not _ok('F2.1 unread 返含新写的 2 条', 'F2 条目1' in text and 'F2 条目2' in text, text):
         return False
     # mark_read 推进游标
+    # mark_read advances the cursor
     sig_mr = _sign(sec, 'read:测试MCP')
     out2, _ = _rpc([{'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
                      'params': {'name': 'daybook_mark_read',
@@ -550,19 +656,23 @@ def test_unread_mark_read(tmp_root):
     if not _ok('F2.2 mark_read 成功', '已读推进' in r2.get('content', [{}])[0].get('text', ''), str(r2)):
         return False
     # 再查未读·应返 0 条（mark_read 推到末尾·无新内容）
+    # Query unread again · should return 0 entries (mark_read advanced to the end · no new content)
     out3, _ = _rpc([{'jsonrpc': '2.0', 'id': 5, 'method': 'tools/call',
                      'params': {'name': 'daybook_unread',
-                                'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_q}}}])
+                                'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_q, 'ts': ts_q}}}])
     r3 = out3[0].get('result', {})
     text3 = r3.get('content', [{}])[0].get('text', '')
     return _ok('F2.3 mark_read 后未读为 0', '未读 0 条' in text3, text3)
 
 
 def test_heartbeat_alive(tmp_root):
-    """F3：心跳 + 探活。"""
+    """F3：心跳 + 探活。
+    F3: heartbeat + liveness probing.
+    """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     aid, sec = _register_test_agent(tmp_root, '心跳Agent')
     # 探活前·心跳卷不存在 → offline
+    # Before probing · the heartbeat volume does not exist → offline
     out0, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                      'params': {'name': 'daybook_alive',
                                 'arguments': {'agent_id': aid, 'timeout': 60}}}])
@@ -571,14 +681,18 @@ def test_heartbeat_alive(tmp_root):
     if not _ok('F3.1 初始无心跳 → offline', 'offline' in text0, text0):
         return False
     # append 心跳
-    sig = _sign(sec, 'heartbeat')
+    # Append a heartbeat
+    ts = int(time.time())
+    sig = _sign(sec, 'heartbeat:%d' % ts)  # W-75 修④：签名覆盖 "heartbeat:<ts>"
+                                           # W-75 fix ④: the signature covers "heartbeat:<ts>"
     out1, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
                      'params': {'name': 'daybook_heartbeat',
-                                'arguments': {'agent_id': aid, 'signature': sig, 'load': '0.3'}}}])
+                                'arguments': {'agent_id': aid, 'signature': sig, 'load': '0.3', 'ts': ts}}}])
     r1 = out1[0].get('result', {})
     if not _ok('F3.2 heartbeat append 成功', 'heartbeat appended' in r1.get('content', [{}])[0].get('text', ''), str(r1)):
         return False
     # 探活·应 online
+    # Probe liveness · should be online
     out2, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
                      'params': {'name': 'daybook_alive',
                                 'arguments': {'agent_id': aid, 'timeout': 3600}}}])

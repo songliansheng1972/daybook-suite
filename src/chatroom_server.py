@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 D 3.0 极简聊天室·后端
+D 3.0 minimal chatroom · backend
 - 黑色 IDE 风格
+- Black IDE style
 - append-only 聊天室.txt
 - 多角色: 汤姆/老宋/史泰龙
+- Multiple roles: 汤姆/老宋/史泰龙
 - 工单流转测试
+- Work-order flow test
 """
 import http.server
 import json
@@ -19,7 +23,9 @@ HTML_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chatroom.h
 
 
 def append_chat(role, author, text):
-    """原子 append 到聊天室.txt"""
+    """原子 append 到聊天室.txt
+    Atomically append to 聊天室.txt
+    """
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] [{role}] [{author}] {text}\n"
     with open(CHAT_FILE, "a", encoding="utf-8") as f:
@@ -65,6 +71,7 @@ class ChatHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(content)
         except FileNotFoundError:
             # 空聊天室
+            # Empty chatroom
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
@@ -90,6 +97,7 @@ class ChatHandler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, format, *args):
         # 静默日志
+        # Silent logging
         pass
 
 
@@ -100,6 +108,7 @@ class ReusableTCPServer(socketserver.TCPServer):
 def main():
     if not os.path.exists(CHAT_FILE):
         # 初始化聊天室·卷首
+        # Initialize the chatroom · volume header
         append_chat("系统", "D3.0", "聊天室启动·黑色IDE风格·append-only持久")
         append_chat("系统", "D3.0", "参与者: 汤姆[判]/老宋[裁]/史泰龙[施]")
 

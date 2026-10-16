@@ -78,8 +78,8 @@ python3 daybook.py 编排 selftest            # 端到端自检
 `--root DIR` 指定卷根（默认本包自身）；`--rule/--roles` 换路由表/角色表。
 
 两张表（纯文本·人可读可改，不藏在码里）：
-- `orchestration_routing.conf`：`类[：关键词] = 角色`（如 `报=复审`、`报:驳回=返工`）
-- `orchestration_roles.conf`：`角色 = 人/agent_id 列表`，含 `@非作者:施工`（实现「不自审」）
+- `orchestration_routing.conf`：`类[：关键词] = 角色`（如 `报=review`、`报:驳回=rework`）
+- `orchestration_roles.conf`：`角色 = 人/agent_id 列表`，含 `@non-author:build`（实现「不自审」）
 
 ---
 
@@ -128,7 +128,7 @@ python3 daybook.py 编排 selftest            # 端到端自检
 ## 七、已知边界
 
 - 路由只对**已知类**确定性；未命中类的条落「广播」，不猜。
-- `@非作者` 只在**两个以上**候选时可算唯一/多手；一名候选时退「待定」，不猜。
+- `@non-author` 只在**两个以上**候选时可算唯一/多手；一名候选时退「待定」，不猜。
 - 锁 `flock` 是进程级互斥，跨主机并发须靠共享文件系统或上层协调（与 daybook「一人一账本」定位一致）。
 - 与 `agent_message.py` 的 socket 推送是**可接**关系（本件未强绑，避免引服务）。
 

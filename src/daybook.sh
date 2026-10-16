@@ -1,9 +1,14 @@
 #!/bin/sh
 # Daybook · 起居注索引器（POSIX sh + awk）
+# Daybook · qijuzhu indexer (POSIX sh + awk)
 # 只用 sh、awk、cat —— 凡有 Unix 的地方皆有。1970s 至今。
+# Only sh, awk and cat — present wherever Unix is. From the 1970s to today.
 # 用法：sh daybook.sh [卷名=路径 ...]
+# Usage: sh daybook.sh [volume=path ...]
 #   不给参数则读 daybook.conf（若有）。
-# 输出：开发卷/索引_<卷>卷.tsv 与 开发卷/volumes.md
+#   With no arguments it reads daybook.conf (if present).
+# 输出：开发卷/index_<volume>.tsv 与 开发卷/volumes.md
+# Output: 开发卷/index_<volume>.tsv and 开发卷/volumes.md
 
 OUT=开发卷
 [ -d "$OUT" ] || mkdir -p "$OUT"
@@ -22,7 +27,7 @@ TOTAL=0
 for pair in $LIST; do
   VOL=${pair%%=*}; PATHV=${pair#*=}
   [ -f "$PATHV" ] || continue
-  IDF="$OUT/索引_${VOL}卷.tsv"
+  IDF="$OUT/index_${VOL}.tsv"
   printf '卷\t行号\t时间\t类\t标题\n' > "$IDF"
   awk -v vol="$VOL" '
     /^\[[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]\]/ {
@@ -42,7 +47,7 @@ for pair in $LIST; do
     }' "$PATHV" >> "$IDF"
   N=$(awk 'END{print NR-1}' "$IDF")
   TOTAL=$((TOTAL+N))
-  echo "| ${VOL}卷 | $N | 索引_${VOL}卷.tsv |" >> "$OUT/volumes.md"
+  echo "| ${VOL}卷 | $N | index_${VOL}.tsv |" >> "$OUT/volumes.md"
   echo "  ${VOL}卷 $N 条"
 done
 echo "| **合计** | **$TOTAL** | |" >> "$OUT/volumes.md"

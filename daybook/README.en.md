@@ -1,6 +1,6 @@
 # QIJUZHU · DAYBOOK
 
-> **Version note:** v3.1 is a single-machine prototype for a local plain-text memory workflow. Concurrency recovery, permission control, identity authorization, and formal enterprise stress testing have not been completed.
+> **Version note:** v3.2 is a single-machine prototype for a local plain-text memory workflow. Concurrency recovery, permission control, identity authorization, and formal enterprise stress testing have not been completed.
 
 ## Three numbers
 
@@ -103,21 +103,21 @@ TXT, MD, log, rst, no extension — all work.
 Markdown headings can also become entries:
 
 ```
-[条目]
-头正则=^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]
-附头正则=^#{1,3}
-字段=卷,行号,时间,类,标题,图数,层次
+[entries]
+head_regex=^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]
+extra_head_regex=^#{1,3}
+fields=volume,line,time,category,title,image_count,level
 
-[规则]
-类=tag:1
-标题=tag:2
-图数=count:![
-层次=depth
+[rules]
+category=tag:1
+title=tag:2
+image_count=count:![
+level=depth
 ```
 
 ## Customer-defined fields
 
-Write a line in `daybook.conf` to add a column. Three built-ins: 卷, 行号, 时间.
+Write a line in `daybook.conf` to add a column. Three built-ins: `volume`, `line`, `time`.
 Give each new field a rule:
 
 ```
@@ -157,9 +157,9 @@ Volumes can be stored at a user-chosen path and opened with standard text editor
 On top of the flat index, an optional **hierarchical directory** supports drill-down without pulling a whole volume:
 
 ```bash
-python3 daybook.py multiindex              # 多级/<volume>_目录.md(.tsv) + 总目录.md
-python3 daybook.py multiindex --卷 协作     # only that volume (smaller output)
-python3 daybook.py multiindex --序 子       # cross-volume digest, "by class" view only
+python3 daybook.py multiindex              # multilevel/<volume>_catalog.md(.tsv) + catalog.md
+python3 daybook.py multiindex --volume 协作     # only that volume (smaller output)
+python3 daybook.py multiindex --order 子       # cross-volume digest, "by class" view only
 ```
 
 Levels run **volume → class (second level) → entry**; the cross-volume digest adds three views — **by class / by month / by author**. All output is **derived data** (deletable and rebuildable); *the index is a catalogue, not the record*. In `watch` mode the directory is rebuilt automatically after a volume changes. Zero dependencies, deterministic (same index source yields the same output).

@@ -7,7 +7,7 @@
 样本卷默认路径在 `daybook.conf` 已配置，直接使用即可。
 
 ```ini
-[卷]
+[volumes]
 协作=sample/协作卷.txt
 语汇=sample/语汇卷.txt
 百科=sample/百科卷.txt

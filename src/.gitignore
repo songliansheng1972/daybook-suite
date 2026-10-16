@@ -2,6 +2,8 @@
 .venv/
 
 # Backups
+backup/
+# Legacy Chinese name (still generated on legacy paths, kept for compatibility)
 备份/
 
 # Raw conversation archives
@@ -46,9 +48,14 @@ __pycache__/
 
 # Runtime residue (in-tree runs generate these; never publish)
 .safeio_lock.*
+# Cursors (English canonical; legacy Chinese name kept for compatibility)
+.cursor_*.json
 .游标_*.json
 volumes.md
+# Generated indexes (English canonical; legacy Chinese name kept for compatibility)
+index_*
 索引_*
+multilevel/
 多级/
 消息卷.txt
 j2_红证.txt

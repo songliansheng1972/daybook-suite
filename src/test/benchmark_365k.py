@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Reproducible local full-read and index benchmark for a one-year daybook."""
+"""Reproducible local full-read and index benchmark for a one-year daybook.
+一年期 daybook 的可复现本地全量读取与索引基准测试。"""
 import os
 import platform
 import statistics
@@ -35,26 +36,26 @@ def create_volume(path):
 
 def make_conf():
     return {
-        '卷': {'年度基准': '365k.txt'},
-        '条目': {
-            '头正则': r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]',
-            '标正则': r'^\[[^\]]+\]\s*\[([^\]]+)\]\s*\[([^\]]*)\]',
-            '字段': '卷,行号,时间,类,标题',
+        'volumes': {'年度基准': '365k.txt'},
+        'entries': {
+            'head_regex': r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]',
+            'tag_regex': r'^\[[^\]]+\]\s*\[([^\]]+)\]\s*\[([^\]]*)\]',
+            'fields': 'volume,line,time,category,title',
         },
-        '规则': {'类': 'tag:1', '标题': 'tag:2'},
-        '索引': {
-            '输出目录': '开发卷',
-            '索引前缀': '索引_',
-            '清单名': 'volumes.md',
+        'rules': {'category': 'tag:1', 'title': 'tag:2'},
+        'index': {
+            'out_dir': '开发卷',
+            'index_prefix': 'index_',
+            'manifest': 'volumes.md',
         },
-        '触发': {'增量索引': '是'},
+        'trigger': {'incremental': '是'},
     }
 
 
 def verify_index(path):
     with open(path, encoding='utf-8') as index_file:
         header = next(index_file).rstrip('\n').split('\t')
-        if header != ['卷', '行号', '时间', '类', '标题']:
+        if header != ['volume', 'line', 'time', 'category', 'title']:
             raise AssertionError('Unexpected index header: %r' % header)
         count = 0
         for count, line in enumerate(index_file, 1):
@@ -91,8 +92,8 @@ def main():
 
         build_seconds = []
         conf = make_conf()
-        index_path = os.path.join(root, '开发卷', '索引_年度基准卷.tsv')
-        cursor_path = os.path.join(root, '开发卷', '.游标_年度基准.json')
+        index_path = os.path.join(root, '开发卷', 'index_年度基准.tsv')
+        cursor_path = os.path.join(root, '开发卷', '.cursor_年度基准.json')
         for _ in range(3):
             for path in (index_path, cursor_path):
                 if os.path.exists(path):

@@ -3,15 +3,22 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """MCP Prompts（W-DB-023-G2·第 4 项）
+MCP Prompts (W-DB-023-G2 · Item 4)
 ================================================
 - 暴露 daybook 模板 prompts
+- Exposes the daybook template prompts
 - prompts/list：列所有 prompt
+- prompts/list: list all prompts
 - prompts/get：取 prompt 内容（按参数填充模板）
+- prompts/get: fetch prompt content (fill the template by arguments)
 - 模板用 {占位符} 风格·str.format
+- Templates use the {placeholder} style · str.format
 - 零依赖：仅用 Python 3 标准库
+- Zero dependencies: Python 3 standard library only
 """
 
 # Prompt 模板清单
+# Prompt template catalog
 PROMPTS = [
     {
         'name': 'daily_journal',
@@ -87,7 +94,9 @@ PROMPTS = [
 
 
 def list_prompts():
-    """列所有 prompt·schema 风格。"""
+    """列所有 prompt·schema 风格。
+    List all prompts · schema style.
+    """
     out = []
     for p in PROMPTS:
         out.append({
@@ -99,17 +108,22 @@ def list_prompts():
 
 
 def get_prompt(name, args=None):
-    """取 prompt 内容·args 是 dict·按 template 填充。"""
+    """取 prompt 内容·args 是 dict·按 template 填充。
+    Fetch prompt content · args is a dict · fill according to the template.
+    """
     args = args or {}
     for p in PROMPTS:
         if p['name'] == name:
             # 校验 required
+            # Validate required
             for a in p['arguments']:
                 if a.get('required') and a['name'] not in args:
                     raise ValueError('缺少必填参数：%s' % a['name'])
             # 填充模板·缺失的占位符用空串
+            # Fill the template · missing placeholders become empty strings
             tpl = p['template']
             # 收集所有 {xxx} 占位符
+            # Collect all {xxx} placeholders
             import re
             keys = set(re.findall(r'\{(\w+)\}', tpl))
             fill = {k: args.get(k, '') for k in keys}

@@ -3,24 +3,32 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """任务状态卷（W-DB-023-G3·第 2 项）
+Task status volume (W-DB-023-G3 · item 2)
 ================================================
 - 任务流转状态机：待办 → 进行中 → 完成 → 待审 → 已审
+  Task-flow state machine: 待办 → 进行中 → 完成 → 待审 → 已审
 - 任务卷 append-only·不改历史（状态变更只追加·不删不修改）
+  The task volume is append-only · history is never rewritten (state changes only append · nothing deleted or modified)
 - 零依赖：仅用 Python 3 标准库
+  Zero dependencies: only the Python 3 standard library
 
 任务卷.txt 格式（每行一条·append-only）：
+Task volume (任务卷.txt) format (one entry per line · append-only):
   [时间] [任务] [T001] [待办] [agent_id] 内容
   [时间] [任务] [T001] [进行中] [agent_id] 开始实现
   [时间] [任务] [T001] [完成] [agent_id] 提交·待审
   [时间] [任务] [T001] [已审] [agent_id] 通过
 
 合法状态：待办 / 进行中 / 完成 / 待审 / 已审
+Legal states: 待办 / 进行中 / 完成 / 待审 / 已审
 合法迁移：
+Legal transitions:
   待办 → 进行中 → 完成 → 待审 → 已审
-  待审 → 进行中  # 审方驳回·返工
-  任何 → 取消    # 强制取消（append-only 留痕）
+  待审 → 进行中  # 审方驳回·返工 · reviewer rejects · rework
+  任何 → 取消    # 强制取消（append-only 留痕）· forced cancel (leaves a trace, append-only)
 
 用法：
+Usage:
   tv = TaskVolume('任务卷.txt')
   tid = tv.create('agent_id_xxx', '实现 MCP resources/list')
   tv.transition(tid, '进行中', 'agent_id_xxx', '开始实现')
@@ -30,14 +38,14 @@ import os, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# 状态机：键=当前状态·值=合法后继
+# 状态机：键=当前状态·值=合法后继 · state machine: key=current state · value=legal successors
 STATE_MACHINE = {
     '待办':   {'进行中'},
     '进行中': {'完成', '取消'},
     '完成':   {'待审', '取消'},
-    '待审':   {'已审', '进行中'},  # 通过/驳回
-    '已审':   set(),               # 终态
-    '取消':   set(),               # 终态
+    '待审':   {'已审', '进行中'},  # 通过/驳回 · pass/reject
+    '已审':   set(),               # 终态 · terminal state
+    '取消':   set(),               # 终态 · terminal state
 }
 ALL_STATES = set(STATE_MACHINE.keys())
 
@@ -47,14 +55,16 @@ def _now():
 
 
 class TaskVolume:
-    """任务状态卷·append-only。"""
+    """任务状态卷·append-only。
+    Task status volume · append-only."""
     def __init__(self, path=None):
         self.path = path or os.path.join(HERE, '任务卷.txt')
         if not os.path.exists(self.path):
             open(self.path, 'a', encoding='utf-8').close()
 
     def _read_all(self):
-        """单遍扫描任务卷·构建 (tid -> list of (时间, 状态, agent, 内容))。"""
+        """单遍扫描任务卷·构建 (tid -> list of (时间, 状态, agent, 内容))。
+        Single-pass scan of the task volume · builds (tid -> list of (time, state, agent, content))."""
         tasks = {}
         if not os.path.exists(self.path):
             return tasks
@@ -64,8 +74,8 @@ class TaskVolume:
             line = line.rstrip('\n')
             if not line.startswith('['):
                 continue
-            # [时间] [任务] [T001] [状态] [agent] 内容
-            # split(']') 后 strip·留非空
+            # [时间] [任务] [T001] [状态] [agent] 内容 · [time] [task] [T001] [state] [agent] content
+            # split(']') 后 strip·留非空 · split on ']' then strip · keep non-empty
             parts = [p.strip(' []') for p in line.split(']') if p.strip()]
             if len(parts) < 5:
                 continue
@@ -75,7 +85,8 @@ class TaskVolume:
         return tasks
 
     def _next_tid(self):
-        """下一个任务 ID：T001, T002, ..."""
+        """下一个任务 ID：T001, T002, ...
+        The next task ID: T001, T002, ..."""
         tasks = self._read_all()
         if not tasks:
             return 'T001'
@@ -86,7 +97,8 @@ class TaskVolume:
         return 'T%d' % (max_n + 1)
 
     def create(self, agent_id, content):
-        """创建任务·状态=待办。返回 task_id。"""
+        """创建任务·状态=待办。返回 task_id。
+        Create a task · state=待办. Returns task_id."""
         from safeio import locked
         with locked(self.path):
             tid = self._next_tid()
@@ -96,7 +108,8 @@ class TaskVolume:
         return tid
 
     def transition(self, tid, new_state, agent_id, note=''):
-        """状态迁移。违例 raise。"""
+        """状态迁移。违例 raise。
+        State transition. Raises on violation."""
         if new_state not in ALL_STATES:
             raise ValueError('非法状态：%s' % new_state)
         from safeio import locked
@@ -119,7 +132,8 @@ class TaskVolume:
         return True
 
     def list(self, state=None):
-        """列出任务·可按状态过滤。返回 [(tid, 当前状态, 当前负责人, 当前内容, 历史)]。"""
+        """列出任务·可按状态过滤。返回 [(tid, 当前状态, 当前负责人, 当前内容, 历史)]。
+        List tasks · optionally filtered by state. Returns [(tid, current_state, current_owner, current_content, history)]."""
         tasks = self._read_all()
         out = []
         for tid, hist in tasks.items():

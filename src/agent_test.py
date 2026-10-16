@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Agent 协作底座集成测试（W-DB-023-G3·第 7 项）
+Agent collaboration base integration test (W-DB-023-G3 · item 7)
 ================================================
 覆盖工单验收标准 7 项：
+Covers the 7 ticket acceptance criteria:
   1. 3 个 Agent 可同时注册·各自独立身份
+     3 agents can register concurrently · each with an independent identity
   2. 任务卷可流转：待办→进行中→完成→待审→已审
+     The task volume flows: 待办→进行中→完成→待审→已审
   3. 跨卷引用可解析+校验 SHA-256
+     Cross-volume references parse + verify SHA-256
   4. Agent A 写卷后·Agent B 收到 notify
+     After Agent A writes a volume, Agent B receives a notify
   5. 文件锁可防多 Agent 同时改一任务
+     The file lock prevents multiple agents from editing one task simultaneously
   6. Agent 心跳 > 3 周期不跳 → 标 dead
+     An agent heartbeat missing > 3 periods → marked dead
   7. 零第三方依赖
+     Zero third-party dependencies
 退出码：0=PASS 1=FAIL
+Exit code: 0=PASS 1=FAIL
 """
 import os, sys, time, tempfile, shutil, subprocess, threading
 
@@ -24,25 +34,26 @@ def _ok(name, cond, detail=''):
 
 
 def test_agent_registry(tmp):
-    """验收 1：3 个 Agent 同时注册·各自独立身份；验收 7：零依赖。"""
+    """验收 1：3 个 Agent 同时注册·各自独立身份；验收 7：零依赖。
+    Acceptance 1: 3 agents register concurrently with independent identities; acceptance 7: zero dependencies."""
     from agent_registry import Registry
     sys.path.insert(0, HERE)
-    # import 已成功=零依赖成立
+    # import 已成功=零依赖成立 · import succeeded = zero dependencies holds
     reg = Registry(os.path.join(tmp, '注册卷.txt'))
     agents = [reg.register(n) for n in ('汤姆', '史泰龙', '皮特')]
     ids = [a[0] for a in agents]
-    # 各自独立身份：agent_id 全不同
+    # 各自独立身份：agent_id 全不同 · independent identities: all agent_ids differ
     if not _ok('1.1 3 Agent 各自独立身份', len(set(ids)) == 3, 'ids=%s' % ids):
         return False
-    # 验签
+    # 验签 · verify the signature
     aid, _ = agents[0]
     sig = reg.sign(aid, 'payload-测试')
     if not _ok('1.2 签名生成+验证', reg.verify(aid, 'payload-测试', sig)):
         return False
-    # 错签名被拒
+    # 错签名被拒 · a wrong signature is rejected
     if not _ok('1.3 错签名被拒', not reg.verify(aid, 'payload-测试', sig + 'x')):
         return False
-    # 吊销后验签失败
+    # 吊销后验签失败 · verification fails after revocation
     reg.revoke(aid)
     if not _ok('1.4 吊销后验签失败', not reg.verify(aid, 'payload-测试', sig)):
         return False
@@ -50,13 +61,14 @@ def test_agent_registry(tmp):
 
 
 def test_task_volume(tmp):
-    """验收 2：任务流转 待办→进行中→完成→待审→已审。"""
+    """验收 2：任务流转 待办→进行中→完成→待审→已审。
+    Acceptance 2: task flow 待办→进行中→完成→待审→已审."""
     from task_volume import TaskVolume
     tv = TaskVolume(os.path.join(tmp, '任务卷.txt'))
     tid = tv.create('ag-tom', '实现 MCP resources/list')
     if not _ok('2.1 创建任务', tid.startswith('T')):
         return False
-    # 正向迁移
+    # 正向迁移 · forward transition
     ok = True
     try:
         tv.transition(tid, '进行中', 'ag-tom', '开工')
@@ -68,26 +80,27 @@ def test_task_volume(tmp):
         err = str(e)
     if not _ok('2.2 正向流转 待办→进行中→完成→待审→已审', ok, err if not ok else ''):
         return False
-    # 终态不可再迁
+    # 终态不可再迁 · a terminal state cannot transition again
     try:
         tv.transition(tid, '进行中', 'ag-tom', '返工')
         return _ok('2.3 终态拒迁', False, '终态不该能迁')
     except PermissionError:
         if not _ok('2.3 终态拒迁', True):
             return False
-    # 非法迁移
+    # 非法迁移 · illegal transition
     tid2 = tv.create('ag-pit', '另一任务')
     try:
-        tv.transition(tid2, '完成', 'ag-pit', '跳过')  # 待办→完成 非法
+        tv.transition(tid2, '完成', 'ag-pit', '跳过')  # 待办→完成 非法 · 待办→完成 is illegal
         return _ok('2.4 非法迁移被拒', False, '不该允许跳过进行中')
     except PermissionError:
         return _ok('2.4 非法迁移被拒', True)
 
 
 def test_cross_ref(tmp):
-    """验收 3：跨卷引用解析+SHA-256 校验。"""
+    """验收 3：跨卷引用解析+SHA-256 校验。
+    Acceptance 3: cross-volume reference parsing + SHA-256 verification."""
     from cross_ref import CrossRef
-    # 造一个测试卷
+    # 造一个测试卷 · build a test volume
     vol_path = os.path.join(tmp, '测试卷.txt')
     with open(vol_path, 'w', encoding='utf-8') as f:
         f.write('[2026-10-08 03:00] [测试] [条目A] body-a\n')
@@ -97,14 +110,14 @@ def test_cross_ref(tmp):
     ref = cr.make_ref('测试卷', 1)
     if not _ok('3.1 生成引用 [卷#L行-sha8]', ref.startswith('[测试卷#L1-') and ref.endswith(']')):
         return False
-    # 解析回来
+    # 解析回来 · parse it back
     p = cr.parse(ref)
     if not _ok('3.2 解析引用', p and p[0] == '测试卷' and p[1] == 1):
         return False
-    # 校验 hash 通过
+    # 校验 hash 通过 · hash verification passes
     if not _ok('3.3 校验 hash 通过', cr.verify('测试卷', 1, p[2])):
         return False
-    # 篡改条目→校验失败
+    # 篡改条目→校验失败 · tamper with the entry → verification fails
     with open(vol_path, 'r', encoding='utf-8') as f:
         content = f.read()
     with open(vol_path, 'w', encoding='utf-8') as f:
@@ -115,24 +128,25 @@ def test_cross_ref(tmp):
 
 
 def test_agent_message(tmp):
-    """验收 4：Agent A 写卷后 Agent B 收到 notify。"""
+    """验收 4：Agent A 写卷后 Agent B 收到 notify。
+    Acceptance 4: after Agent A writes a volume, Agent B receives a notify."""
     sys.path.insert(0, HERE)
     import agent_message as am
-    # 改 inbox 路径到 tmp
+    # 改 inbox 路径到 tmp · point the inbox path to tmp
     am.INBOX_VOL = os.path.join(tmp, '消息卷.txt')
     am.SOCK_DIR = tmp
-    # 启 B 的服务端
+    # 启 B 的服务端 · start B's server
     srv = am.AgentServer('B')
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     time.sleep(0.3)
-    # A 发 notify
+    # A 发 notify · A sends notify
     ok, reply = am.send('A', 'B', 'notify', '写完协作卷条目 12')
     srv.shutdown()
     srv.server_close()
     if not _ok('4.1 notify 送达', ok, reply or ''):
         return False
-    # inbox 卷有记录
+    # inbox 卷有记录 · the inbox volume has a record
     if not os.path.exists(am.INBOX_VOL):
         return _ok('4.2 消息卷有记录', False, '文件不存在')
     with open(am.INBOX_VOL, 'r', encoding='utf-8') as f:
@@ -141,20 +155,21 @@ def test_agent_message(tmp):
 
 
 def test_agent_lock(tmp):
-    """验收 5：文件锁防多 Agent 同时改一任务。"""
+    """验收 5：文件锁防多 Agent 同时改一任务。
+    Acceptance 5: the file lock prevents multiple agents from editing one task simultaneously."""
     from agent_lock import AgentLock
     lk = AgentLock(lock_dir=os.path.join(tmp, '.locks'),
                    lease_vol=os.path.join(tmp, '租约卷.txt'))
     lid1 = lk.acquire('task:T001', 'ag-tom', ttl=60)
     if not _ok('5.1 Agent A 获取锁', bool(lid1)):
         return False
-    # Agent B 拿不到
+    # Agent B 拿不到 · Agent B cannot acquire it
     lid2 = lk.acquire('task:T001', 'ag-pit', ttl=60)
     if not _ok('5.2 Agent B 同资源拿不到锁', lid2 is None):
         return False
-    # A 释放
+    # A 释放 · A releases
     lk.release(lid1)
-    # B 现在能拿到
+    # B 现在能拿到 · B can now acquire it
     lid3 = lk.acquire('task:T001', 'ag-pit', ttl=60)
     if not _ok('5.3 A 释放后 B 能拿到', bool(lid3)):
         return False
@@ -163,28 +178,30 @@ def test_agent_lock(tmp):
 
 
 def test_agent_heartbeat(tmp):
-    """验收 6：心跳 > 3 周期不跳 → 标 dead。"""
+    """验收 6：心跳 > 3 周期不跳 → 标 dead。
+    Acceptance 6: heartbeat missing > 3 periods → marked dead."""
     from agent_heartbeat import Heartbeat
-    # 用 1 秒周期·3 周期后死
+    # 用 1 秒周期·3 周期后死 · use a 1-second period · dead after 3 periods
     hb = Heartbeat(path=os.path.join(tmp, '心跳卷.txt'), period=1, dead_after=3)
     hb.beat('ag-tom')
     if not _ok('6.1 心跳写入后 alive', hb.is_alive('ag-tom')):
         return False
-    # 等 4 秒·超过 3 周期
+    # 等 4 秒·超过 3 周期 · wait 4 seconds · more than 3 periods
     time.sleep(4)
     if not _ok('6.2 > 3 周期不跳 → dead', not hb.is_alive('ag-tom')):
         return False
     if not _ok('6.3 dead_agents 列出', 'ag-tom' in hb.dead_agents()):
         return False
-    # 恢复
+    # 恢复 · recover
     hb.recover('ag-tom')
     return _ok('6.4 恢复后 alive', hb.is_alive('ag-tom'))
 
 
 def test_zero_deps():
-    """验收 7：零第三方依赖。"""
-    # 所有模块 import 都成功（test 启动即证明）
-    # 再扫一遍源码·确认没有 import 第三方包
+    """验收 7：零第三方依赖。
+    Acceptance 7: zero third-party dependencies."""
+    # 所有模块 import 都成功（test 启动即证明） · all module imports succeed (proven as soon as the test starts)
+    # 再扫一遍源码·确认没有 import 第三方包 · then scan the source again to confirm no third-party package is imported
     third_party_prefixes = ('fastapi', 'uvicorn', 'pydantic', 'cryptography',
                             'rsa', 'numpy', 'pandas', 'requests', 'aiohttp')
     bad = []

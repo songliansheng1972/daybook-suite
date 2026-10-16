@@ -61,8 +61,8 @@ any ─▶ cancelled (append-only, leaves a trace)
 ### 4. Two tables (plain text · human-readable and editable · **never buried in code**)
 
 - **`orchestration_routing.conf`**: `class[:keyword] = role`
-  (e.g. `报=复审` · `报:驳回=返工` · `审=终审` · `裁=广播`)
-- **`orchestration_roles.conf`**: `role = person list`, including **`@非作者:角色`** (implements "**no self-review**")
+  (e.g. `报=review` · `报:驳回=rework` · `审=final` · `裁=broadcast`)
+- **`orchestration_roles.conf`**: `role = person list`, including **`@non-author:role`** (implements "**no self-review**")
 
 ### 5. Three commandments
 
@@ -107,7 +107,7 @@ python3 orchestrator.py alarm            # health check
 ## Boundaries (honest)
 
 - Routing is deterministic **only for known classes**; unmatched entries fall to "broadcast" — **no guessing**.
-- `@非作者` needs **≥2 candidates**; a single candidate falls to "pending" — **no guessing**.
+- `@non-author` needs **≥2 candidates**; a single candidate falls to "pending" — **no guessing**.
 - `flock` is **process-level** mutual exclusion; cross-host requires a shared filesystem or higher-level coordination (consistent with daybook's "one ledger per person" stance).
 - The socket push in `agent_message.py` is **optional/attachable** (not hard-bound here, to avoid pulling in a service).
 
@@ -125,7 +125,7 @@ with **deterministic table lookup**.
 
 ## Version
 
-`版本.txt`: a package's version = **the sum of lines of its product `.py` files** (daybook's old rule; recomputable).
+`version.txt` (formerly `版本.txt`): a package's version = **the sum of lines of its product `.py` files** (daybook's old rule; recomputable).
 
 ## License
 
