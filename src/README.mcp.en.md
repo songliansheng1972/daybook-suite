@@ -68,7 +68,7 @@ Absent a directory, resources are not listed and the tool returns a friendly hin
 |---|---|
 | Transport | JSON-RPC 2.0 over newline-delimited **stdio** |
 | Protocol version | MCP `2024-11-05` |
-| Server name | `daybook-mcp` (`1.8.1`) |
+| Server name | `daybook-mcp` (`3.2.1` — suite semantic version) |
 | Capabilities | `resources` (listChanged, **subscribe**) · `tools` · `prompts` |
 | Dependencies | **Zero** (Python 3 standard library only; hand-rolled JSON-RPC, no MCP SDK) |
 

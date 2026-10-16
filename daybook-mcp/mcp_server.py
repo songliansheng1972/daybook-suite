@@ -35,7 +35,8 @@ from mcp_subscribe import MANAGER as SUBS
 
 SERVER_INFO = {
     'name': 'daybook-mcp',
-    'version': '1.8.1',  # 修复版 r2 · fix revision r2
+    'version': '3.2.1',  # ＝套件语义版本（与 src/pack.py SUITE_VERSION 同源同发）
+                       # = suite semantic version (same source, released together with src/pack.py SUITE_VERSION)
 }
 PROTOCOL_VERSION = '2024-11-05'  # MCP 协议版本 · MCP protocol version
 CAPABILITIES = {

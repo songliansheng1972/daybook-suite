@@ -60,7 +60,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '3.2'
+SUITE_VERSION = '3.2.1'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)
@@ -118,8 +118,12 @@ PACKAGES = {
         ],
         # README.en.md：旗舰包亦须中英双 README（与 mcp/orch 一致·#470 观察①补装）
         # README.en.md: the flagship package also needs bilingual Chinese/English READMEs (consistent with mcp/orch · added per #470 observation ①)
+        # I18N.md / CHANGELOG.md：包内 conf 注释点名「对照表见 I18N.md」⇒ 必须随包
+        # （否则「自包含」承诺破·死链）；CHANGELOG.md 亦属对外说明书·同随。
+        # I18N.md / CHANGELOG.md: the in-package conf comments point to "see I18N.md" ⇒ must ship
+        # (otherwise the "self-contained" promise breaks · dangling link); CHANGELOG.md is likewise user-facing · shipped too.
         'doc': ['LICENSE', 'README.md', 'README.en.md', 'LICENSING.md',
-                'volume_format_spec.md', 'CLA.md'],
+                'volume_format_spec.md', 'CLA.md', 'I18N.md', 'CHANGELOG.md'],
         'sub': SAMPLE,
     },
     'mcp': {
@@ -143,8 +147,10 @@ PACKAGES = {
             # #314-C · mcp package sample conf · copied with rename to daybook.conf · does not pollute the source's real daybook.conf ledger
             (['daybook.sample.conf'], 'daybook.conf'),
         ],
+        # I18N.md / CHANGELOG.md 随包（与本包 conf 注释「见 I18N.md」对齐）
+        # I18N.md / CHANGELOG.md ship with the package (aligned with this package's conf comment "see I18N.md")
         'doc': ['LICENSE', 'LICENSING.md', 'volume_format_spec.md',
-                'CLA.md'],
+                'CLA.md', 'I18N.md', 'CHANGELOG.md'],
         'doc_rename': [
             (['README.mcp.md'], 'README.md'),
             (['README.mcp.en.md'], 'README.en.md'),
@@ -168,7 +174,10 @@ PACKAGES = {
             # W-DB-025: orch's LICENSE is copied in from LICENSE.orch (AGPL-3.0); the daybook/mcp packages' LICENSE stays MIT
             (['LICENSE.orch'], 'LICENSE'),
         ],
-        'doc': ['LICENSING.md', 'volume_format_spec.md', 'CLA.md'],
+        # 三包同源同发一致：I18N.md / CHANGELOG.md 亦随本包
+        # Consistent across the three packages (one source, released together): I18N.md / CHANGELOG.md ship here too
+        'doc': ['LICENSING.md', 'volume_format_spec.md', 'CLA.md',
+                'I18N.md', 'CHANGELOG.md'],
         'sub': SAMPLE,
     },
 }
