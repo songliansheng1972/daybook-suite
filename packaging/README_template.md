@@ -54,6 +54,16 @@ pip install @@DIST@@
 
 逐件以文件头 `SPDX-License-Identifier` 为准；包内另附 `LICENSING.md`（分层说明）。
 
+## 发行名归属（官方渠道声明）
+
+`@@DIST@@` 是版权持有人（手艺人老宋）注册并持有的**官方发行名**。判 official 三条须同时成立：
+
+1. PyPI 页 `Homepage` 指向 <https://daybooksuite.com>；
+2. PyPI 页 `Repository`／`Source` 指向 <https://github.com/songliansheng1972/daybook-suite>；
+3. GitHub Release 的 tag 与仓库 `CHANGELOG.md` 的版本号对得上。
+
+其余渠道上的同名包**均非官方**，不得以之名作「官方／兼容／认证」背书。
+
 ## 链接
 
 - 官网：<https://daybooksuite.com>
