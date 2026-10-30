@@ -60,7 +60,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '3.2.3'
+SUITE_VERSION = '3.2.4'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)
@@ -123,7 +123,11 @@ PACKAGES = {
         # I18N.md / CHANGELOG.md: the in-package conf comments point to "see I18N.md" ⇒ must ship
         # (otherwise the "self-contained" promise breaks · dangling link); CHANGELOG.md is likewise user-facing · shipped too.
         'doc': ['LICENSE', 'README.md', 'README.en.md', 'LICENSING.md',
-                'volume_format_spec.md', 'CLA.md', 'I18N.md', 'CHANGELOG.md'],
+                'volume_format_spec.md', 'CLA.md', 'I18N.md', 'CHANGELOG.md',
+                # 名之正本（商标口径·含发行名申请范围）·与 LICENSING.md §五 互指·须随包
+                # Trademark statement (the "name" source of truth, incl. distribution-name filing scope);
+                # cross-referenced by LICENSING.md §5 · must ship
+                'TRADEMARK.md'],
         'sub': SAMPLE,
     },
     'mcp': {
@@ -150,7 +154,7 @@ PACKAGES = {
         # I18N.md / CHANGELOG.md 随包（与本包 conf 注释「见 I18N.md」对齐）
         # I18N.md / CHANGELOG.md ship with the package (aligned with this package's conf comment "see I18N.md")
         'doc': ['LICENSE', 'LICENSING.md', 'volume_format_spec.md',
-                'CLA.md', 'I18N.md', 'CHANGELOG.md'],
+                'CLA.md', 'I18N.md', 'CHANGELOG.md', 'TRADEMARK.md'],
         'doc_rename': [
             (['README.mcp.md'], 'README.md'),
             (['README.mcp.en.md'], 'README.en.md'),
@@ -177,7 +181,7 @@ PACKAGES = {
         # 三包同源同发一致：I18N.md / CHANGELOG.md 亦随本包
         # Consistent across the three packages (one source, released together): I18N.md / CHANGELOG.md ship here too
         'doc': ['LICENSING.md', 'volume_format_spec.md', 'CLA.md',
-                'I18N.md', 'CHANGELOG.md'],
+                'I18N.md', 'CHANGELOG.md', 'TRADEMARK.md'],
         'sub': SAMPLE,
     },
 }
