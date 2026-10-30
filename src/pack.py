@@ -60,7 +60,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '3.2.1'
+SUITE_VERSION = '3.2.2'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)

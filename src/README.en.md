@@ -104,7 +104,7 @@ Markdown headings can also become entries:
 
 ```
 [entries]
-head_regex=^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]
+head_regex=^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]
 extra_head_regex=^#{1,3}
 fields=volume,line,time,category,title,image_count,level
 

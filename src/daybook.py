@@ -42,6 +42,19 @@ import io, os, re, sys, time, hashlib, json, shutil
 ENC_REPORT = []
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# ── 条目头默认口径（唯一真源）─────────────────────────────────
+# ── Default entry-head pattern (single source of truth). ──
+# ★ v3.2.2：默认口径放宽为「秒可选」。原先只认到分钟，而本套件的写入器
+#   （daybook_append.py / 心跳 / 锁 / 消息 / MCP）都写「时:分:秒」，任务卷
+#   （task_volume.py）写「时:分」——两种精度都是合法写法，只认一种必吞另一半。
+#   ⇒ 任何「只认一种精度」的默认值都是错的，故缺省同时容纳两种。
+# ★ v3.2.2: the default widens to "seconds optional". The suite's writers emit
+#   "HH:MM:SS" (append/heartbeat/lock/message/MCP) while the task volume emits
+#   "HH:MM" — both are legal forms here, so any single-precision default drops
+#   half the entries. This one accepts both.
+DEFAULT_HEAD_REGEX = r'^(?:\[#\d+\][ ]*)?\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]'
+
+
 # ── 别名归一（英文为准·中文兼容）─────────────────────────────
 # ── Alias normalisation (English canonical · Chinese legacy). ──
 # ★ 唯一入口：load_conf()。下游一律只见英文名。
@@ -181,6 +194,56 @@ def _legacy_cursor_path(outdir, vol):
     """旧中文名游标（只读兼容）。Legacy Chinese-named cursor (read-only fallback)."""
     return os.path.join(outdir, '.游标_%s.json' % vol)
 
+
+def _criterion_stamp(conf):
+    """口径指纹：head_regex／extra_head_regex／tag_regex／fields 四项捆成一个 sha256。
+    Criterion fingerprint: SHA-256 over the head/extra-head/tag regexes and the field list.
+    ★ 只指纹不 Merkle：判据与时间、次序无关，四项全量即唯一。
+    ★ 口径一变，索引口径就漂移。此闸把「改正则必须重建」从文档纪律变成机器判据。
+    ★ A criterion change drifts the index; this gate turns "rebuild after editing
+      the regex" from prose into an executable check."""
+    e = conf.get('entries', {})
+    key = '\x1f'.join([e.get('head_regex', ''), e.get('extra_head_regex', ''),
+                       e.get('tag_regex', ''), e.get('fields', '')])
+    return hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]
+
+
+def _criterion_gate(conf, outdir, vols, prefix, report):
+    """口径漂移闸：索引旁 .head_stamp.json 记着上次建索引用的口径。
+    Drift gate: the stamp records the criterion used by the previous build.
+      一致   ⇒ 放行（增量照旧）/ same ⇒ proceed incrementally
+      不一致 ⇒ 删该卷 TSV／TXT／游标，全量重扫 / changed ⇒ drop them and rescan
+                （增量游标已越过旧行、不回补；留着就是静默丢条目）
+      无戳   ⇒ 存量索引口径未溯源：放行并补戳，不冤枉升级用户
+                (no stamp ⇒ legacy index: proceed and stamp, never punish an upgrade)
+    返回 True 表示本轮触发了漂移重建。Returns True when a drift rebuild happened."""
+    sp = os.path.join(outdir, '.head_stamp.json')
+    now_stamp = _criterion_stamp(conf)
+    old = {}
+    if os.path.isfile(sp):
+        try:
+            old = json.load(io.open(sp, encoding='utf-8'))
+        except Exception:
+            old = {}
+    prev = old.get('口径')
+    if prev is None:
+        report.append(('口径闸', '存量索引无口径戳·本轮补戳（口径未溯源）·legacy index, stamp added'))
+        return False
+    if prev == now_stamp:
+        return False
+    for vol in vols:
+        for name in (os.path.join(outdir, '%s%s.tsv' % (prefix, vol)),
+                     os.path.join(outdir, '%s%s.txt' % (prefix, vol)),
+                     os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol)),
+                     _cursor_path(outdir, vol), _legacy_cursor_path(outdir, vol)):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+    report.append(('口径闸', '★ 口径已改（%s → %s）：增量不回补，已清索引与游标·全量重扫'
+                   % (prev[:8], now_stamp[:8])))
+    return True
+
 def build(conf, root='.'):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
@@ -188,7 +251,7 @@ def build(conf, root='.'):
     ENC_REPORT.clear()  # ★ 每轮 build 清空编码报告，防 watch 多轮累积
                         # ★ Clear the encoding report each build so watch does not accumulate
     vols = conf.get('volumes', {})
-    head = re.compile(conf['entries'].get('head_regex', r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]'))
+    head = re.compile(conf['entries'].get('head_regex', DEFAULT_HEAD_REGEX))
     # ★ 作者 ID 红线（老宋定）：新格式 [时间][类][标题][作者] 4 段优先；
     # 旧格式 [时间][类][标题] 3 段兼容（作者列留空）。
     # ★ Author-ID rule (Song): the 4-part [time][category][title][author] form wins;
@@ -208,6 +271,10 @@ def build(conf, root='.'):
     # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest, dir lock)
     from safeio import locked as _safe_locked
     with _safe_locked(os.path.join(outdir, '.index.lock')):
+
+        # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
+        # ── Criterion drift gate: a changed criterion forces a full rescan ──
+        _criterion_gate(conf, outdir, vols, prefix, report)
 
         for vol, path in vols.items():
             p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -357,6 +424,11 @@ def build(conf, root='.'):
             for v, w in report: f.write('| %s | %s |\n' % (v, w))
             f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
             for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
+        # 口径戳：本轮判据落盘，供下轮比对（与 TSV／游标同临界区）
+        with io.open(os.path.join(outdir, '.head_stamp.json'), 'w', encoding='utf-8') as f:
+            f.write(json.dumps({'口径': _criterion_stamp(conf),
+                                'head_regex': conf.get('entries', {}).get('head_regex', ''),
+                                '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
         return per, total, report
 
 
@@ -478,7 +550,7 @@ def query(conf, root, args):
             k, v = a.split('=', 1)
             # 字段名归一：中文别名照收。Canonicalise the field name; Chinese aliases accepted.
             filters[canon_field(k.strip())] = v.strip()
-    head_re = re.compile(conf['entries'].get('head_regex', r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]'))
+    head_re = re.compile(conf['entries'].get('head_regex', DEFAULT_HEAD_REGEX))
     outdir = os.path.join(root, conf['index'].get('out_dir', ''))
     prefix = conf['index'].get('index_prefix', 'index_')
     fields = [x.strip() for x in conf['entries'].get('fields', 'volume,line,time,category,title').split(',')]

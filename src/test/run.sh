@@ -75,7 +75,9 @@ echo "[3/5] C daybook.c ..."
 cc "$ROOT/daybook.c" -o "$OUT/daybook_c" 2>/dev/null && "$OUT/daybook_c" "$OUT/sample/协作卷.txt" "$OUT/sample/语汇卷.txt" "$OUT/sample/百科卷.txt" > "$OUT/c.tsv" 2>/dev/null && echo "  C 编译并跑通 ✓" || echo "  C 编译或运行失败（非阻塞）"
 
 echo "[4/5] Fortran daybook.f ..."
-which gfortran >/dev/null 2>&1 && gfortran "$ROOT/daybook.f" -o "$OUT/daybook_f" 2>/dev/null && "$OUT/daybook_f" 2>/dev/null | tee "$OUT/f.log" || echo "  gfortran 不可用（非阻塞）"
+which gfortran >/dev/null 2>&1 && gfortran "$ROOT/daybook.f" -o "$OUT/daybook_f" 2>/dev/null && "$OUT/daybook_f" < /dev/null 2>/dev/null | tee "$OUT/f.log" || echo "  gfortran 不可用（非阻塞）"
+# ★ v3.2.2：daybook.f 的 READ 会吃 stdin；不喂 /dev/null 时整条自测会**无限挂住**
+#   （2026-10-30 实测：装了 gfortran 的 mac 上卡死 11 分钟）。自检件自己挂＝没人跑自检。
 
 echo "[5/5] BASIC daybook.bas ..."
 which bwbasic >/dev/null 2>&1 && bwbasic "$ROOT/daybook.bas" 2>/dev/null | tee "$OUT/bas.log" || echo "  bwbasic 不可用（非阻塞）"

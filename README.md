@@ -2,9 +2,9 @@
 
 **A ledger you can actually open.** Plain text · Zero dependencies · append-only — the truth lives in the volumes.
 
-> **⬇ Download · Quick start**
-> **Source — free forever, no signup:** `git clone https://github.com/songliansheng1972/daybook-suite.git`
-> **Prebuilt bundle:** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) — or the one-click bundle at **[daybooksuite.com](https://daybooksuite.com)** ($10.99 convenience fee; the source stays free).
+> **⬇ Download · Quick start**  
+> **Source — free forever, no signup:** `git clone https://github.com/songliansheng1972/daybook-suite.git`  
+> **Prebuilt bundle:** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) — or the one-click bundle at **[daybooksuite.com](https://daybooksuite.com)** ($10.99 convenience fee; the source stays free).  
 > **Run in 10 seconds:** `cd daybook && python3 daybook.py index`
 
 Three independent parts, one foundation, one source of truth:
@@ -19,16 +19,16 @@ Three independent parts, one foundation, one source of truth:
 
 Named after the *Eight Entries* of the Great Learning — **from within, outward: wisdom grown out of memory.** Eight axes, one meaning each, each aimed at a known weakness of today's AI-memory stacks.
 
-| # | Facet | What it means | vs. mainstream AI memory / vector stores |
-|:--|:--|:--|:--|
-| 1 | **Textuality** | Plain text (TXT/UTF-8), not binary — human- and machine-readable, auditable, verifiable, traceable | A vector DB is a float32 matrix; step outside the framework and it is noise |
-| 2 | **Transparency** | A white box — double-click and you see code + index + source | Embeddings cannot be read, and cannot be traced back |
-| 3 | **Formality** | A strict entry format (type / title / author / time / recipient), validated by 2,000 years of *qijuzhu* practice | Chat history appended ad hoc, no schema |
-| 4 | **Append-only** | Append-only: no rewriting, no deletion; corrections are new entries; the whole archive reversible and verifiable | Update/delete allowed; silent tampering goes undetected |
-| 5 | **Queryability** | Milliseconds on a single machine — grep / awk / sqlite straight through; still milliseconds at five million entries | Needs an index server or GPU, and returns "similar" rather than "confirmed" |
-| 6 | **Density** | Small entries, small files — millions of entries ≈ a few hundred megabytes | A hundred million embeddings = several GB to tens of GB |
-| 7 | **Locality** | Fully local: standard library only, no network, no upload, no version-compatibility treadmill | Framework dependencies, cloud hosting, SDK-version hell, data leaving the machine |
-| 8 | **Persistence** | It does not parasitize the AI — if the model crashes, is swapped out, or shuts down, the memory loses not one character; it moves with the project, any agent can pick it up and go to work, and it outlives machine generations | Memory lives in model weights or a cloud account — swap or shut down, and it forgets |
+| #  | Facet            | What it means                                                                                                                                                                                                                    | vs. mainstream AI memory / vector stores                                             |
+| :- | :--------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :----------------------------------------------------------------------------------- |
+| 1  | **Textuality**   | Plain text (TXT/UTF-8), not binary — human- and machine-readable, auditable, verifiable, traceable                                                                                                                               | A vector DB is a float32 matrix; step outside the framework and it is noise          |
+| 2  | **Transparency** | A white box — double-click and you see code + index + source                                                                                                                                                                     | Embeddings cannot be read, and cannot be traced back                                 |
+| 3  | **Formality**    | A strict entry format (type / title / author / time / recipient), validated by 2,000 years of *qijuzhu* practice                                                                                                                 | Chat history appended ad hoc, no schema                                              |
+| 4  | **Append-only**  | Append-only: no rewriting, no deletion; corrections are new entries; the whole archive reversible and verifiable                                                                                                                 | Update/delete allowed; silent tampering goes undetected                              |
+| 5  | **Queryability** | Milliseconds on a single machine — grep / awk / sqlite straight through; still milliseconds at five million entries                                                                                                              | Needs an index server or GPU, and returns "similar" rather than "confirmed"          |
+| 6  | **Density**      | Small entries, small files — millions of entries ≈ a few hundred megabytes                                                                                                                                                       | A hundred million embeddings = several GB to tens of GB                              |
+| 7  | **Locality**     | Fully local: standard library only, no network, no upload, no version-compatibility treadmill                                                                                                                                    | Framework dependencies, cloud hosting, SDK-version hell, data leaving the machine    |
+| 8  | **Persistence**  | It does not parasitize the AI — if the model crashes, is swapped out, or shuts down, the memory loses not one character; it moves with the project, any agent can pick it up and go to work, and it outlives machine generations | Memory lives in model weights or a cloud account — swap or shut down, and it forgets |
 
 **Daybook's Eight Facets — a drop-in replacement for the context window. Permanent memory for agents.**
 
@@ -99,11 +99,11 @@ daybook-suite/            ← this repo
 - **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v3.2.1**.
 - **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels) and docs are **not** counted.
 
-| Package | Version | Product `.py` files | Build number |
-| --------------- | ------- | ------------------- | ------------ |
-| daybook         | v3.2.1  | 7                   | 1920         |
-| daybook-mcp     | v3.2.1  | 12                  | 3473         |
-| daybook-orch    | v3.2.1  | 9                   | 2195         |
+| Package      | Version | Product `.py` files | Build number |
+| ------------ | ------- | ------------------- | ------------ |
+| daybook      | v3.2.1  | 7                   | 1920         |
+| daybook-mcp  | v3.2.1  | 12                  | 3473         |
+| daybook-orch | v3.2.1  | 9                   | 2195         |
 
 **Code size**: **7,588 lines** across the three packages' product files (1,920 + 3,473 + 2,195).
 
@@ -116,6 +116,7 @@ python3 src/pack.py --dry     # prints every counted file's line count and each 
 ## Release tags
 
 Every release tag is **annotated**, and its message states the **version** and **all three build numbers** — the tag alone pins the exact build:
+
 
 ```
 v3.2.1 daybook-suite v3.2.1 — 起居注 1920 / 璇玑 3473 / 司南 2195
@@ -142,9 +143,9 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 
 **一叠你能翻的账。** 纯文本 · 零依赖 · append-only —— 真相在卷里。
 
-> **⬇ 下载 · 快速开始**
-> **源码（永远免费·无需注册）：** `git clone https://github.com/songliansheng1972/daybook-suite.git`
-> **整装包：** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) —— 或到 **[daybooksuite.com](https://daybooksuite.com)** 一键下载整装（$10.99 便利费；源码始终免费）。
+> **⬇ 下载 · 快速开始**  
+> **源码（永远免费·无需注册）：** `git clone https://github.com/songliansheng1972/daybook-suite.git`  
+> **整装包：** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) —— 或到 **[daybooksuite.com](https://daybooksuite.com)** 一键下载整装（$10.99 便利费；源码始终免费）。  
 > **十秒跑起来：** `cd daybook && python3 daybook.py index`
 
 三件分立，同一底座，同一份真相：
@@ -222,20 +223,20 @@ daybook-suite/            ← 本仓
 - **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v3.2.1**。
 - **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
 
-| 包       | 版本号  | 产品 `.py` 件 | 构建号  |
-| ------- | ----- | --------- | ---- |
-| 起居注     | v3.2.1 | 7         | 1920 |
-| 璇玑      | v3.2.1 | 12        | 3473 |
-| 司南      | v3.2.1 | 9         | 2195 |
+| 包   | 版本号    | 产品 `.py` 件 | 构建号  |
+| --- | ------ | ---------- | ---- |
+| 起居注 | v3.2.1 | 7          | 1920 |
+| 璇玑  | v3.2.1 | 12         | 3473 |
+| 司南  | v3.2.1 | 9          | 2195 |
 
 **代码规模**：三包产品件合计 **7,588 行**（1,920 ＋ 3,473 ＋ 2,195）。
 
-> 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与
-> `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。
-> 2026-10-15 **v3.1**：新增 `daybook_multidx.py`（四库式多级索引）⇒ 起居注 1362→1653（6→7 件）、璇玑 2381→2962（11→12 件）；
-> 司南加 `digest` 子命令 ⇒ 1746→1926。
-> 2026-10-16 **v3.2**：全仓标识符英文化 ＋ **注释改中英对照**（注释行数增加）⇒ 起居注 1653→**1920**、璇玑 2962→**3472**、司南 1926→**2195**。
-> **纯注释＋改名改动·零逻辑变更**；另修 `mcp_test.py` 与工具的时间戳错位（测试侧陈旧·工具未动）。
+> 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
+> `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  
+> 2026-10-15 **v3.1**：新增 `daybook_multidx.py`（四库式多级索引）⇒ 起居注 1362→1653（6→7 件）、璇玑 2381→2962（11→12 件）；  
+> 司南加 `digest` 子命令 ⇒ 1746→1926。  
+> 2026-10-16 **v3.2**：全仓标识符英文化 ＋ **注释改中英对照**（注释行数增加）⇒ 起居注 1653→**1920**、璇玑 2962→**3472**、司南 1926→**2195**。  
+> **纯注释＋改名改动·零逻辑变更**；另修 `mcp_test.py` 与工具的时间戳错位（测试侧陈旧·工具未动）。  
 > 2026-10-16 **v3.2.1**：**I18N.md／CHANGELOG.md 随三包**（修包内 conf 注释「对照表见 I18N.md」之死链）＋ **MCP `serverInfo.version` 并入套件轴**（`1.8.1`→`3.2.1`）⇒ 璇玑 3472→**3473**（`mcp_server.py` +1 行注释）；起居注／司南构建号不变。
 
 **权威件清单**在 `src/pack.py`（各包的 `prog` 列表）。随时复现：

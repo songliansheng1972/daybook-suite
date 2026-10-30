@@ -183,7 +183,10 @@ def _entry_full(vol, lineno):
     i = int(lineno) - 1
     if not (0 <= i < len(lines)):
         return ''
-    head_re = (conf.get('entries', {}).get('head_regex') or r'^\[').strip()
+    # 缺省口径与 daybook.py 同源（v3.2.2：原缺省 ^\[ 与索引器分钟级不一致 ⇒ 判两个答案）
+    # Default shares daybook.DEFAULT_HEAD_REGEX (v3.2.2: the old ^\[ default disagreed
+    # with the indexer's minute-level one, i.e. two answers for one question).
+    head_re = (conf.get('entries', {}).get('head_regex') or _db.DEFAULT_HEAD_REGEX).strip()
     try:
         pat = _re.compile(head_re)
     except _re.error:
