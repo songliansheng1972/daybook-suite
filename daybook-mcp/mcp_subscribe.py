@@ -98,13 +98,10 @@ class SubscriptionManager:
                 self._mtimes.pop(uri, None)
 
     def _cur_mtime(self, uri):
-        """取 uri 对应文件的 mtime·不存在返 None。
-        Get the mtime of the file for uri · returns None if it does not exist.
+        """取 uri 对应文件的 mtime·不存在返 None。卷与目录派生件同一映射。
+        Get the mtime of the file for uri · returns None if it does not exist. Volumes and catalogue artifacts share the same mapping.
         """
-        if not uri.startswith('daybook://'):
-            return None
-        name = uri[len('daybook://'):]
-        path = _res._vol_path(name)
+        path = _res.resource_file_path(uri)
         if not path or not os.path.exists(path):
             return None
         try:

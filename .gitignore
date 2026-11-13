@@ -5,6 +5,10 @@
 # OS
 .DS_Store
 
+# MCP 密钥目录（0600 独立密钥·绝不入库）
+# MCP key directory (standalone 0600 keys · never commit)
+.daybook_keys/
+
 # Python
 __pycache__/
 *.pyc

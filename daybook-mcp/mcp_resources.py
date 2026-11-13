@@ -28,7 +28,19 @@ import os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import mcp_transport as _tr
+
 AUDIT_VOL_NAME = 'MCP审计卷.txt'
+CONF_NAME = 'daybook.conf'
+
+
+class RootError(RuntimeError):
+    """账本根/配置不可用。绝不静默回落成空账本。
+    Ledger root/config unavailable. Never silently falls back to an empty ledger."""
+
+
+# 自检告警去重（同一进程只报一次）/ dedupe self-check warnings (once per process)
+_WARNED = set()
 
 # ── v3.1 多级目录资源（四库式：部=卷／类·作者／属=条目）──
 # ── v3.1 catalogue resources (four-branch: volume / category·author / entry) ──
@@ -48,34 +60,105 @@ def _now():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _warn(msg, key=None):
+    """自检告警走 stderr·同一 key 只报一次。
+    Self-check warnings go to stderr · each key is reported once."""
+    if key is not None:
+        if key in _WARNED:
+            return
+        _WARNED.add(key)
+    try:
+        sys.stderr.write('[daybook-mcp] WARN %s\n' % msg)
+        sys.stderr.flush()
+    except OSError:
+        pass
+
+
+def _conf_dir():
+    """conf 所在目录：DAYBOOK_ROOT 显式覆盖，否则本件所在目录。
+    Directory holding daybook.conf: explicit DAYBOOK_ROOT override, else this file's dir."""
+    return (os.environ.get('DAYBOOK_ROOT') or '').strip() or HERE
+
+
+def _conf_path():
+    """daybook.conf 的绝对路径。Absolute path of daybook.conf."""
+    return os.path.join(_conf_dir(), CONF_NAME)
+
+
+def _resolve_root(conf_dir, conf):
+    """conf [index] root → 绝对根目录（与 daybook.py main 同口径）。
+    [index] root → absolute root (same rule as daybook.py main).
+    空=conf 所在目录；'..'=上一级；绝对=原样；相对=join(conf 目录)。
+    Empty = conf dir; '..' = parent; absolute = as-is; relative = join(conf dir).
+    目录不存在 → 抛 RootError（不静默返回空账本）。
+    A missing directory raises RootError (never a silent empty ledger)."""
+    rc = (conf.get('index', {}).get('root', '') or '').strip()
+    if not rc:
+        root = conf_dir
+    elif rc == '..':
+        root = os.path.dirname(conf_dir)
+    elif os.path.isabs(rc):
+        root = rc
+    else:
+        root = os.path.join(conf_dir, rc)
+    root = os.path.normpath(root)
+    if not os.path.isdir(root):
+        raise RootError(
+            '账本根目录不存在或不是目录：%s（conf=%s，index.root=%r）'
+            % (root, os.path.join(conf_dir, CONF_NAME), rc))
+    return root
+
+
 def _root():
-    """根目录：环境变量 DAYBOOK_ROOT 或本件所在目录。Root: env override or this file's dir."""
-    return os.environ.get('DAYBOOK_ROOT') or HERE
+    """账本根：DAYBOOK_ROOT（显式覆盖）> conf [index] root（空=conf 所在目录）。
+    Ledger root: explicit DAYBOOK_ROOT override > conf [index] root (empty = conf dir).
+    解析失败抛 RootError —— 读错根必须报错，绝不静默当空账本。
+    Raises RootError on failure — a wrong root must fail loudly, never masquerade as an empty ledger."""
+    env = (os.environ.get('DAYBOOK_ROOT') or '').strip()
+    if env:
+        env = os.path.normpath(os.path.abspath(os.path.expanduser(env)))
+        if not os.path.isdir(env):
+            raise RootError('DAYBOOK_ROOT 指向的目录不存在：%s' % env)
+        return env
+    return _resolve_root(HERE, _load_conf())
 
 
 def _audit(method, agent_id, detail):
-    """写一行审计留痕（失败静默）。Append one audit line (failures are silent)."""
+    """写一行审计留痕（失败静默）。只读模式改走 stderr·零写盘。
+    Append one audit line (failures are silent). In read-only mode it goes to stderr · zero disk writes."""
+    rec = '[%s] [MCP] [resources/%s] [agent=%s] %s\n' % (
+        _now(), method, agent_id or '匿名', detail)[:400]
+    if _tr.is_read_only():
+        try:
+            sys.stderr.write(rec)
+            sys.stderr.flush()
+        except OSError:
+            pass
+        return
     try:
-        rec = '[%s] [MCP] [resources/%s] [agent=%s] %s\n' % (
-            _now(), method, agent_id or '匿名', detail)[:400]
         from safeio import atomic_append
         atomic_append(_audit_vol(), rec)
     except OSError:
         pass
 
 
+def _load_conf():
+    """读 <conf 目录>/daybook.conf。缺失/不可读抛 RootError（不静默返空）。
+    Read <conf dir>/daybook.conf. Missing/unreadable raises RootError (never silently {})."""
+    cp = _conf_path()
+    try:
+        import daybook as _db
+        return _db.load_conf(cp)
+    except (OSError, UnicodeDecodeError) as e:
+        raise RootError('无法读取配置 %s：%s' % (cp, e))
+
+
 def _load_volumes():
     """读 daybook.conf [volumes] 表·返回有序 dict {卷名: 相对路径}。
     Read the conf [volumes] table → ordered dict {volume name: relative path}.
-    失败返空 dict（不阻塞 list）。
-    conf 路径走 _root()·生产同 HERE·测试可走 DAYBOOK_ROOT。"""
-    try:
-        import daybook as _db
-        conf_path = os.path.join(_root(), 'daybook.conf')
-        conf = _db.load_conf(conf_path)
-        return conf.get('volumes', {})
-    except Exception:
-        return {}
+    失败抛 RootError（不静默当空卷表）。
+    conf 路径走 conf 目录·生产=本件所在目录·测试可走 DAYBOOK_ROOT。"""
+    return _load_conf().get('volumes', {})
 
 
 def _safe_vol(name):
@@ -129,9 +212,17 @@ def _vol_meta(name, path):
 
 
 def _multidx_dir(root=None):
-    """多级目录所在目录：<根>/multilevel/（daybook_multidx 之产出）。
-    Catalogue directory: <root>/multilevel/ (produced by daybook_multidx)."""
-    return os.path.join(root or _root(), MULTIDX_SUBDIR)
+    """多级目录所在目录：<根>/<index.out_dir>/<multilevel.out_dir 或 multilevel>。
+    Catalogue directory: <root>/<index.out_dir>/<multilevel.out_dir or multilevel>.
+    与 daybook_multidx.py 同源（生产 conf index.out_dir=索引 ⇒ <根>/索引/multilevel）。
+    Same source as daybook_multidx.py (production conf index.out_dir=索引 ⇒ <root>/索引/multilevel)."""
+    base = root or _root()
+    conf = _load_conf()
+    idx = (conf.get('index', {}).get('out_dir', '') or '').strip()
+    ml = (conf.get('multilevel', {}).get('out_dir', '') or '').strip()
+    if idx:
+        base = os.path.join(base, idx)
+    return os.path.join(base, ml) if ml else os.path.join(base, MULTIDX_SUBDIR)
 
 
 def _safe_dir_name(name):
@@ -175,6 +266,27 @@ def _dir_meta(name, path):
         return None
 
 
+def self_check():
+    """启动自检：根可解析、conf 可读、卷非空（空/全不可读 → stderr 告警）。
+    Startup self-check: root resolvable, conf readable, volumes non-empty (empty/all-missing → stderr warning).
+    返回 (root, 登记卷数)。根无效抛 RootError。
+    Returns (root, registered volume count). An invalid root raises RootError."""
+    root = _root()
+    vols = _load_volumes()
+    if not vols:
+        _warn('自检：volumes 为空 —— %s 的 [volumes] 未登记任何卷，'
+              'resources/list 将返回 0 个资源；请在该 conf 登记卷。' % _conf_path(),
+              'empty-volumes')
+    else:
+        missing = [n for n, rel in vols.items()
+                   if not os.path.exists(rel if os.path.isabs(rel) else os.path.join(root, rel))]
+        if missing:
+            _warn('自检：volumes 登记 %d 卷，其中 %d 卷文件不存在（root=%s）：%s'
+                  % (len(vols), len(missing), root, ', '.join(missing)),
+                  'missing-volumes:' + ','.join(missing))
+    return root, len(vols)
+
+
 def list_resources(root=None, pattern=None):
     """列 daybook.conf [volumes] 表登记的所有卷；并附 v3.1 多级目录资源（存在才列）。
     List every volume in the conf [volumes] table, plus v3.1 catalogue resources.
@@ -182,11 +294,17 @@ def list_resources(root=None, pattern=None):
     vols = _load_volumes()
     out = []
     base = root or _root()
+    if not vols:
+        _warn('volumes 为空（%s）：resources/list 返回 0 个资源。'
+              % _conf_path(), 'empty-volumes')
     for name, rel in vols.items():
         path = rel if os.path.isabs(rel) else os.path.join(base, rel)
         meta = _vol_meta(name, path)
         if meta:
             out.append(meta)
+    if vols and not any(m.get('uri', '').startswith('daybook://') for m in out):
+        _warn('volumes 登记 %d 卷但文件全部不可读（root=%s）：resources/list 返回 0 个卷。'
+              % (len(vols), base), 'all-unreadable')
     # ── v3.1：多级目录（四库式）·派生资源·存在才列 ──
     # ── v3.1: catalogue artifacts — derived, listed only when present ──
     mdir = _multidx_dir(base)
@@ -208,6 +326,34 @@ def _resolve_dir_path(mdir, name):
         if os.path.exists(p):
             return p
     return None
+
+
+def resource_file_path(uri, root=None):
+    """uri → 实际文件路径（卷或目录资源）·非法/未知返 None（不判存在）。
+    uri → the real file path (volume or catalogue resource) · None when illegal/unknown (existence not checked)."""
+    if not isinstance(uri, str):
+        return None
+    if uri.startswith(DIR_URI_PREFIX_LEGACY):
+        uri = uri.replace(DIR_URI_PREFIX_LEGACY, DIR_URI_PREFIX, 1)
+    base = root or _root()
+    if uri.startswith(DIR_URI_PREFIX):
+        name = uri[len(DIR_URI_PREFIX):]
+        if _safe_dir_name(name) is None:
+            return None
+        return _resolve_dir_path(_multidx_dir(base), name)
+    if not uri.startswith('daybook://'):
+        return None
+    name = uri[len('daybook://'):]
+    if _safe_vol(name) is None:
+        return None
+    return _vol_path(name, base)
+
+
+def resource_exists(uri, root=None):
+    """uri 是否存在（卷文件存在 / 目录派生件存在）。
+    Whether the uri exists (the volume file exists / the catalogue artifact exists)."""
+    p = resource_file_path(uri, root)
+    return bool(p) and os.path.exists(p)
 
 
 def _read_dir_resource(uri, offset, limit, root, agent_id):

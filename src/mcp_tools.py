@@ -26,16 +26,20 @@ Fixes for P0/P1/P2 from the review report:
 - 零依赖：仅 Python 3 标准库
 - Zero dependencies: Python 3 standard library only
 """
-import os, sys, time
+import os, sys, time, json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import daybook as _db
 import daybook_append as _dba
+import mcp_resources as _mr
+import mcp_transport as _tr
 from agent_registry import Registry as _AgentRegistry
 
 AUDIT_VOL_NAME = 'MCP审计卷.txt'
+SIG_SIDECAR = 'MCP签名边车.jsonl'   # 签名边车（append-only JSONL）/ signature sidecar (append-only JSONL)
+WRITE_TOOLS = ('daybook_append', 'daybook_mark_read', 'daybook_heartbeat', 'daybook_index')
 
 
 def _audit_vol():
@@ -49,23 +53,56 @@ def _now():
 
 
 def _root():
-    return os.environ.get('DAYBOOK_ROOT') or HERE
+    """账本根：统一走 mcp_resources._root()（conf [index] root > DAYBOOK_ROOT 覆盖）。
+    Ledger root: always via mcp_resources._root() (conf [index] root > DAYBOOK_ROOT override)."""
+    return _mr._root()
 
 
 def _audit(method, agent_id, detail, ok=True):
     """MCP 调用记入审计卷·append-only·白箱可审计（P1-2）。
     detail 含参数摘要与结果摘要·不含全量原文（防爆）。
+    只读模式改走 stderr·零写盘。
     Record the MCP call into the audit volume · append-only · white-box auditable (P1-2).
-    detail holds a summary of the arguments and result · not the full raw text (to avoid blow-up)."""
+    detail holds a summary of the arguments and result · not the full raw text (to avoid blow-up).
+    In read-only mode it goes to stderr instead · zero disk writes."""
+    rec = '[%s] [MCP] [tools/%s] [agent=%s] [%s] %s\n' % (
+        _now(), method, agent_id or '匿名',
+        'OK' if ok else 'FAIL', detail)[:400]
+    if _tr.is_read_only():
+        try:
+            sys.stderr.write(rec)
+            sys.stderr.flush()
+        except OSError:
+            pass
+        return
     try:
-        rec = '[%s] [MCP] [tools/%s] [agent=%s] [%s] %s\n' % (
-            _now(), method, agent_id or '匿名',
-            'OK' if ok else 'FAIL', detail)[:400]
         from safeio import atomic_append
         atomic_append(_audit_vol(), rec)
     except OSError:
         pass  # 审计失败不阻塞主流程
               # an audit failure does not block the main flow
+
+
+def _record_signature(tool, agent_id, signature, payload, **fields):
+    """签名落账（边车·append-only·JSONL）·支持事后验签。
+    Record the signature into an append-only JSONL sidecar · supports post-hoc verification.
+    只读模式不写（写工具本已被拒·此处再兜一层）。
+    No write in read-only mode (write tools are already rejected · this is a second guard)."""
+    if _tr.is_read_only():
+        return
+    rec = {'at': _now(), 'tool': tool, 'agent_id': agent_id,
+           'signature': signature, 'payload': payload}
+    rec.update(fields)
+    from safeio import atomic_append
+    atomic_append(os.path.join(_root(), SIG_SIDECAR),
+                  json.dumps(rec, ensure_ascii=False, sort_keys=True) + '\n')
+
+
+def _append_payload(volume, tag, subtag, to, ts, content):
+    """append 签名载荷（v2）：至少绑 volume/tag/subtag/to/ts·再绑正文。
+    Append signature payload (v2): binds at least volume/tag/subtag/to/ts · plus the body."""
+    return 'append|v2|volume=%s|tag=%s|subtag=%s|to=%s|ts=%d|content=%s' % (
+        volume, tag, subtag or '', to or '', int(ts), content)
 
 
 def _safe_vol(name):
@@ -77,10 +114,9 @@ def _safe_vol(name):
 
 
 def _load_conf():
-    """读 daybook.conf·root 按 _root()·生产同 HERE·测试可走 DAYBOOK_ROOT。
-    Read daybook.conf · root follows _root() · production uses HERE · tests may go via DAYBOOK_ROOT."""
-    conf_path = os.path.join(_root(), 'daybook.conf')
-    return _db.load_conf(conf_path)
+    """读 daybook.conf（统一走 mcp_resources：conf 目录，非根目录）。
+    Read daybook.conf (via mcp_resources: the conf directory, not the root)."""
+    return _mr._load_conf()
 
 
 def _verify_agent(agent_id, signature, payload, force=True):
@@ -134,7 +170,9 @@ def _write_cursor(agent_id, vol, resume_byte):
 # ── v3.1 多级目录下钻（四库式：部=卷／类·作者／属=条目）──────
 # ── v3.1 multi-level directory drilling (four-library style: 部=volume / 类·author / 属=entry) ──
 def _multidx_dir():
-    return os.path.join(_root(), 'multilevel')
+    """多级目录目录：与 daybook_multidx.py 同源（conf 的 index.out_dir + multilevel.out_dir）。
+    Catalogue directory: same source as daybook_multidx.py (conf index.out_dir + multilevel.out_dir)."""
+    return _mr._multidx_dir(_root())
 
 
 def _read_multidx_tsv():
@@ -168,21 +206,205 @@ def _read_multidx_tsv():
     return rows
 
 
-def _entry_full(vol, lineno):
-    """按卷+行号取条目原文（含续行·读到下一个条目头前）。
-    Fetch an entry's raw text by volume+line number (including continuation lines · read until the next entry header)."""
+class _VolumeIndex:
+    """单次 MCP 调用内的整卷索引（行号 → 偏移），跨调用不复用。
+    Per-MCP-call whole-volume index (line no → offset); never reused across calls.
+    整卷只读一次；键 = (path, mtime_ns, size)，任一项变化即重读。
+    The volume is read once; key = (path, mtime_ns, size) — any change forces a re-read.
+    cross_ref 生成互见引用与 _entry_full 取全文共用这一份。
+    Shared by cross_ref reference building and _entry_full full-text extraction."""
+
+    def __init__(self):
+        self._vols = {}
+        self._blocks = {}       # (path, start, end) → 条目块文本 / entry block text
+        self._texts = {}        # (path, start, end) → 含末尾换行的条目文本 / entry text incl. trailing newline
+        self._sha = {}          # (path, start, end) → SHA-256 前 8 位 / first 8 hex of SHA-256
+        self.reads = 0          # 实际整卷读取次数（验收指标）/ actual whole-volume reads (acceptance metric)
+
+    def _load(self, path):
+        st = os.stat(path)
+        key = (path, st.st_mtime_ns, st.st_size)
+        item = self._vols.get(path)
+        if item is not None and item['key'] == key:
+            return item
+        with open(path, 'rb') as f:
+            raw = f.read()
+        from safeio import sniff_bytes
+        text, enc, _why = sniff_bytes(raw)
+        self.reads += 1
+        lines = text.split('\n')
+        char_offsets = []
+        p = 0
+        for ln in lines:
+            char_offsets.append(p)
+            p += len(ln) + 1
+        if enc == 'utf-16':
+            # UTF-16 的 '\n' 不是单字节 ⇒ 偏移表建在解码文本上（仍只读一次）
+            # UTF-16's '\n' is not a single byte ⇒ offsets are built on the decoded text (still one read)
+            item = {'key': key, 'raw': None, 'text': text, 'enc': enc,
+                    'lines': lines, 'offsets': char_offsets, 'char_offsets': char_offsets,
+                    'heads': {}, 'bytes': False}
+        else:
+            offsets = [0]
+            pos = 0
+            while True:
+                j = raw.find(b'\n', pos)
+                if j < 0:
+                    break
+                offsets.append(j + 1)
+                pos = j + 1
+            item = {'key': key, 'raw': raw, 'text': text, 'enc': enc,
+                    'lines': lines, 'offsets': offsets, 'char_offsets': char_offsets,
+                    'heads': {}, 'bytes': True}
+        self._vols[path] = item
+        return item
+
+    def _heads(self, item, head_re):
+        """行首命中表：一次 C 级 finditer 扫全卷，返行号列表；非 '^' 模式返 None（回退逐行）。
+        Line-start match table: one C-level finditer pass over the volume → line numbers; None for non-'^' patterns (fall back to per-line)."""
+        key = head_re.pattern
+        if key in item['heads']:
+            return item['heads'][key]
+        heads = None
+        if head_re.pattern.startswith('^'):
+            import re as _re, bisect as _bisect
+            try:
+                rx = _re.compile(head_re.pattern, head_re.flags | _re.M)
+                coffs = item['char_offsets']
+                heads = [_bisect.bisect_right(coffs, m.start()) for m in rx.finditer(item['text'])]
+            except _re.error:
+                heads = None
+        item['heads'][key] = heads
+        return heads
+
+    def _span(self, path, lineno, head_re, walk_back):
+        """行号 → (item, 起始偏移, 结束偏移, 末行号)。口径与 cross_ref._entry_at / _entry_full 各自一致。
+        Line no → (item, start offset, end offset, last line). Semantics follow cross_ref._entry_at / _entry_full respectively.
+        行首表可用时按二分定位（O(log n)）；否则回退逐行扫描（保语义一致）。
+        Uses the line-start table with binary search (O(log n)) when available; otherwise falls back to per-line scanning (same semantics)."""
+        it = self._load(path)
+        lines = it['lines']
+        if lineno < 1 or lineno > len(lines):
+            return None
+        heads = self._heads(it, head_re)
+        if heads is not None:
+            import bisect as _bisect
+            start = lineno
+            if walk_back and not head_re.match(lines[start - 1]):
+                k = _bisect.bisect_right(heads, lineno) - 1
+                if k < 0:
+                    return None
+                start = heads[k]
+            j = _bisect.bisect_right(heads, start)
+            # end 为 0-based 排他下标（与逐行扫描的 end 同口径）
+            # end is a 0-based exclusive index (same as the per-line scan)
+            end = (heads[j] - 1) if j < len(heads) else len(lines)
+        else:
+            start = lineno
+            if walk_back and not head_re.match(lines[start - 1]):
+                while start > 1 and not head_re.match(lines[start - 1]):
+                    start -= 1
+                if not head_re.match(lines[start - 1]):
+                    return None
+            end = start
+            while end < len(lines):
+                if end > start and head_re.match(lines[end]):
+                    break
+                end += 1
+        offs = it['offsets']
+        b0 = offs[start - 1]
+        b1 = offs[end] if end < len(offs) else (len(it['raw']) if it['bytes'] else len(it['text']))
+        # 末条 = 其后无条目头，块到文末；调用方须显式标注
+        # is_last = no following head, block runs to EOF; callers must mark it explicitly
+        return it, b0, b1, end, start, end >= len(lines)
+
+    def entry_block(self, path, lineno, head_re):
+        """条目原文·不含末尾换行（与 cross_ref._entry_at 同口径）；无条目返 None。
+        Entry text without the trailing newline (same rule as cross_ref._entry_at); None when absent.
+        同一次调用内按 (path, 起行, 止行) 复用，避免重复解码。
+        Reused per (path, start line, end line) within the call to avoid repeated decoding."""
+        sp = self._span(path, lineno, head_re, walk_back=True)
+        if sp is None:
+            return None
+        it, b0, b1, end, start, _last = sp
+        key = (path, start, end)
+        cached = self._blocks.get(key)
+        if cached is not None:
+            return cached
+        # 只在块由下一条目头截断时去掉末尾换行；到文末时与 split('\n')+join 口径一致（保留）。
+        # Strip the trailing newline only when a following head terminates the block; at EOF keep it (same as split('\n')+join).
+        tail_nl = end < len(it['lines'])
+        if it['bytes']:
+            block = it['raw'][b0:b1]
+            if tail_nl and block.endswith(b'\n'):
+                block = block[:-1]
+            block = block.decode(it['enc'], 'replace')
+        else:
+            block = it['text'][b0:b1]
+            if tail_nl and block.endswith('\n'):
+                block = block[:-1]
+        self._blocks[key] = block
+        return block
+
+    def entry_sha8(self, path, lineno, head_re):
+        """条目块 SHA-256 前 8 位（与 cross_ref._entry_hash 同口径）；无条目返 None。
+        First 8 hex of the entry block's SHA-256 (same rule as cross_ref._entry_hash); None when absent.
+        同一次调用内按 (path, 起行, 止行) 复用（长块不重复哈希）。
+        Reused per (path, start line, end line) within the call (long blocks are not re-hashed)."""
+        sp = self._span(path, lineno, head_re, walk_back=True)
+        if sp is None:
+            return None
+        _it, _b0, _b1, end, start, _last = sp
+        key = (path, start, end)
+        h = self._sha.get(key)
+        if h is None:
+            import hashlib
+            block = self.entry_block(path, lineno, head_re)
+            h = hashlib.sha256(block.encode('utf-8')).hexdigest()[:8]
+            self._sha[key] = h
+        return h
+
+    def entry_text(self, path, lineno, head_re):
+        """条目原文·含末尾换行（与旧 _entry_full 同口径）；无条目返 ''。
+        Entry text including the trailing newline (same rule as the old _entry_full); '' when absent.
+        同一次调用内按 (path, 起行, 止行) 复用。
+        Reused per (path, start line, end line) within the call."""
+        text, _last = self.entry_text_span(path, lineno, head_re)
+        return text
+
+    def entry_text_span(self, path, lineno, head_re):
+        """条目原文 + 是否末条（其后无条目头，块到文末）。
+        Entry text + is_last (no following head; the block runs to EOF).
+        返回 (文本, 是否末条)；无条目返 ('', False)。"""
+        sp = self._span(path, lineno, head_re, walk_back=False)
+        if sp is None:
+            return '', False
+        it, b0, b1, end, start, is_last = sp
+        key = (path, start, end)
+        cached = self._texts.get(key)
+        if cached is not None:
+            return cached, is_last
+        if it['bytes']:
+            text = it['raw'][b0:b1].decode(it['enc'], 'replace')
+        else:
+            text = it['text'][b0:b1]
+        self._texts[key] = text
+        return text, is_last
+
+
+def _entry_full(vol, lineno, index=None):
+    """按卷+行号取条目原文（含续行·读到下一个条目头前）。返回 (文本, 是否末条)。
+    Fetch an entry's raw text by volume+line number (including continuation lines · read until the next entry header).
+    Returns (text, is_last)；末条=其后无条目头，块到文末，调用方须显式标注。
+    is_last means no following head and the block runs to EOF; callers must mark it explicitly.
+    index 提供时复用单次调用内的整卷索引（不再整卷读）。
+    When index is given, reuse the per-call whole-volume index (no further whole-volume reads)."""
     import re as _re
     conf = _load_conf()
     rel = conf.get('volumes', {}).get(vol)
     if not rel:
-        return ''
+        return '', False
     path = rel if os.path.isabs(rel) else os.path.join(_root(), rel)
-    from safeio import read_vol
-    txt, _enc, _why = read_vol(path)
-    lines = txt.splitlines(keepends=True)
-    i = int(lineno) - 1
-    if not (0 <= i < len(lines)):
-        return ''
     # 缺省口径与 daybook.py 同源（v3.2.2：原缺省 ^\[ 与索引器分钟级不一致 ⇒ 判两个答案）
     # Default shares daybook.DEFAULT_HEAD_REGEX (v3.2.2: the old ^\[ default disagreed
     # with the indexer's minute-level one, i.e. two answers for one question).
@@ -191,25 +413,36 @@ def _entry_full(vol, lineno):
         pat = _re.compile(head_re)
     except _re.error:
         pat = _re.compile(r'\[')
+    if index is not None:
+        return index.entry_text_span(path, int(lineno), pat)
+    from safeio import read_vol
+    txt, _enc, _why = read_vol(path)
+    lines = txt.splitlines(keepends=True)
+    i = int(lineno) - 1
+    if not (0 <= i < len(lines)):
+        return '', False
     out = [lines[i]]
+    is_last = True
     for l in lines[i + 1:]:
         if pat.match(l):
+            is_last = False
             break
         out.append(l)
-    return ''.join(out)
+    return ''.join(out), is_last
 
 
-def _entry_ref(vol, lineno):
+def _entry_ref(vol, lineno, index=None):
     """生成互见引用 [卷#L行-SHA8]（v3.1）。
     复用 cross_ref 的哈希算法（保 verify_ref 兼容）·但卷路径按 daybook.conf 卷表解析
-    （cross_ref 默认按 <root>/<卷>.txt 找·与 conf 卷名不一致时须校正）。失败返 ''。
+    （cross_ref 默认按 <root>/<卷>.txt 找·与 conf 卷名不一致时须校正）。
+    失败抛异常·不静默返回空串。
+    index 提供时整卷只读一次（单次调用内复用），不再逐条整卷读。
     Generate a cross-reference [volume#Lline-SHA8] (v3.1).
     Reuses cross_ref's hashing algorithm (keeps verify_ref compatible) · but the volume path is resolved via the daybook.conf volume table
-    (cross_ref defaults to <root>/<volume>.txt · must be corrected when it disagrees with the conf volume name). Returns '' on failure."""
-    try:
-        from cross_ref import CrossRef
-    except Exception:
-        return ''
+    (cross_ref defaults to <root>/<volume>.txt · must be corrected when it disagrees with the conf volume name).
+    Raises on failure · never silently returns an empty string.
+    When index is given the volume is read once (reused within the call), not once per entry."""
+    from cross_ref import CrossRef
     conf = _load_conf()
 
     def _vp(v, _conf=conf, _root=_root()):
@@ -218,13 +451,10 @@ def _entry_ref(vol, lineno):
             raise KeyError('卷 %s 不在 conf 卷表' % v)
         return rel if os.path.isabs(rel) else os.path.join(_root, rel)
 
-    try:
-        cr = CrossRef(root=_root())
-        cr._vol_path = _vp          # 按 conf 校正卷定位（哈希算法仍用 cross_ref 原实现）
-                                    # correct the volume location per conf (the hashing algorithm still uses cross_ref's original implementation)
-        return cr.make_ref(vol, int(lineno))
-    except Exception:
-        return ''
+    cr = CrossRef(root=_root())
+    cr._vol_path = _vp          # 按 conf 校正卷定位（哈希算法仍用 cross_ref 原实现）
+                                # correct the volume location per conf (the hashing algorithm still uses cross_ref's original implementation)
+    return cr.make_ref(vol, int(lineno), index=index)
 
 
 def _multi_query(args):
@@ -247,10 +477,10 @@ def _multi_query(args):
 
     rows = _read_multidx_tsv()
     if not rows:
-        return ('多级目录为空或未生成。请先在账本侧执行 `python3 daybook.py multiindex`'
-                '（生成 <根>/multilevel/<卷>_catalog.tsv）后再下钻；'
+        return ('多级目录为空或未生成（查找目录：%s）。请先在账本侧执行 `python3 daybook.py multiindex`'
+                '（按 conf 的 index.out_dir + multilevel.out_dir 生成 <卷>_catalog.tsv）后再下钻；'
                 '或在 MCP 侧调 `daybook_index` 后由 watch/多级续建生成。'
-                '（旧名 <根>/多级/<卷>_目录.tsv 仍可读）')
+                '（旧名 <根>/多级/<卷>_目录.tsv 仍可读）' % _multidx_dir())
     if vol:
         rows = [r for r in rows if r.get('volume') == vol]
     if cls:
@@ -305,6 +535,9 @@ def _multi_query(args):
     shown = rows[:limit] if limit else rows
     out = ['【属级条目】%s ｜ 命中 %d 条 ｜ 显示 %d 条%s'
            % (scope, len(rows), len(shown), '（含全文）' if full else '')]
+    # 单次调用内的整卷索引：互见引用与全文共用，整卷只读一次（跨调用不复用）
+    # Per-call whole-volume index: shared by references and full text; one read per call (never across calls)
+    index = _VolumeIndex()
     for r in shown:
         v = r.get('volume', '')
         ln = r.get('line', '0')
@@ -312,15 +545,40 @@ def _multi_query(args):
             v, ln, r.get('time', ''), r.get('category', ''), r.get('title', ''))
         if r.get('author'):
             line += ' · %s' % r['author']
-        ref = _entry_ref(v, ln)      # 互见层：附可校验的定位引用
-                                     # cross-reference layer: attach a verifiable location reference
+        ref = None
+        try:
+            ref = _entry_ref(v, ln, index)      # 互见层：附可校验的定位引用
+                                                # cross-reference layer: attach a verifiable location reference
+        except Exception as e:
+            # 失败不静默：stderr 留痕 + 输出显式错误标记
+            # Never silent: leave a trace on stderr + emit an explicit error marker
+            try:
+                sys.stderr.write('WARN 互见引用失败 %s#L%s: %s: %s\n'
+                                 % (v, ln, type(e).__name__, e))
+                sys.stderr.flush()
+            except OSError:
+                pass
         if ref:
             line += '  ↪%s' % ref
+        else:
+            line += '  ↪[互见失败]'
         out.append(line)
         if full:
-            t = _entry_full(v, ln)
+            t, is_last = _entry_full(v, ln, index)
             if t:
                 out.append('    ' + t.rstrip('\n').replace('\n', '\n    '))
+                if is_last:
+                    # 末条显式标注：其后无条目头，块到文末，不静默延伸
+                    # Explicit last-entry marker: no following head, block runs to EOF — never extend silently
+                    out.append('    （末条·至文末：其后无条目头）')
+    if os.environ.get('DAYBOOK_MCP_TRACE_READS') == '1':
+        # 验收购读：一次 multi_query 的整卷读取次数（仅 trace，不改语义）
+        # Acceptance trace: whole-volume reads in this multi_query (trace only, semantics unchanged)
+        try:
+            sys.stderr.write('[daybook-mcp] multi_query volume reads=%d\n' % index.reads)
+            sys.stderr.flush()
+        except OSError:
+            pass
     return '\n'.join(out)
 
 
@@ -358,9 +616,11 @@ TOOLS = [
                 'content': {'type': 'string', 'description': '正文'},
                 'to': {'type': 'string', 'description': '收件人 ID·逗号分隔多收件人·不填即广播（F1 收件人寻址）'},
                 'agent_id': {'type': 'string', 'description': '必填·G3 注册的 agent_id'},
-                'signature': {'type': 'string', 'description': '必填·对 content 的 HMAC-SHA256 hex 签名'},
+                'signature': {'type': 'string',
+                              'description': '必填·对 "append|v2|volume=<卷>|tag=<主>|subtag=<子或_>|to=<收件人>|ts=<时间戳>|content=<正文>" 的 HMAC-SHA256 hex 签名'},
+                'ts': {'type': 'integer', 'description': '必填·Unix 时间戳·绑定签名防重放（服务端校验 ±60s 窗口）'},
             },
-            'required': ['volume', 'tag', 'author', 'content', 'agent_id', 'signature'],
+            'required': ['volume', 'tag', 'author', 'content', 'agent_id', 'signature', 'ts'],
         },
     },
     {
@@ -481,6 +741,10 @@ TOOLS = [
 
 
 def list_tools():
+    """工具清单·只读模式隐藏四个写工具。
+    Tool list · the four write tools are hidden in read-only mode."""
+    if _tr.is_read_only():
+        return [t for t in TOOLS if t.get('name') not in WRITE_TOOLS]
     return TOOLS
 
 
@@ -507,6 +771,12 @@ def call_tool(name, args, agent_id=None, signature=None):
     if not signature:
         signature = args.get('signature')
 
+    # 只读模式：四个写工具一律拒·不落盘
+    # Read-only mode: all four write tools are rejected · nothing is written
+    if _tr.is_read_only() and name in WRITE_TOOLS:
+        _audit(name, agent_id, '只读模式拒绝写工具', ok=False)
+        return _tool_error('只读模式（MCP_READ_ONLY=1）：写工具 %s 已禁用' % name)
+
     try:
         if name == 'daybook_query':
             field = args.get('field', '')
@@ -531,17 +801,25 @@ def call_tool(name, args, agent_id=None, signature=None):
             return _tool_ok(out)
 
         if name == 'daybook_append':
-            # W-75 修④：先验签后取卷名
-            # W-75 fix ④: verify the signature before fetching the volume name（防未授权请求泄露卷名信息）
+            # W-75 修④：先验签后取卷名（防未授权请求泄露卷名信息）
             # W-75 fix ④: verify the signature before fetching the volume name (prevents an unauthorized request from leaking volume-name info)
-            _verify_agent(agent_id, signature, args.get('content', ''), force=True)
-            vol = _safe_vol(args['volume'])
-            tag = args['tag']
+            # v2：签名载荷绑 volume/tag/subtag/to/ts + 正文·防跨卷重放
+            # v2: the signature payload binds volume/tag/subtag/to/ts + body · prevents cross-volume replay
+            vol_raw = args.get('volume', '')
+            tag = args.get('tag', '')
             subtag = args.get('subtag', '') or '_'
-            author = args['author']
-            content = args['content']
+            author = args.get('author', '')
+            content = args.get('content', '')
             to = args.get('to')  # F1 收件人寻址·可空
                                  # F1 recipient addressing · may be empty
+            ts = int(args.get('ts', 0))
+            payload = _append_payload(vol_raw, tag, subtag, to, ts, content)
+            _verify_agent(agent_id, signature, payload, force=True)
+            # 时间窗在验签之后校验：先让匿名/坏签拿到准确错误，再挡重放
+            # The time window is checked after verification: anonymous/bad signatures get the precise error first, then replays are blocked
+            if abs(time.time() - ts) > 60:
+                raise ValueError('append 时间戳越窗（当前 %.0f·收到 %d·允许 ±60s）' % (time.time(), ts))
+            vol = _safe_vol(vol_raw)
             # 作者 ID 红线：author 必须等于 agent_id·防冒名
             # Author-ID red line: author must equal agent_id · guards against impersonation
             if author != agent_id:
@@ -561,6 +839,10 @@ def call_tool(name, args, agent_id=None, signature=None):
             if not vol_path:
                 raise ValueError('卷 %r 不在 daybook.conf 卷表' % vol)
             full_path = vol_path if os.path.isabs(vol_path) else os.path.join(_root(), vol_path)
+            # 签名先落边车·写失败则不动卷（保证事后可验签）
+            # Record the signature to the sidecar first · if that fails the volume is untouched (post-hoc verifiability guaranteed)
+            _record_signature('daybook_append', agent_id, signature, payload,
+                              volume=vol, tag=tag, subtag=subtag, to=to or '', ts=ts)
             # 调 daybook_append.append_one 原子写·传 to
             # call daybook_append.append_one for an atomic write · passing `to`
             rc = _dba.append_one(full_path, tag, subtag, content, author=author, to=to)
@@ -613,6 +895,7 @@ def call_tool(name, args, agent_id=None, signature=None):
                 raise ValueError('卷 %r 不在 daybook.conf 卷表' % vol)
             full_path = vol_path if os.path.isabs(vol_path) else os.path.join(_root(), vol_path)
             size = os.path.getsize(full_path)
+            _record_signature('daybook_mark_read', agent_id, signature, payload, volume=vol)
             _write_cursor(agent_id, vol, size)
             _audit('mark_read', agent_id, 'vol=%s → resume_byte=%d' % (vol, size))
             return _tool_ok('已读推进到 %s 末尾（resume_byte=%d）' % (vol, size))
@@ -628,6 +911,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             load = args.get('load', '')
             hb_vol = os.path.join(_root(), '心跳卷.txt')
             msg = 'alive' + ('｜负载=%s' % load if load else '')
+            _record_signature('daybook_heartbeat', agent_id, signature, payload, load=load, ts=ts)
             rc = _dba.append_one(hb_vol, '心跳', agent_id, msg, author=agent_id)
             if rc != 0:
                 raise RuntimeError('heartbeat append_one rc=%d' % rc)
@@ -683,6 +967,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             if abs(time.time() - ts) > 60:
                 raise ValueError('index 时间戳越窗（当前 %.0f·收到 %d·允许 ±60s）' % (time.time(), ts))
             _verify_agent(agent_id, signature, 'reindex:%d' % ts)
+            _record_signature('daybook_index', agent_id, signature, 'reindex:%d' % ts, ts=ts)
             conf = _load_conf()
             per, total, _rep = _db.build(conf, _root())
             summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total

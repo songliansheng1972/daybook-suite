@@ -33,9 +33,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Reference regex: [volume#Lline-first 8 hex of SHA256]
 REF_RE = re.compile(r'\[([^\[#]+?)#L(\d+)-([0-9a-f]{8})\]')
 
-# 条目头正则（与 daybook.conf 一致）
-# Entry-header regex (consistent with daybook.conf)
-HEAD_RE = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]')
+# 条目头正则（与 daybook.conf 一致·秒可选·编号前缀可选）
+# Entry-header regex (consistent with daybook.conf · seconds optional · number prefix optional)
+# 两种都要认：`[#83431] [2026-11-13 21:23] …` 与旧式 `[2026-11-13 21:23] …`
+# Both forms must match: numbered `[#83431] [2026-11-13 21:23] …` and legacy unnumbered `[2026-11-13 21:23] …`
+HEAD_RE = re.compile(r'^(?:\[#\d+\][ ]*)?\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]')
 
 
 def _read_text(path):
@@ -48,11 +50,12 @@ def _read_text(path):
 
 
 def _entry_at(text, lineno):
-    """取指定起始行号的条目块·单遍扫描·返回 (块文本, 起始行, 末尾行)。
-    Fetch the entry block starting at the given line number · single-pass scan · returns (block text, start line, end line).
-    lineno 从 1 开始。
-    lineno is 1-based.
-    """
+    """取指定起始行号的条目块·单遍扫描·返回 (块文本, 起始行, 末尾行, 是否末条)。
+    Fetch the entry block starting at the given line number · single-pass scan · returns
+    (block text, start line, end line, is_last).
+    lineno 从 1 开始。块边界为「下一个条目头」；其后无头则到文末，is_last=True（调用方须显式标注）。
+    lineno is 1-based. The block ends at the next entry head; with no following head it runs to
+    EOF and is_last is True (callers must mark it explicitly)."""
     lines = text.split('\n')
     if lineno < 1 or lineno > len(lines):
         return None
@@ -66,14 +69,14 @@ def _entry_at(text, lineno):
             return None
     else:
         start = lineno
-    # 找下一个条目头或文末
+    # 找下一个条目头或文末（lines[start] 即条目头的下一行·逐行比对）
+    # Find the next entry head or EOF (lines[start] is the line right after the head)
     end = start
-    while end < len(lines):
-        if end > start and HEAD_RE.match(lines[end]):
-            break
+    while end < len(lines) and not HEAD_RE.match(lines[end]):
         end += 1
+    is_last = end >= len(lines)
     block = '\n'.join(lines[start - 1:end])
-    return block, start, end
+    return block, start, end, is_last
 
 
 class CrossRef:
@@ -101,24 +104,34 @@ class CrossRef:
         r = _entry_at(text, lineno)
         if not r:
             return None
-        block, _, _ = r
+        block = r[0]
         return hashlib.sha256(block.encode('utf-8')).hexdigest()[:8]
 
-    def make_ref(self, vol, lineno):
+    def make_ref(self, vol, lineno, index=None):
         """生成引用 [卷名#L行号-SHA256前8位]。
         Build the reference [volume#Lline-first 8 hex of SHA256].
-        """
+        index 提供时复用调用方（单次 MCP 调用）的整卷索引，整卷只读一次；
+        哈希口径不变（条目块 UTF-8 编码后取 SHA-256 前 8 位）。
+        When index is given, reuse the caller's (per-MCP-call) whole-volume index so the
+        volume is read once; the hash rule is unchanged (SHA-256 of the UTF-8 block, first 8 hex)."""
         path = self._vol_path(vol)
-        text = _read_text(path)
-        h = self._entry_hash(text, lineno)
-        if not h:
-            raise KeyError('行 %d 无条目' % lineno)
+        if index is not None:
+            h = index.entry_sha8(path, int(lineno), HEAD_RE)
+            if not h:
+                raise KeyError('行 %d 无条目' % lineno)
+        else:
+            text = _read_text(path)
+            h = self._entry_hash(text, lineno)
+            if not h:
+                raise KeyError('行 %d 无条目' % lineno)
         return '[%s#L%d-%s]' % (vol, lineno, h)
 
     def resolve(self, vol, lineno):
-        """读条目原文。返回 (块文本, 起始行, 末尾行) 或 None。
-        Read the original entry text. Returns (block text, start line, end line) or None.
-        """
+        """读条目原文。返回 (块文本, 起始行, 末尾行, 是否末条) 或 None。
+        Read the original entry text. Returns (block text, start line, end line, is_last) or None.
+        末条（其后无条目头）is_last=True，块到文末；调用方须显式标注，不许静默延伸。
+        For the last entry (no following head) is_last=True and the block runs to EOF;
+        callers must mark it explicitly rather than extend silently."""
         path = self._vol_path(vol)
         text = _read_text(path)
         return _entry_at(text, lineno)
@@ -205,6 +218,8 @@ def main():
         r = cr.resolve(sys.argv[2], int(sys.argv[3]))
         if r:
             print(r[0])
+            if r[3]:
+                print('（末条·至文末）')
         else:
             print('（无条目）')
     elif cmd == 'verify' and len(sys.argv) >= 4:

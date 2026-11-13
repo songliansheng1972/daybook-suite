@@ -20,7 +20,18 @@ MCP transport layer (W-DB-023-G2 · Item 1)
 - 零依赖：仅用 Python 3 标准库（sys/json）
 - Zero dependencies: Python 3 standard library only (sys/json)
 """
-import sys, json
+import sys, json, os
+
+# 只读模式开关：MCP_READ_ONLY=1 时隐藏/拒绝四个写工具·审计改 stderr（零写盘）
+# Read-only switch: MCP_READ_ONLY=1 hides/rejects the four write tools · audit goes to stderr (zero disk writes)
+READ_ONLY_ENV = 'MCP_READ_ONLY'
+
+
+def is_read_only():
+    """是否只读模式。1/true/yes/on 均视为开。
+    Whether read-only mode is on. 1/true/yes/on all count as on."""
+    return (os.environ.get(READ_ONLY_ENV, '') or '').strip().lower() in ('1', 'true', 'yes', 'on')
+
 
 # JSON-RPC 2.0 错误码
 # JSON-RPC 2.0 error codes

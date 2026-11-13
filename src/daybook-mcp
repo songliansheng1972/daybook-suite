@@ -1,0 +1,23 @@
+#!/bin/sh
+# DAYBOOK MCP 服务启动器（stdio·零依赖）
+# DAYBOOK MCP server launcher (stdio · zero dependencies)
+#
+# 任意 MCP 客户端一行命令即可起服务：
+# One command starts the server from any MCP client:
+#   /Users/song/Desktop/小数学家/daybook-suite/daybook-mcp/daybook-mcp
+#
+# 环境变量 / Environment:
+#   MCP_READ_ONLY=1     只读模式：隐藏并拒绝四个写工具，审计走 stderr
+#                       read-only: hide/reject the four write tools, audit to stderr
+#   DAYBOOK_ROOT=<dir>  显式指定账本根（conf 也从此目录读）；不设则按 conf [index] root 解析
+#                       explicit ledger root (conf is read here too); unset = resolve via conf [index] root
+#   PYTHON=<path>       指定解释器（默认 python3）/ interpreter (default python3)
+#
+# 彻底零写盘：固定 PYTHONDONTWRITEBYTECODE=1，不在账本/包内生成 __pycache__。
+# Zero disk writes: PYTHONDONTWRITEBYTECODE=1 is forced, no __pycache__ is emitted.
+set -eu
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export PYTHONDONTWRITEBYTECODE=1
+
+exec "${PYTHON:-python3}" "$DIR/mcp_server.py"

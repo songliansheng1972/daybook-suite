@@ -18,8 +18,16 @@ Agent identity registry (W-DB-023-G3 · item 1)
 
 注册卷.txt 格式（每行一条·append-only）：
 Registry volume (注册卷.txt) format (one entry per line · append-only):
-  [时间] [注册] [agent_id] [agent_name] [secret_hex]
+  [时间] [注册] [agent_id] [agent_name] [密钥文件=.daybook_keys/<agent_id>.key]
   [时间] [吊销] [agent_id]
+  旧格式 [时间] [注册] [agent_id] [agent_name] [secret_hex] 仍可读（兼容）。
+  The legacy form with the secret hex inline is still readable (compatibility).
+
+密钥文件 / Key file:
+  独立文件 `.daybook_keys/<agent_id>.key`·权限 0600（目录 0700）·内容为 secret hex。
+  A separate file `.daybook_keys/<agent_id>.key`, mode 0600 (directory 0700), holding the secret hex.
+  注册卷.txt 不再写明文密钥（旧卷仍兼容读取，新注册一律外置）。
+  注册卷.txt no longer stores the plaintext secret (legacy volumes remain readable; new registrations always go external).
 
 签名规则：
 Signature rules:
@@ -39,6 +47,9 @@ Usage:
 import os, time, hmac, hashlib, json, secrets
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+KEY_DIR_NAME = '.daybook_keys'     # 密钥目录（相对注册卷所在目录）/ key dir (next to the registry volume)
+KEY_REF_PREFIX = '密钥文件='       # 注册条目第 5 段的引用前缀 / 5th-field prefix in a registration entry
 
 
 def _now():
@@ -90,30 +101,78 @@ class Registry:
             line = line.rstrip('\n')
             if not line or not line.startswith('['):
                 continue
-            # [时间] [注册] [agent_id] [name] [secret] · 注册条目 · registration entry
+            # [时间] [注册] [agent_id] [name] [密钥文件=...] · 注册条目 · registration entry
             # [时间] [吊销] [agent_id] · 吊销条目 · revocation entry
             parts = [p.strip() for p in line.split(']')]
             parts = [p.lstrip(' [') for p in parts if p.strip()]
             if len(parts) < 3:
                 continue
             if parts[1] == '注册' and len(parts) >= 5:
-                aid, name, secret = parts[2], parts[3], parts[4]
+                aid, name, ref = parts[2], parts[3], parts[4]
+                if ref.startswith(KEY_REF_PREFIX):
+                    secret = self._read_secret(ref[len(KEY_REF_PREFIX):].strip())
+                else:
+                    secret = ref          # 旧格式内联密钥 / legacy inline secret
                 self._agents[aid] = Agent(aid, name, secret, parts[0], False)
             elif parts[1] == '吊销' and len(parts) >= 3:
                 aid = parts[2]
                 if aid in self._agents:
                     self._agents[aid].revoked = True
 
+    def _key_dir(self):
+        """密钥目录绝对路径。
+        Absolute path of the key directory."""
+        return os.path.join(os.path.dirname(os.path.abspath(self.path)), KEY_DIR_NAME)
+
+    def _read_secret(self, rel):
+        """从密钥文件读 secret·缺失返 None。
+        Read the secret from its key file · None when missing."""
+        p = rel if os.path.isabs(rel) else os.path.join(os.path.dirname(os.path.abspath(self.path)), rel)
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
+
+    def _write_secret(self, agent_id, secret):
+        """写独立密钥文件（0600）·返回注册卷引用的相对路径。
+        Write the standalone key file (0600) · return the relative path recorded in the registry volume.
+        文件与目录都用 os.open/chmod 显式收紧·不依赖 umask。
+        Both file and directory are tightened explicitly via os.open/chmod · no reliance on umask."""
+        d = self._key_dir()
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+        fn = agent_id + '.key'
+        p = os.path.join(d, fn)
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, (secret + '\n').encode('utf-8'))
+        finally:
+            os.close(fd)
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
+        return KEY_DIR_NAME + '/' + fn
+
     def register(self, name):
-        """注册新 Agent。返回 (agent_id, secret_hex)。secret 仅此刻可见·不入卷不报不打印。
-        Register a new agent. Returns (agent_id, secret_hex). The secret is visible only at this moment · not persisted, reported or printed.
-        卷里只存 secret 的 hex（用于服务端验签）——这是 HMAC 设计·不是密钥泄露。
-        Only the secret's hex is stored in the volume (for server-side verification) — that is the HMAC design · not a key leak."""
+        """注册新 Agent。返回 (agent_id, secret_hex)。secret 仅此刻可见·不打印。
+        Register a new agent. Returns (agent_id, secret_hex). The secret is visible only at this moment · never printed.
+        密钥写入独立 0600 文件；注册卷只记密钥文件引用·不落明文。
+        The key goes into a standalone 0600 file; the registry volume records only the key-file reference, never the plaintext."""
         agent_id = 'ag-' + secrets.token_hex(8)  # 16 字符前缀 · 16-char prefix
         secret = secrets.token_hex(32)            # 64 字符 hex · 256bit · 64-char hex · 256-bit
-        rec = '[%s] [注册] [%s] [%s] [%s]\n' % (_now(), agent_id, name, secret)
+        ref = self._write_secret(agent_id, secret)
+        rec = '[%s] [注册] [%s] [%s] [%s]\n' % (_now(), agent_id, name, KEY_REF_PREFIX + ref)
         from safeio import atomic_append
         atomic_append(self.path, rec)
+        try:
+            os.chmod(self.path, 0o600)            # 旧卷可能含内联密钥·一并收紧 / legacy volumes may hold inline secrets · tighten too
+        except OSError:
+            pass
         self._agents[agent_id] = Agent(agent_id, name, secret, _now(), False)
         return agent_id, secret
 
@@ -136,6 +195,8 @@ class Registry:
         a = self._agents.get(agent_id)
         if not a or a.revoked:
             raise PermissionError('agent %s 不存在或已吊销' % agent_id)
+        if not a.secret:
+            raise PermissionError('agent %s 密钥文件缺失' % agent_id)
         return hmac.new(a.secret.encode('utf-8'),
                         payload.encode('utf-8'),
                         hashlib.sha256).hexdigest()
@@ -144,7 +205,7 @@ class Registry:
         """验签·常数时间比较防时序攻击。
         Verify · constant-time comparison to prevent timing attacks."""
         a = self._agents.get(agent_id)
-        if not a or a.revoked:
+        if not a or a.revoked or not a.secret:
             return False
         expected = self.sign(agent_id, payload)
         return hmac.compare_digest(expected, sig)

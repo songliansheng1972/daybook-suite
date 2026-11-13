@@ -720,13 +720,23 @@ def main():
         # 启动 MCP 服务器（JSON-RPC 2.0 over stdio）·零依赖·与 index/watch 同一二进制
         # Start the MCP server (JSON-RPC 2.0 over stdio); same binary as index/watch
         # 暴露 resources（卷）/ tools（query/append/cross_ref）/ prompts（4 模板）
-        import mcp_server
+        try:
+            import mcp_server
+        except ImportError:
+            sys.stderr.write('未安装 daybook-mcp：统一入口 `daybook mcp` 需该包提供 mcp_server。\n'
+                             '请先 pip install daybook-mcp。\n')
+            sys.exit(2)
         mcp_server.serve()
     elif cmd in ('orchestrate', '编排', '司南'):
         # 智能体编排中心「司南」（第三产品线）·零依赖·与 index/mcp 同一二进制
         # The agent orchestration hub (product line 3); zero-dep, same binary
         # 身份/任务/锁/心跳/路由 焊成一个闭环；卷为唯一底座
-        import orchestrator
+        try:
+            import orchestrator
+        except ImportError:
+            sys.stderr.write('未安装 daybook-orch：统一入口 `daybook orchestrate` 需该包提供 orchestrator。\n'
+                             '请先 pip install daybook-orch。\n')
+            sys.exit(2)
         sys.exit(orchestrator.main(sys.argv[2:]))
     else:
         print(__doc__)

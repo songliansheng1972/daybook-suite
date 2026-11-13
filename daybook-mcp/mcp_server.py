@@ -24,6 +24,11 @@ Fixes applied against the review report:
 """
 import sys, os, json
 
+# 彻底零写盘：本次进程不生成 __pycache__（必须在 import 本地模块之前设置）。
+# Zero disk writes: never emit __pycache__ in this process (must be set before importing local modules).
+sys.dont_write_bytecode = True
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -35,7 +40,7 @@ from mcp_subscribe import MANAGER as SUBS
 
 SERVER_INFO = {
     'name': 'daybook-mcp',
-    'version': '3.2.4',  # ＝套件语义版本（与 src/pack.py SUITE_VERSION 同源同发）
+    'version': '4.0.0',  # ＝套件语义版本（与 src/pack.py SUITE_VERSION 同源同发）
                        # = suite semantic version (same source, released together with src/pack.py SUITE_VERSION)
 }
 PROTOCOL_VERSION = '2024-11-05'  # MCP 协议版本 · MCP protocol version
@@ -85,6 +90,10 @@ def dispatch(msg, push_callable=None):
     meta = params.get('_meta') if isinstance(params, dict) else None
     agent_id = meta.get('agentId') if meta else None
     signature = meta.get('signature') if meta else None
+    # 客户端未在 _meta 携带身份时，用启动配置里的 DAYBOOK_AGENT_ID 兜底（只影响审计署名）
+    # When the client omits _meta identity, fall back to DAYBOOK_AGENT_ID from the launch config (audit label only)
+    if not agent_id:
+        agent_id = (os.environ.get('DAYBOOK_AGENT_ID') or '').strip() or None
 
     try:
         if method == 'initialize':
@@ -106,6 +115,10 @@ def dispatch(msg, push_callable=None):
             uri = params.get('uri')
             if not uri:
                 raise tr.RPCError(tr.ERR_INVALID_PARAMS, '缺 uri')
+            # 先校验资源真实存在·不存在就报错（不许返回假的 subscribed:True）
+            # Validate the resource really exists first · error when absent (never a fake subscribed:True)
+            if not res.resource_exists(uri):
+                raise tr.RPCError(tr.ERR_INVALID_PARAMS, '资源不存在：%s' % uri)
             if push_callable is None:
                 raise tr.RPCError(tr.ERR_INTERNAL_ERROR, '此通道不支持 push（subscribe 需双向通道）')
             ok = SUBS.subscribe(uri, push_callable)
@@ -151,6 +164,11 @@ def dispatch(msg, push_callable=None):
 
     except tr.RPCError as e:
         return tr.make_error(req_id, e.code, e.message, e.data)
+    except res.RootError as e:
+        # 读错根必须报错·不许静默返回空资源
+        # A wrong root must fail loudly · never return resources as an empty list
+        return tr.make_error(req_id, tr.ERR_INTERNAL_ERROR,
+                             '账本根目录不可用：%s' % e)
     except ValueError as e:
         return tr.make_error(req_id, tr.ERR_INVALID_PARAMS, str(e))
     except Exception as e:
@@ -208,6 +226,16 @@ def serve(infile=None, outfile=None):
 
 
 def main():
+    """启动自检后进主循环。根无效 → stderr 报错并退出（不静默空跑）。
+    Run the startup self-check, then enter the main loop. An invalid root → stderr error and exit (never silently serve an empty ledger)."""
+    try:
+        root, nvol = res.self_check()
+    except res.RootError as e:
+        sys.stderr.write('[daybook-mcp] FATAL 启动自检失败：%s\n' % e)
+        sys.stderr.flush()
+        raise SystemExit(2)
+    sys.stderr.write('[daybook-mcp] root=%s volumes=%d\n' % (root, nvol))
+    sys.stderr.flush()
     serve()
 
 

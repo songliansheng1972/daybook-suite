@@ -123,6 +123,17 @@ def _sign(secret, payload):
                     payload.encode('utf-8'), hashlib.sha256).hexdigest()
 
 
+def _append_sig(secret, volume, tag, subtag=None, to=None, content='', ts=None):
+    """append 的 v2 签名（绑 volume/tag/subtag/to/ts + 正文）·返 (sig, ts)。
+    The v2 append signature (binds volume/tag/subtag/to/ts + body) · returns (sig, ts)."""
+    sys.path.insert(0, HERE)
+    from mcp_tools import _append_payload
+    ts = int(time.time()) if ts is None else ts
+    # 与 daybook_append 一致：缺省 subtag 归一为 '_'
+    # Same as daybook_append: a missing subtag normalises to '_'
+    return _sign(secret, _append_payload(volume, tag, subtag or '_', to, ts, content)), ts
+
+
 def test_transport():
     """验收 1：JSON-RPC 2.0 编解码。
     Acceptance 1: JSON-RPC 2.0 encode/decode.
@@ -288,12 +299,12 @@ def test_daybook_append_impersonation(tmp_root):
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
     content = '冒名测试'
-    sig = _sign(secret, content)
+    sig, ts = _append_sig(secret, '测试MCP', '冒名', content=content)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '测试MCP', 'tag': '冒名',
                                              'author': '别人', 'content': content,
-                                             'agent_id': agent_id, 'signature': sig}}}])
+                                             'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     r = out[0].get('result', {})
     if not _ok('P1-1r3.4 冒名 append 返 isError:true', r.get('isError') is True, str(r)):
         return False
@@ -308,12 +319,12 @@ def test_daybook_append_signed(tmp_root):
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
     content = '签名追加的条目'
-    sig = _sign(secret, content)
+    sig, ts = _append_sig(secret, '测试MCP', '签名', content=content)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '测试MCP', 'tag': '签名',
                                              'author': agent_id, 'content': content,
-                                             'agent_id': agent_id, 'signature': sig}}}])
+                                             'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     if not _ok('P1-1.1 签名 append 有响应', len(out) == 1):
         return False
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
@@ -331,7 +342,8 @@ def test_daybook_append_bad_sig(tmp_root):
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '测试MCP', 'tag': '坏签',
                                              'author': agent_id, 'content': 'x',
-                                             'agent_id': agent_id, 'signature': bad_sig}}}])
+                                             'agent_id': agent_id, 'signature': bad_sig,
+                                             'ts': int(time.time())}}}])
     if not _ok('P1-1.3 坏签名有响应', len(out) == 1):
         return False
     r = out[0].get('result', {})
@@ -350,12 +362,12 @@ def test_path_traversal(tmp_root):
     # W-75 fix ④: the signature is verified before the volume name ⇒ authenticate first to reach the "illegal volume name" check
     aid, sec = _register_test_agent(tmp_root, '穿越Agent')
     content = 'x'
-    sig = _sign(sec, content)
+    sig, ts = _append_sig(sec, '../etc/passwd', 'x', content=content)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '../etc/passwd', 'tag': 'x',
                                              'author': aid, 'content': content,
-                                             'agent_id': aid, 'signature': sig}}}])
+                                             'agent_id': aid, 'signature': sig, 'ts': ts}}}])
     r = out[0].get('result', {})
     if not _ok('P1-3.1 ../ 返 isError:true', r.get('isError') is True, str(r)):
         return False
@@ -577,12 +589,12 @@ def test_append_to_field(tmp_root):
     aid1, sec1 = _register_test_agent(tmp_root, '发送者')
     aid2, _ = _register_test_agent(tmp_root, '收件人')
     content = 'F1 测试·带收件人'
-    sig = _sign(sec1, content)
+    sig, ts = _append_sig(sec1, '测试MCP', 'F1', to=aid2, content=content)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '测试MCP', 'tag': 'F1',
                                              'author': aid1, 'content': content,
-                                             'to': aid2, 'agent_id': aid1, 'signature': sig}}}])
+                                             'to': aid2, 'agent_id': aid1, 'signature': sig, 'ts': ts}}}])
     r = out[0].get('result', {})
     if not _ok('F1.1 append 带 to 成功', not r.get('isError'), str(r)):
         return False
@@ -603,12 +615,12 @@ def test_append_to_unknown_rejected(tmp_root):
     os.environ['DAYBOOK_ROOT'] = tmp_root
     aid, sec = _register_test_agent(tmp_root, '发送者')
     content = 'F1 拒测'
-    sig = _sign(sec, content)
+    sig, ts = _append_sig(sec, '测试MCP', 'F1', to='ag-不存在的ID', content=content)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                     'params': {'name': 'daybook_append',
                                'arguments': {'volume': '测试MCP', 'tag': 'F1',
                                              'author': aid, 'content': content,
-                                             'to': 'ag-不存在的ID', 'agent_id': aid, 'signature': sig}}}])
+                                             'to': 'ag-不存在的ID', 'agent_id': aid, 'signature': sig, 'ts': ts}}}])
     r = out[0].get('result', {})
     return _ok('F1.3 未注册收件人被拒', r.get('isError') is True and '注册' in r.get('content', [{}])[0].get('text', ''),
                str(r))
@@ -622,18 +634,18 @@ def test_unread_mark_read(tmp_root):
     aid, sec = _register_test_agent(tmp_root, '读者')
     # 先写 2 条新内容
     # Write 2 new pieces of content first
-    sig1 = _sign(sec, 'F2 条目1')
+    sig1, ts1 = _append_sig(sec, '测试MCP', 'F2', content='F2 条目1')
     _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
            'params': {'name': 'daybook_append',
                       'arguments': {'volume': '测试MCP', 'tag': 'F2',
                                     'author': aid, 'content': 'F2 条目1',
-                                    'agent_id': aid, 'signature': sig1}}}])
-    sig2 = _sign(sec, 'F2 条目2')
+                                    'agent_id': aid, 'signature': sig1, 'ts': ts1}}}])
+    sig2, ts2 = _append_sig(sec, '测试MCP', 'F2', content='F2 条目2')
     _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
            'params': {'name': 'daybook_append',
                       'arguments': {'volume': '测试MCP', 'tag': 'F2',
                                     'author': aid, 'content': 'F2 条目2',
-                                    'agent_id': aid, 'signature': sig2}}}])
+                                    'agent_id': aid, 'signature': sig2, 'ts': ts2}}}])
     # 查未读·应含刚写的 2 条 F2 内容（可能含初始 3 条·因游标从 0 起）
     # Query unread · should contain the 2 just-written F2 entries (may include the initial 3 · because the cursor starts at 0)
     ts_q = int(time.time())
