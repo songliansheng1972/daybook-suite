@@ -1,0 +1,91 @@
+# CHANGELOG
+
+本文件记录**对外可见**的变更。v3.2.4 及以前的逐版记录在各包内 `CHANGELOG.md`（历史卷，随包发行）；
+本文件自下一版起接续记录。
+
+> **状态**：本节随 v4.0.0 定稿（2026-11-13）。
+
+---
+
+## v4.0.0 · 2026-11-13
+
+### 破坏性变更
+
+1. **`daybook_append` 新增必填 `ts`**
+   - 改了什么：工具 schema 的 `required` 加入 `ts`（Unix 秒）；服务端在验签**之后**校验时间窗 ±60s。
+   - 对使用者的影响：任何调用 `daybook_append` 的客户端都必须带 `ts` 并用 v2 载荷重签；不带 `ts` 的调用直接失败（参数缺失），带旧签名则验签失败。
+
+2. **签名载荷升级 v2**
+   - 改了什么：验签载荷由「仅 `content`」改为
+     `append|v2|volume=<卷>|tag=<主>|subtag=<子或_>|to=<收件人>|ts=<时间戳>|content=<正文>`。
+   - 对使用者的影响：客户端签名实现须照此拼接（空 `subtag` 用 `_`，空 `to` 留空）；v1 签名不再被接受。换来的是签名绑定卷/标签/收件人/时间戳，**跨卷重放与改标重放不可行**。
+
+3. **修复前生成的 `cross_ref` 旧引用验签失败**
+   - 改了什么：修复前块边界多算「下一条条目头行」，哈希覆盖「本条 + 下一条头行」；修复后只覆盖本条。
+   - 对使用者的影响：升级前已落盘的 `[卷#L行-SHA8]` 互见引用，`verify` 会报不符；这是**纠正，不是回归**。需要重新生成引用，**新旧引用不可混用**。纯无编号旧卷、逐条生成过的引用同样受影响。
+
+4. **只读模式下四个写工具从 `tools/list` 消失**
+   - 改了什么：`MCP_READ_ONLY=1` 时 `daybook_append`／`daybook_mark_read`／`daybook_heartbeat`／`daybook_index` 不再出现在 `tools/list`，直接调用亦被拒绝（审计走 stderr）。
+   - 对使用者的影响：只在显式开启只读模式时发生；缓存工具清单或按固定清单做能力探测的客户端需处理清单变化。默认（不设该变量）清单不变。
+
+### 修复
+
+1. **`cross_ref`：`[#N]` 编号前缀与块边界 off-by-one**
+   - 条目头正则改为 `^(?:\[#\d+\][ ]*)?\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?\]`，带编号与旧式无编号都认；块边界修到「下一个条目头」，不再吞下一条头行；末条到文末并显式标注「（末条·至文末：其后无条目头）」。
+   - 影响：带编号条目（账本绝大多数）从此能生成/校验引用；`make_ref`、`verify`、索引路径三处 SHA8 口径一致。
+
+2. **`_entry_ref` 不再静默吞错**
+   - 失败改为抛异常：`multi_query` 捕获后写 stderr `WARN 互见引用失败 …`，并在输出行标 `↪[互见失败]`。
+   - 影响：互见失败不再伪装成「没有引用」，可定位、可统计。
+
+3. **`_root()` 解析 conf**
+   - 解析顺序：`DAYBOOK_ROOT`（显式覆盖）> conf `[index] root`（空=conf 所在目录；`..`=上级；相对=拼 conf 目录；绝对=原样）。
+   - conf 缺失/不可读、根目录不存在 → 抛 `RootError`，**不再静默当空账本**；MCP 启动自检把 root 与卷数写到 stderr，根无效直接退出（退出码 2）。
+
+4. **`resources/subscribe` 校验 URI**
+   - 订阅前校验资源真实存在，不存在报 `-32602`，不再返回假的 `subscribed:true`；目录派生件与卷共用同一 `uri → 路径` 映射，订阅的 mtime 监视也同源。
+
+5. **`_multidx_dir` 与 `daybook_multidx` 同源**
+   - 改按 conf 的 `index.out_dir` + `multilevel.out_dir` 解析（生产为 `<根>/索引/multilevel`）；`multi_query` 的「目录未生成」提示会打印实际查找路径；旧 `<根>/多级` 仍可读。
+
+6. **HMAC 密钥移出注册卷（0600）＋签名边车**
+   - 新注册写独立密钥文件 `.daybook_keys/<agent_id>.key`（文件 0600、目录 0700，显式 `os.open`/`chmod`，不依赖 umask），注册卷只记 `[密钥文件=.daybook_keys/<id>.key]`，并把注册卷本身收紧到 0600；旧内联密钥格式仍可读（**建议轮换**，见发布清单）。
+   - 新增 `MCP签名边车.jsonl`（append-only）：每次写工具调用记录 `agent_id / signature / payload / ts` 等，供事后验签；边车写失败则**不动卷**。
+
+7. **统一入口首次必断（#83447）**
+   - 改了什么：`cli.py` 启动时探测已安装的 `daybook_suite`／`daybook_mcp`／`daybook_orch`，把各包 `payload/` 一并链入运行目录并加入 `sys.path`；未安装对应包时，`daybook mcp`／`daybook orchestrate` 给出明确提示（`pip install daybook-mcp` / `daybook-orch`）并以退出码 2 结束，不再抛 `ModuleNotFoundError`。
+   - 对使用者的影响：三包齐装后，`daybook mcp`／`daybook orchestrate` **首跑即可用**，无需先各自跑一次独立入口。
+
+### 新增
+
+1. **`MCP_READ_ONLY=1`**：只读模式——隐藏并拒绝四个写工具，审计与告警走 stderr，零写盘。取值 `1/true/yes/on` 均生效。
+2. **启动器 `daybook-mcp`**：零依赖 shell 启动器，固定 `PYTHONDONTWRITEBYTECODE=1`（不在账本/包内生成 `__pycache__`），支持 `DAYBOOK_ROOT`、`PYTHON`、`MCP_READ_ONLY`。
+3. **`mcp-clients/` 三件**：`deepseek-harness.json`、`workbuddy.json`、`README.md`——常见 MCP 客户端的挂载配置样例。
+4. **`mcp_p0_regression.py`**：13 项 P0 回归（initialize、只读隐藏写工具、四写工具被拒、`cross_ref` 秒级头、编号前缀与末条、生产 `索引/multilevel` 路径、`resources/read` offset/limit、subscribe 存在性、只读零写盘、密钥 0600、根由 conf 解析、启动零 `__pycache__`、空卷告警）。
+5. **发行物补齐**：`daybook-mcp` 的 wheel/sdist 现实际包含启动器 `daybook-mcp`、`mcp-clients/` 三件、`mcp_p0_regression.py` 与 `mcp_test.py`（此前 `package-data` 未覆盖 `payload/mcp-clients/*`，命中 0）。
+
+### 性能
+
+1. **`multi_query` 整卷读取次数：命中数 ×1／×2 → 1**
+   - 单次调用内建整卷索引（键 = path + mtime_ns + size），互见引用与全文共用；**跨调用不复用**，账本变动即重读。
+   - 本机核验（8.25 MB / 6,000 条合成卷，500 条）：`reads=1`、0.375 s；旧路径实测 ≈0.124 s/条，500 条约 62 s。
+   - 任务书读数（14.95 MB 真实卷）：`full=true limit=500` 由 **129.0 s → 1.07 s**。
+   - ⚠️ 仓内《发布版缺口与收敛_20261113.md》记同配置为 3.292 s。**三处读数口径未统一**，发布前须在同一卷上复测一次再定稿本节数字。
+
+### 版本号：4.0.0
+
+- 依据：破坏性变更 **4 条**，其中两条会让**已在用的第三方客户端当天报错**（`ts` 必填、v2 载荷），一条会让**已落盘数据验签失败**（旧 `cross_ref` 引用）。按语义化版本，这是主版本号变更。
+- 不取 3.3.0：3.x 内做会静默破坏调用方，`pip install -U` 的人无从预期。
+- 单一真相源：`src/pack.py` 的 `SUITE_VERSION = '4.0.0'`；三包同版同发。
+
+---
+
+## 已知未修（不阻塞发版，但应知会）
+
+- `mark_read` 游标写入非原子、无锁；签名载荷仍为 `read:<volume>`（可重放）。
+- `DAYBOOK_AGENT_ID` 可兜底审计署名（只影响「谁干的」的记录，不越权）。
+- 可写模式的审计卷无轮转。
+- `daily_journal` prompt 缺 `subtag` 参数。
+- `initialize` 仍声明 `resources.listChanged=true` 但不发通知。
+- `push()` 吞异常（含 BrokenPipe），死订阅不会自清。
+- 单卷不可读时仅汇总告警，不逐卷报错。

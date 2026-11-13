@@ -1,6 +1,6 @@
 # QIJUZHU · DAYBOOK
 
-> **Version note:** v3.2 is a single-machine prototype for a local plain-text memory workflow. Concurrency recovery, permission control, identity authorization, and formal enterprise stress testing have not been completed.
+> **Version note:** v4.0 is a single-machine prototype for a local plain-text memory workflow. Concurrency recovery, permission control, identity authorization, and formal enterprise stress testing have not been completed.
 
 ## Three numbers
 

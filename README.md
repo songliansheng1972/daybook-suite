@@ -4,7 +4,7 @@
 
 > **⬇ Download · Quick start**  
 > **Source — free forever, no signup:** `git clone https://github.com/songliansheng1972/daybook-suite.git`  
-> **Prebuilt bundle:** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) — or the one-click bundle at **[daybooksuite.com](https://daybooksuite.com)** ($10.99 convenience fee; the source stays free).  
+> **Download — free:** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) · **[daybooksuite.com](https://daybooksuite.com)** · `pip install daybook-suite daybook-mcp daybook-orch` — no account, no payment. A paid one-click bundle may come later — not now.  
 > **Run in 10 seconds:** `cd daybook && python3 daybook.py index`
 
 Three independent parts, one foundation, one source of truth:
@@ -70,13 +70,12 @@ Each package is self-contained; `daybook.conf` lets you change volume paths.
 
 ## License
 
-> **This repository licenses each part separately; the root `LICENSE` is a signpost only, not a license text.** The full license texts live inside each package:  
-> `daybook/LICENSE` (MIT) · `daybook-mcp/LICENSE` (MIT) · `daybook-orch/LICENSE` (AGPL-3.0-or-later)  
-> See `src/LICENSING.md` for the tiered-licensing notes; the source-side originals are `src/LICENSE` and `src/LICENSE.orch`.
+> **The root `LICENSE` is the standard MIT full text, covering `src/` and `daybook-mcp/` (and the generated `daybook/` package).**  
+> **Daybook Orch (`daybook-orch/` and its source files) is NOT MIT** — it is licensed under **AGPL-3.0-or-later**, or a separate commercial license. Its full text lives at `daybook-orch/LICENSE` (also `LICENSES/AGPL-3.0-or-later.txt`); per-part attribution is in `NOTICE`; tiered-licensing notes are in `src/LICENSING.md`.
 
 - **Daybook · Daybook MCP**: MIT (fully open source).
-- **Daybook Orch**: AGPL-3.0-or-later, or a separate commercial license (**closed-source embedding / hosted SaaS without open-sourcing / official support & compliance endorsement** — contact us).
-- **$10.99 download** = a convenience fee for the prebuilt bundle; **the source code is forever public, free for anyone to fetch**.
+- **Daybook Orch**: **AGPL-3.0-or-later**, or a separate commercial license (**closed-source embedding / hosted SaaS without open-sourcing / official support & compliance endorsement** — contact **songliansheng@vip.sina.com**).
+- **Everything is free right now** — source, [Releases](https://github.com/songliansheng1972/daybook-suite/releases), and the site; no account, no payment. A paid one-click bundle may come later — not now. **The source code stays public and free for anyone to fetch.**
 - The code is open, **but the name is not free to reuse** — `daybook` / `起居注` / `璇玑` / `司南` are attribution marks.
 
 ## Source & packages (one source, three artifacts)
@@ -96,16 +95,16 @@ daybook-suite/            ← this repo
 
 ## Version & build number (reproducible)
 
-- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v3.2.1**.
-- **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels) and docs are **not** counted.
+- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.0**.
+- **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels, launcher, test scripts) and docs are **not** counted.
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v3.2.1  | 7                   | 1920         |
-| daybook-mcp  | v3.2.1  | 12                  | 3473         |
-| daybook-orch | v3.2.1  | 9                   | 2195         |
+| daybook      | v4.0.0  | 7                   | 2002         |
+| daybook-mcp  | v4.0.0  | 12                  | 4101         |
+| daybook-orch | v4.0.0  | 9                   | 2271         |
 
-**Code size**: **7,588 lines** across the three packages' product files (1,920 + 3,473 + 2,195).
+**Code size**: **8,374 lines** across the three packages' product files (2,002 + 4,101 + 2,271).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -145,7 +144,7 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 
 > **⬇ 下载 · 快速开始**  
 > **源码（永远免费·无需注册）：** `git clone https://github.com/songliansheng1972/daybook-suite.git`  
-> **整装包：** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) —— 或到 **[daybooksuite.com](https://daybooksuite.com)** 一键下载整装（$10.99 便利费；源码始终免费）。  
+> **下载（当前全部免费）：** [Releases](https://github.com/songliansheng1972/daybook-suite/releases) · **[daybooksuite.com](https://daybooksuite.com)** · `pip install daybook-suite daybook-mcp daybook-orch` —— 无需账号、无需付款。将来可能有一键包，但不是现在。  
 > **十秒跑起来：** `cd daybook && python3 daybook.py index`
 
 三件分立，同一底座，同一份真相：
@@ -194,13 +193,12 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 
 ## 许可
 
-> **本仓按件分层授权，仓根 `LICENSE` 仅为指路牌、非授权文本。** 许可全文在各包内：  
-> `daybook/LICENSE`（MIT）· `daybook-mcp/LICENSE`（MIT）· `daybook-orch/LICENSE`（AGPL-3.0-or-later）  
-> 分层说明见 `src/LICENSING.md`；源侧原件为 `src/LICENSE` 与 `src/LICENSE.orch`。
+> **仓根 `LICENSE` 是标准 MIT 全文，覆盖 `src/` 与 `daybook-mcp/`（以及由其生成的 `daybook/` 包）。**  
+> **司南（`daybook-orch/` 及其源码件）不是 MIT** —— 适用 **AGPL-3.0-or-later**，或另购商业许可。全文见 `daybook-orch/LICENSE`（另见 `LICENSES/AGPL-3.0-or-later.txt`）；逐件归属见 `NOTICE`；分层说明见 `src/LICENSING.md`。
 
 - **起居注 · 璇玑**：MIT（全开源）。
-- **司南**：AGPL-3.0-or-later，或另购商业许可（**闭源嵌入 / 对外 SaaS 而不开源 / 官方支持与合规背书** 另谈）。
-- **$10.99 下载** ＝ 整装包的**便利费**；**源码永远公开，人人可免费自取**。
+- **司南**：**AGPL-3.0-or-later**，或另购商业许可（**闭源嵌入 / 对外 SaaS 而不开源 / 官方支持与合规背书** 另谈，联系 **songliansheng@vip.sina.com**）。
+- **当前全部免费**：源码、[Releases](https://github.com/songliansheng1972/daybook-suite/releases)、站点，三处皆无账号、无付款。将来**可能**出一键包（便利费），但**不是现在**。**源码永远公开，人人可免费自取。**
 - 码可开源，**名不可乱用** —— `daybook` / `起居注` / `璇玑` / `司南` 为署名标识。
 
 ## 源与包（一源三产物）
@@ -220,16 +218,16 @@ daybook-suite/            ← 本仓
 
 ## 版本号与构建号（可复现）
 
-- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v3.2.1**。
-- **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵）与文档**不计入**。
+- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.0**。
+- **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵、启动器、测试脚本）与文档**不计入**。
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v3.2.1 | 7          | 1920 |
-| 璇玑  | v3.2.1 | 12         | 3473 |
-| 司南  | v3.2.1 | 9          | 2195 |
+| 起居注 | v4.0.0 | 7          | 2002 |
+| 璇玑  | v4.0.0 | 12         | 4101 |
+| 司南  | v4.0.0 | 9          | 2271 |
 
-**代码规模**：三包产品件合计 **7,588 行**（1,920 ＋ 3,473 ＋ 2,195）。
+**代码规模**：三包产品件合计 **8,374 行**（2,002 ＋ 4,101 ＋ 2,271）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  
