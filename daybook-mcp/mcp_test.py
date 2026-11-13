@@ -237,7 +237,29 @@ def test_daybook_index(tmp_root):
                     'params': {'name': 'daybook_index',
                                'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    return _ok('7.5 认基线后索引重建成功', '索引已重建' in text and '3 条' in text, text)
+    if not _ok('7.5 认基线后索引重建成功', '索引已重建' in text and '3 条' in text, text):
+        return False
+    # 7.6 违例必须走同一聚合：isError + rc=3 + 不写回（一次签名调用不能把篡改重建为新基线）
+    # 7.6 a violation must go through the same aggregation: isError + rc=3 + nothing written
+    vol = os.path.join(tmp_root, '测试MCP.txt')
+    orig = open(vol, 'rb').read()
+    mid = len(orig) // 2
+    open(vol, 'wb').write(orig[:mid] + (b'X' if orig[mid:mid + 1] != b'X' else b'Y') + orig[mid + 1:])
+    cur_path = os.path.join(tmp_root, '索引', '.cursor_测试MCP.json')
+    cur_before = open(cur_path, 'rb').read() if os.path.exists(cur_path) else b''
+    ts = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts)
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                    'params': {'name': 'daybook_index',
+                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
+    res = out[0].get('result', {})
+    text = res.get('content', [{}])[0].get('text', '')
+    ok3 = _ok('7.6 违例 ⇒ MCP isError + rc=3', res.get('isError') is True and 'rc=3' in text,
+              text[:100])
+    ok4 = _ok('7.7 违例不写回游标',
+              (open(cur_path, 'rb').read() if os.path.exists(cur_path) else b'') == cur_before)
+    open(vol, 'wb').write(orig)
+    return ok3 and ok4
 
 
 def test_daybook_query(tmp_root):

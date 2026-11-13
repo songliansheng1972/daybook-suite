@@ -21,6 +21,7 @@ Cases
   L 正常追加后删索引                            ⇒ rc=5 且无 traceback（旧实现 FileNotFoundError rc=1）
   M 三件派生件全删                              ⇒ rc=5（无外部锚·复跑仍 5），认基线后 0
   N 索引缺失且卷变长、旧前缀被改                 ⇒ rc=3（不能因「卷变大」跳过前缀校验）
+  O 违例态认基线                                ⇒ rc=3，三件派生件零变化（不替人认下篡改）
 
 变异验证 / mutation check
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
@@ -122,6 +123,19 @@ def _log(tag, r):
         print('      ' + line)
 
 
+def _dir_hash(d):
+    """目录内所有文件（按名排序）的联合 sha256：用于证明「一个字节都没写」。
+    Combined sha256 of every file in a directory (name-sorted): proves nothing was written."""
+    import hashlib as _h
+    h = _h.sha256()
+    for name in sorted(os.listdir(d)):
+        p = os.path.join(d, name)
+        if os.path.isfile(p):
+            h.update(name.encode('utf-8'))
+            h.update(io.open(p, 'rb').read())
+    return h.hexdigest()
+
+
 def _tamper_mid(path, start_frac):
     """中部等长替换一个数字字节（仍是数字 ⇒ 条目头仍合法，隔离出哈希判据）。
     Equal-length replacement of one digit near the middle (still a digit ⇒ the entry head stays
@@ -166,6 +180,7 @@ def main():
         _ok('A 认基线后 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
 
         # D：中部等长替换 + 恢复 mtime ⇒ 必须违例（不是未变跳过）
+        orig_d = io.open(vol, 'rb').read()
         st, pos = _tamper_mid(vol, 0.50)
         os.utime(vol, (st.st_atime, st.st_mtime))
         same_mtime = os.stat(vol).st_mtime == st.st_mtime
@@ -178,17 +193,23 @@ def main():
         _ok('D 不得报「未变·跳过」', '未变·跳过' not in txt)
         _log('D', r)
 
-        # 复位：违例已全量重扫，复跑应稳定在未变
+        # 复位：把账本原文写回，指纹重新对上（违例已不再自动写回）
+        # Reset: put the original volume bytes back so the fingerprints match again
+        # (a violation no longer writes anything back)
+        io.open(vol, 'wb').write(orig_d)
         r = _run(work)
-        _ok('D 复位 复跑 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+        _ok('D 恢复原文后 复跑 rc=0', r.returncode == 0,
+            'rc=%d | %s' % (r.returncode, (r.stdout + r.stderr).strip()[:160]))
 
         # E：同一手法、不恢复 mtime ⇒ 同样违例
+        orig_e = io.open(vol, 'rb').read()
         st, pos = _tamper_mid(vol, 0.35)
         r = _run(work)
         txt = r.stdout + r.stderr
         _ok('E 等长中部不恢复 mtime ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
         _ok('E 明确报违例', ('违例' in txt) and ('等长改写' in txt))
         _log('E', r)
+        io.open(vol, 'wb').write(orig_e)
         _run(work)
 
         # C：纯追加 ⇒ rc=0 且必须走「只追加」，不得全量重扫
@@ -236,6 +257,7 @@ def main():
 
         # G 删索引后等长替换 ⇒ 索引缺失仍验哈希 ⇒ 违例（rc=3），不得洗成证据缺失
         os.remove(idf)
+        orig_g = io.open(vol, 'rb').read()
         _tamper_mid(vol, 0.45)
         r = _run(work)
         txt = r.stdout + r.stderr
@@ -243,9 +265,14 @@ def main():
         _ok('G 报「索引缺失但哈希不符」', '索引缺失但全卷哈希' in txt or '等长改写' in txt,
             ' | '.join(l.strip() for l in txt.splitlines() if '★' in l)[:160])
         _ok('G 不得判未变', '未变·跳过' not in txt)
-        _ok('G 不自动重建（违例后须认基线）', not os.path.exists(idf),
+        _ok('G 不自动重建（违例后须恢复原文）', not os.path.exists(idf),
             'exists=%s' % os.path.exists(idf))
         _log('G', r)
+        # 违例不写回：baseline 也拒（见 O）；恢复原文后再认基线
+        # A violation writes nothing back and baseline refuses (see O); restore then baseline
+        r = _base(work)
+        _ok('G 违例态认基线被拒 rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
+        io.open(vol, 'wb').write(orig_g)
         _base(work)
 
         # H 删游标后等长替换 ⇒ 证据缺失（rc=5）
@@ -274,6 +301,8 @@ def main():
         _base(work)
 
         # J 替换后自己重写游标的 hash/size/mtime ⇒ 与封存指纹不符 ⇒ rc=3
+        orig_j = io.open(vol, 'rb').read()
+        orig_cp = io.open(cp, 'rb').read()
         st, _pos = _tamper_mid(vol, 0.40)
         import hashlib as _hashlib
         new_hash = _hashlib.sha256(open(vol, 'rb').read()).hexdigest()
@@ -289,6 +318,8 @@ def main():
         _ok('J 报派生件互相矛盾', '封存指纹' in txt or '被改写' in txt,
             ' | '.join(l.strip() for l in txt.splitlines() if '★' in l)[:160])
         _log('J', r)
+        io.open(vol, 'wb').write(orig_j)
+        io.open(cp, 'wb').write(orig_cp)
         _run(work)
 
         # K 删索引加删游标 ⇒ 证据缺失（rc=5），不写回；认基线后才恢复
@@ -333,6 +364,7 @@ def main():
 
         # N 索引缺失且卷变长：旧前缀被改 ⇒ 仍须判 3（不能因「卷变大」跳过校验）
         os.remove(idf)
+        orig_n = io.open(vol, 'rb').read()
         _tamper_mid(vol, 0.30)
         with io.open(vol, 'a', encoding='utf-8') as f:
             f.write('[2026-11-13 14:00:00] [测试] [变长] [皮特] 变长追加\n')
@@ -341,10 +373,26 @@ def main():
         _ok('N 索引缺失+变长+旧前缀改 ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
         _ok('N 报旧前缀哈希不符', ('旧前缀' in txt) or ('前缀哈希不符' in txt))
         _log('N', r)
+        r = _base(work)
+        _ok('N 违例态认基线被拒 rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
+        io.open(vol, 'wb').write(orig_n)
         _base(work)
 
         n_rows = sum(1 for l in io.open(idf, encoding='utf-8') if l.strip()) - 1
-        _ok('索引行数与卷条目一致', n_rows == 123, 'rows=%d' % n_rows)
+        _ok('索引行数与卷条目一致', n_rows == 122, 'rows=%d' % n_rows)
+
+        # O 违例态认基线 ⇒ rc=3 且三件派生件零变化（不替人认下篡改）
+        os.remove(idf)
+        before = _dir_hash(os.path.join(work, '索引'))
+        _tamper_mid(vol, 0.60)
+        r = _base(work)
+        after = _dir_hash(os.path.join(work, '索引'))
+        _ok('O 违例态认基线被拒 rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
+        _ok('O 报「未写任何派生件」', '未写任何派生件' in (r.stdout + r.stderr))
+        _ok('O 派生件零变化', before == after)
+        _log('O', r)
+        io.open(vol, 'wb').write(orig_n)
+        _base(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -352,7 +400,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–N 十四组用例全绿')
+    print('PASS: A–O 十五组用例全绿')
     return 0
 
 

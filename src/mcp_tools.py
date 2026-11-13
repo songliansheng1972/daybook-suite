@@ -977,16 +977,38 @@ def call_tool(name, args, agent_id=None, signature=None):
             _verify_agent(agent_id, signature, 'reindex:%d' % ts)
             _record_signature('daybook_index', agent_id, signature, 'reindex:%d' % ts, ts=ts)
             conf = _load_conf()
-            # 签名只证明调用者是谁，不证明有人看过这卷：MCP 不认基线。
-            # 证据缺失时原样返回错误（rc=5），不写索引、不写游标/封存，把问题抛回给人。
-            # A signature proves who called, not that anyone reviewed the volume: MCP never
-            # accepts a baseline. On missing evidence it returns the error (rc=5) and writes
-            # nothing back, leaving the decision to a human.
+            # 与 CLI 同一套判据、同一种聚合：不在这里复制判拒逻辑，也不漏 2/3/4。
+            # 有 3（违例）时 build 已按卷不写回，一次签名调用不能把篡改重建为新基线。
+            # Same predicates and aggregation as the CLI — no duplicated refusal logic and
+            # nothing dropped. On 3 the build already wrote nothing for that volume, so one
+            # signed call can never rebuild tampering into a fresh baseline.
             per, total, _rep = _db.build(conf, _root())
-            if _db.EVIDENCE_MISSING:
-                detail = '；'.join('%s: %s' % (v, w) for v, w in _db.EVIDENCE_MISSING)
-                raise ValueError('rc=5 派生件证据缺失，未写回、未重建：%s。'
-                                 '请在服务端显式认基线：python3 daybook.py baseline' % detail)
+            codes = []
+            if _db.CONFIG_ERRORS: codes.append(_db.EXIT_CONFIG)
+            if _db.VIOLATIONS: codes.append(_db.EXIT_VIOLATION)
+            if _db.EVIDENCE_MISSING: codes.append(_db.EXIT_EVIDENCE)
+            if _db._report_authors(conf, _root(), quiet_green=True):
+                codes.append(_db.EXIT_AUTHOR)
+            rc = _db.worst_exit(codes)
+            if rc:
+                detail = []
+                if _db.CONFIG_ERRORS:
+                    detail.append('配置错 %d 处：%s' % (len(_db.CONFIG_ERRORS),
+                                  '；'.join('%s: %s' % (v, w) for v, w in _db.CONFIG_ERRORS)))
+                if _db.VIOLATIONS:
+                    detail.append('append-only 违例 %d 处（未写回）：%s' % (
+                        len(_db.VIOLATIONS),
+                        '；'.join('%s: %s' % (v, w) for v, w in _db.VIOLATIONS)))
+                if _db.EVIDENCE_MISSING:
+                    detail.append('证据缺失 %d 处（未写回）：%s。请在服务端显式认基线：'
+                                  'python3 daybook.py baseline' % (
+                                      len(_db.EVIDENCE_MISSING),
+                                      '；'.join('%s: %s' % (v, w) for v, w in _db.EVIDENCE_MISSING)))
+                if _db.EXIT_AUTHOR in codes:
+                    detail.append('作者口径红（未写回）')
+                if rc == _db.EXIT_VIOLATION:
+                    _audit('index', agent_id, '违例·拒绝写回 → rc=3', ok=False)
+                raise ValueError('rc=%d %s' % (rc, '｜'.join(detail)))
             summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total
             _audit('index', agent_id, '→ %d 条' % total)
             return _tool_ok(summary)

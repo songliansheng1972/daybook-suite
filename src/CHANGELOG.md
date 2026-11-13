@@ -35,6 +35,10 @@
   **not** claimed to be detectable without an external anchor.
 - **证据缺失不再自动重建**：退 5 后不写回索引/游标/封存，状态保持 5，直到显式
   `baseline`（认基线）。首次建立同样走这条。
+- **认基线遇违例一律拒**：`baseline` 先只验不写；有 append-only 违例或配置错即退 3/2，
+  不写任何派生件——不把「账本被改过」替人认成新基线。作者口径红只报不拦。
+- **判拒只有一个聚合**：CLI 与 MCP 的 `daybook_index` 共用 `worst_exit`（2/3/4/5 全部上报，
+  屏幕/审计记违例）；违例卷在落笔前再次收紧，一次调用不能把篡改重建为新基线。
 - **证据缺失路径不再崩溃**：正常追加后删索引会走「卷变大」分支数不存在的索引文件
   （`FileNotFoundError` rc=1）；现于分支前判「索引不存在」，直接退 5。
 - **版本锚**：`SUITE_VERSION`、三包 `version.txt`、仓根与包内 README、CHANGELOG 统一 4.0.6。

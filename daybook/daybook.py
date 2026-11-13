@@ -445,7 +445,7 @@ def _write_cursor(path, obj):
         f.write(json.dumps(obj, ensure_ascii=False))
 
 
-def build(conf, root='.', baseline=False):
+def build(conf, root='.', baseline=False, dry=False):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
     tail-read on pure append, flag violations when the old part was rewritten.
@@ -491,6 +491,8 @@ def build(conf, root='.', baseline=False):
     seals = old_stamp.get('vol_seals') if isinstance(old_stamp, dict) else None
     seals = seals if isinstance(seals, dict) else {}
     new_seals = {}
+    wrote_any = False   # 本轮是否真的写过派生件：rc=5 时不写口径戳，靠它判定
+                        # did this run really write anything? rc=5 must not touch the stamp
     # W-75 修②：索引写入全临界区（TSV/游标/清单·目录级锁）
     # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest, dir lock)
     from safeio import locked as _safe_locked
@@ -499,7 +501,7 @@ def build(conf, root='.', baseline=False):
 
         # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
         # ── Criterion drift gate: a changed criterion forces a full rescan ──
-        if _criterion_gate(conf, outdir, vols, prefix, report):
+        if not dry and _criterion_gate(conf, outdir, vols, prefix, report):
             # 闸自己删了索引与游标：这是有意重建，不是证据缺失
             # The gate dropped index and cursor on purpose: a deliberate rebuild, not lost evidence
             seals = {}
@@ -537,6 +539,9 @@ def build(conf, root='.', baseline=False):
             def _violate(msg):
                 report.append((vol, msg))
                 VIOLATIONS.append((vol, msg))
+                blocked.add(vol)     # 违例的卷也不写回：一次调用不得把篡改重建为新基线
+                                     # a violated volume is never written back either: one call
+                                     # must not rebuild tampering into a fresh baseline
 
             def _evidence(msg):
                 if baseline:
@@ -619,7 +624,7 @@ def build(conf, root='.', baseline=False):
             # 证据缺失的卷不写回任何派生件（除非显式认基线）：否则「5」会被自己的写回洗掉
             # Evidence-missing volumes write nothing back (unless a baseline is accepted);
             # otherwise the write-back would launder the 5 away.
-            write_ok = baseline or gated or vol not in blocked
+            write_ok = (not dry) and (baseline or gated or vol not in blocked)
             if cur and index_present and cur.get('size') == size:
                 content_hash, _ = _hash_vol(p)
                 if content_hash == cur.get('content_hash'):
@@ -663,6 +668,7 @@ def build(conf, root='.', baseline=False):
                     if write_ok:
                         new_seals[vol] = {'size': size, 'content_hash': content_hash,
                                           'n': cur.get('n', 0)}
+                        wrote_any = True
                     elif seals.get(vol) is not None:
                         new_seals[vol] = seals[vol]
                     continue
@@ -717,6 +723,9 @@ def build(conf, root='.', baseline=False):
                 ENC_REPORT.append((vol, enc, why))
 
             # ── 写索引 ── / ── Write the index ──
+            # 违例可能在 write_ok 算完之后才判定：落笔前按 blocked 重新收紧一次
+            # A violation may be detected after write_ok is computed: re-tighten before writing
+            write_ok = write_ok and vol not in blocked
             if mode == 'append' and write_ok:
                 with io.open(idf, 'a', encoding='utf-8') as f:
                     for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
@@ -754,49 +763,51 @@ def build(conf, root='.', baseline=False):
             if write_ok:
                 _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
                 new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
+                wrote_any = True
             elif seals.get(vol) is not None:
                 new_seals[vol] = seals[vol]   # 保留旧封存，不让清单写回把证据抹掉
                                               # keep the old seal so the stamp rewrite cannot erase it
 
-        with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
-            f.write('# 卷首清单 / Volume manifest\n')
-            f.write('# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
-                    % (INDEX_FMT, CURSOR_FMT))
-            f.write('| volume | entries | index file |\n|---|---|---|\n')
-            for v, n in per.items(): f.write('| %s | %d | %s%s.tsv |\n' % (v, n, prefix, v))
-            f.write('| **合计 / total** | **%d** | |\n\n' % total)
-            f.write('索引是目录，不是真相。真相在各卷原文。索引可随时从原文重算。\n')
-            f.write('The index is a catalogue, not the record. The record is the volumes; the index is rebuildable.\n\n')
-            f.write('## 本次增量报告 / This run\n\n| volume | action |\n|---|---|\n')
-            for v, w in report: f.write('| %s | %s |\n' % (v, w))
-            for w in RULE_WARN: f.write('| 规则 / rules | ★ %s |\n' % w)
-            # 被跳过的非卷键：不静默，进清单
-            # Skipped non-volume keys are never silent: recorded in the manifest
-            skipped = conf.get('volumes_skipped') or {}
-            if skipped:
-                f.write('\n## 已跳过的非卷键 / Skipped non-volume keys\n\n| key | value | reason |\n|---|---|---|\n')
-                for k, v in skipped.items():
-                    if isinstance(v, dict):
-                        f.write('| %s | %s | %s |\n' % (k, v.get('value', ''), v.get('reason', '')))
+        if wrote_any and not dry:
+            with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
+                f.write('# 卷首清单 / Volume manifest\n')
+                f.write('# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
+                        % (INDEX_FMT, CURSOR_FMT))
+                f.write('| volume | entries | index file |\n|---|---|---|\n')
+                for v, n in per.items(): f.write('| %s | %d | %s%s.tsv |\n' % (v, n, prefix, v))
+                f.write('| **合计 / total** | **%d** | |\n\n' % total)
+                f.write('索引是目录，不是真相。真相在各卷原文。索引可随时从原文重算。\n')
+                f.write('The index is a catalogue, not the record. The record is the volumes; the index is rebuildable.\n\n')
+                f.write('## 本次增量报告 / This run\n\n| volume | action |\n|---|---|\n')
+                for v, w in report: f.write('| %s | %s |\n' % (v, w))
+                for w in RULE_WARN: f.write('| 规则 / rules | ★ %s |\n' % w)
+                # 被跳过的非卷键：不静默，进清单
+                # Skipped non-volume keys are never silent: recorded in the manifest
+                skipped = conf.get('volumes_skipped') or {}
+                if skipped:
+                    f.write('\n## 已跳过的非卷键 / Skipped non-volume keys\n\n| key | value | reason |\n|---|---|---|\n')
+                    for k, v in skipped.items():
+                        if isinstance(v, dict):
+                            f.write('| %s | %s | %s |\n' % (k, v.get('value', ''), v.get('reason', '')))
+                        else:
+                            f.write('| %s | %s | |\n' % (k, v))
+                # 派生件状态：未变 / 重建（证据缺失）/ 违例，三态分列
+                # Derived-artifact states: unchanged / rebuilt (evidence lost) / violation
+                f.write('\n## 派生件状态 / Derived-artifact state\n\n| volume | state |\n|---|---|\n')
+                for v in per:
+                    if any(vv == v for vv, _m in VIOLATIONS):
+                        f.write('| %s | 违例（内容不符）·violation |\n' % v)
+                    elif any(vv == v for vv, _m in EVIDENCE_MISSING):
+                        f.write('| %s | 重建（证据缺失）·rebuilt (evidence lost) |\n' % v)
                     else:
-                        f.write('| %s | %s | |\n' % (k, v))
-            # 派生件状态：未变 / 重建（证据缺失）/ 违例，三态分列
-            # Derived-artifact states: unchanged / rebuilt (evidence lost) / violation
-            f.write('\n## 派生件状态 / Derived-artifact state\n\n| volume | state |\n|---|---|\n')
-            for v in per:
-                if any(vv == v for vv, _m in VIOLATIONS):
-                    f.write('| %s | 违例（内容不符）·violation |\n' % v)
-                elif any(vv == v for vv, _m in EVIDENCE_MISSING):
-                    f.write('| %s | 重建（证据缺失）·rebuilt (evidence lost) |\n' % v)
-                else:
-                    f.write('| %s | 未变 / 正常·unchanged |\n' % v)
-            f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
-            for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
+                        f.write('| %s | 未变 / 正常·unchanged |\n' % v)
+                f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
+                for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
         # 口径戳：本轮判据落盘，供下轮比对（与 TSV／游标同临界区）
-        # 本轮什么都没写（全是证据缺失）时也不动口径戳：不让「5」把封存戳的字节改掉
-        # Stamp the criteria for the next comparison — but leave it untouched when this run
-        # wrote nothing (all evidence missing), so the 5 cannot change the stamp's bytes.
-        if new_seals or baseline or gated:
+        # 是否写只看「本轮是否真的写过东西」：保留的旧封存不算写过，rc=5 不动口径戳
+        # Stamp the criteria for the next comparison — gated only by "did this run really
+        # write?"; preserved old seals do not count, so an rc=5 run never touches the stamp.
+        if wrote_any and not dry:
             with io.open(os.path.join(outdir, '.head_stamp.json'), 'w', encoding='utf-8') as f:
                 f.write(json.dumps({'口径': _criterion_stamp(conf),
                                     'index_fmt': INDEX_FMT,
@@ -1202,22 +1213,33 @@ def main():
         if rc:
             sys.exit(rc)
     elif cmd in ('baseline', '认基线'):
-        # 显式认基线：证据缺失后由人确认「以当前卷为新基线」，此后才写回游标与封存
-        # Explicit baseline: a human accepts the current volumes as the new baseline; only then
-        # are the cursor and seal written back.
+        # 显式认基线：证据缺失后由人确认「以当前卷为新基线」。先只验不写；
+        # 一旦有 append-only 违例或配置错，拒绝认基线——不把「被改过」替你认成新基线。
+        # Explicit baseline: a human accepts the current volumes as the new baseline. Verify
+        # first without writing; refuse when any append-only violation or config error exists —
+        # never accept "it was rewritten" as the new baseline on the user's behalf.
+        per, total, rep = build(conf, root, baseline=True, dry=True)
+        if CONFIG_ERRORS or VIOLATIONS:
+            for v, w in rep: sys.stderr.write('  %s: %s\n' % (v, w))
+            if CONFIG_ERRORS:
+                sys.stderr.write('★ 配置错误 %d 处：认基线被拒（先修 conf）·未写任何派生件\n'
+                                 % len(CONFIG_ERRORS))
+            if VIOLATIONS:
+                sys.stderr.write('★ append-only 违例 %d 处：认基线被拒·未写任何派生件'
+                                 '（请先恢复账本原文）\n' % len(VIOLATIONS))
+            codes = []
+            if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
+            if VIOLATIONS: codes.append(EXIT_VIOLATION)
+            sys.exit(worst_exit(codes))
+        # 作者口径红只报不拦（人记账不必因未注册被卡），认基线继续
+        # Author-convention red is reported but does not block a baseline
+        if _report_authors(conf, root, quiet_green=True):
+            sys.stderr.write('★ 作者口径红：只报不拦，基线照认\n')
         per, total, rep = build(conf, root, baseline=True)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         print('基线已认：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
               + '｜合计 %d 条' % total, flush=True)
-        codes = []
-        if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
-        if VIOLATIONS:
-            sys.stderr.write('★ append-only 违例 %d 处（认基线只重建派生件，不掩盖账本被改写）：\n'
-                             % len(VIOLATIONS))
-            for v, w in VIOLATIONS:
-                sys.stderr.write('  %s: %s\n' % (v, w))
-            codes.append(EXIT_VIOLATION)
-        sys.exit(worst_exit(codes))
+        sys.exit(0)
     elif cmd in ('checkauthors', '查作者口径'):
         # 只跑作者口径机检：绿返 0，红返 1
         # Author-convention check only: 0 green, 1 red
