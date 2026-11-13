@@ -2,6 +2,20 @@
 
 ## v4.0.6 · 2026-11-14
 
+> ### ⚠ 升级前必读：两处行为变更 / Read before upgrading: two behaviour changes
+>
+> 1. **非空卷首次索引退 5，复跑为 0**。首次索引会建立封存证据（`.head_stamp.json` 的
+>    `vol_seals`），因为「没有外部锚就不许判未变」，第一次运行以 5 告知「已初始化」。
+>    **升级后对每卷各跑两次 `daybook.py index`**：第一次 5、第二次 0 即正常。
+>    **The first index of a non-empty volume exits 5; the second run exits 0.** After upgrading,
+>    run `daybook.py index` twice per volume: 5 then 0 means everything is fine.
+> 2. **作者必填，占位拒写**。`daybook_append.py` 从此只接受
+>    `卷 类 标题 作者 "正文"`；3/4 参旧形态（作者默认「未标」）、显式 `未标`/空值、
+>    `--name=` 覆盖入口全部删除，一律 rc=2 且不落条。MCP 工具层不受影响（仍以
+>    agent_id 验签后写显示名 + `[id=ag-…]` 附注）。
+>    **The author is mandatory.** Legacy 3/4-arg forms, `未标`/empty placeholders and `--name=`
+>    are removed and refused with rc=2. The MCP tool path is unaffected.
+
 ### 复核 P0（海东青四项）
 
 - **篡改不再洗成「证据缺失」**：索引缺失但游标/封存仍在时，仍对当前卷算全卷哈希并比对；

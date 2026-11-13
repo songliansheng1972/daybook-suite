@@ -102,6 +102,12 @@ def _setup_tmp_root():
     # Registration volume · contains 1 test agent
     with open(os.path.join(tmp_root, '注册卷.txt'), 'w', encoding='utf-8') as f:
         f.write('# G3 注册卷\n')
+    # 端到端用：把索引器放进根目录（与真实部署一致，conf 从脚本同目录读）
+    # For end-to-end: put the indexer in the root (matching real deployment; conf sits beside it)
+    for name in ('daybook.py', 'daybook_append.py', 'safeio.py'):
+        src = os.path.join(HERE, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(tmp_root, name))
     return tmp_root
 
 
@@ -328,7 +334,29 @@ def test_daybook_append_signed(tmp_root):
     if not _ok('P1-1.1 签名 append 有响应', len(out) == 1):
         return False
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    return _ok('P1-1.2 签名 append 成功', 'appended' in text, text)
+    if not _ok('P1-1.2 签名 append 成功', 'appended' in text, text):
+        return False
+    # 作者必填口径下：作者位必须是显示名，id 只作 [id=ag-…] 附注，且 index/checkauthors 不红
+    # Under the author-mandatory convention: the author slot holds the display name, the id is
+    # only an [id=…] annotation, and index/checkauthors stay green.
+    vol = os.path.join(tmp_root, '测试MCP.txt')
+    last = [l for l in open(vol, encoding='utf-8').read().splitlines() if l.startswith('[')][-1]
+    if not _ok('P1-1.3 作者位＝显示名且带 id 附注',
+               '[测试Agent]' in last and ('[id=%s]' % agent_id) in last, last[:100]):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'index'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    if not _ok('P1-1.4 首次索引不红（0 或 5=建立封存证据）', r.returncode in (0, 5),
+               'rc=%d' % r.returncode):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'index'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    if not _ok('P1-1.5 复跑索引 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'checkauthors'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    return _ok('P1-1.6 checkauthors 绿（显示名口径）', r.returncode == 0,
+               (r.stdout + r.stderr).strip().splitlines()[-1][:100])
 
 
 def test_daybook_append_bad_sig(tmp_root):
