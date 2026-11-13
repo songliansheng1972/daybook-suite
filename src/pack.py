@@ -111,7 +111,10 @@ PACKAGES = {
                  # v3.1: four-library-style multi-level index (section → category → attribute) · daybook.py multiindex subcommand lazy-imports it
                  'daybook_multidx.py'],
         'prog_aux': ['daybook.sh', 'daybook.c', 'daybook.bas', 'daybook.f',
-                     'sentinel.sh', 'sentinel-daemon.sh'],
+                     'sentinel.sh', 'sentinel-daemon.sh',
+                     # append-only 判据回归（挡「未变」退回 size+mtime 的静默回退）·不计构建号
+                     # append-only criterion regression (blocks silent fallback to size+mtime) · not counted in build number
+                     'ledger_guard_test.py'],
         'conf_rename': [
             # 判_478 甲/乙·旗舰包改走发行 conf（零绝对路径·卷表只挂 sample/ 三卷）
             # ruling_478 A/B · the flagship package switches to release conf (zero absolute paths · volume table mounts only the three sample/ volumes)
