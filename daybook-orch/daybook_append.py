@@ -40,11 +40,18 @@ def get_pipe_buf(path):
         return FALLBACK_LIMIT
 
 
-def append_one(path, kind, title, msg, author='未标', to=None):
+def append_one(path, kind, title, msg, author='未标', to=None,
+               msg_id=None, re_ref=None, sig=None, now=None):
     """原子追加一条。to 为收件人列表或字符串·写入 [致=...] 段·不填即广播。
     Atomically append one entry. `to` is a recipient list or string · writes a [致=...] segment · broadcasts when omitted.
-    格式：[时间] [类] [标题] [作者] [致=汤姆,老宋] 正文
+    格式：[时间] [类] [标题] [作者] [id=…] [re=…] [sig=…] [致=汤姆,老宋] 正文
     Format: the tokens above plus the body text.
+
+    msg_id / re_ref / sig：消息总线字段（显式条号、显式回应引用、条目签名）。
+    msg_id / re_ref / sig: message-bus fields (explicit entry id, explicit reply reference, entry signature).
+    now：由调用方给出时间戳（签名须覆盖落盘时间，避免两次取时钟不一致）。
+    now: timestamp supplied by the caller (the signature must cover the written time,
+         avoiding a mismatch between two clock reads).
 
     多写者并发安全：O_APPEND + 单次 write ≤ PIPE_BUF ⇒ POSIX 原子。
     Multi-writer safe: O_APPEND + single write ≤ PIPE_BUF ⇒ POSIX atomic.
@@ -54,8 +61,14 @@ def append_one(path, kind, title, msg, author='未标', to=None):
     Recipient addressing (F1 · cross-AI messaging platform): `to` field · comma-separated multiple recipients.
     """
     limit = get_pipe_buf(path)
-    now = time.strftime('%Y-%m-%d %H:%M:%S')  # W-75 修⑥：分钟⇒秒（心跳 alive 判定需秒级）· W-75 fix ⑥: minutes ⇒ seconds (heartbeat alive check needs second resolution)
+    now = now or time.strftime('%Y-%m-%d %H:%M:%S')  # W-75 修⑥：分钟⇒秒（心跳 alive 判定需秒级）· W-75 fix ⑥: minutes ⇒ seconds (heartbeat alive check needs second resolution)
     head = '[%s] [%s] [%s] [%s] ' % (now, kind, title, author)
+    if msg_id:
+        head += '[id=%s] ' % msg_id
+    if re_ref:
+        head += '[re=%s] ' % re_ref
+    if sig:
+        head += '[sig=%s] ' % sig
     if to:
         if isinstance(to, (list, tuple)):
             to_str = ','.join(to)

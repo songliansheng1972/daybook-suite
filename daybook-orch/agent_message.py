@@ -37,11 +37,21 @@ Usage:
 import os, sys, time, json, socket, socketserver, threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import volume_paths as _vp
 
 SOCK_DIR = '/tmp'
+# 默认 inbox（无 --root 时的旧行为）· default inbox (legacy behavior without --root)
 INBOX_VOL = os.path.join(HERE, '消息卷.txt')
 
 MSG_TYPES = ('notify', 'request', 'response', 'broadcast')
+
+
+def inbox_path(root=None):
+    """消息卷路径：给了 root 就经 conf 解析（与编排卷同一个根），否则用旧默认。
+    Inbox volume path: with a root, resolve through conf (same root as the ledger); otherwise the legacy default."""
+    return INBOX_VOL if root is None else _vp.resolve_volumes(root)['inbox']
 
 
 def _now():
@@ -76,15 +86,19 @@ def decode_stream(buf):
     return msgs, buf
 
 
-def _append_inbox(msg, direction='收'):
+def _append_inbox(msg, direction='收', root=None):
     """消息进 inbox 卷·append-only·白箱可审计。
     Write the message into the inbox volume · append-only · white-box auditable."""
     from safeio import atomic_append
+    path = inbox_path(root)
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
     rec = '[%s] [%s] [%s] [%s] [%s] %s\n' % (
         _now(), direction,
         msg.get('from', '?'), msg.get('to', '?'),
         msg.get('type', '?'), msg.get('content', '').rstrip('\n'))
-    atomic_append(INBOX_VOL, rec)
+    atomic_append(path, rec)
 
 
 class _Handler(socketserver.BaseRequestHandler):
@@ -102,7 +116,7 @@ class _Handler(socketserver.BaseRequestHandler):
             buf += data
             msgs, buf = decode_stream(buf)
             for m in msgs:
-                _append_inbox(m, '收')
+                _append_inbox(m, '收', root=getattr(self.server, 'root', None))
                 # 广播回执 · broadcast acknowledgement
                 if m.get('type') == 'broadcast':
                     ack = {'from': m.get('to'), 'to': m.get('from'),
@@ -118,8 +132,9 @@ class AgentServer(socketserver.UnixStreamServer):
     Unix socket server · one per agent."""
     allow_reuse_address = True
 
-    def __init__(self, agent_name):
+    def __init__(self, agent_name, root=None):
         self.agent_name = agent_name
+        self.root = root
         self.sock_path = sock_path(agent_name)
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)
@@ -133,7 +148,7 @@ class AgentServer(socketserver.UnixStreamServer):
             pass
 
 
-def send(from_name, to_name, mtype, content):
+def send(from_name, to_name, mtype, content, root=None):
     """客户端发送·返回 (ok, reply_or_error)。
     Client send · returns (ok, reply_or_error)."""
     msg = {'from': from_name, 'to': to_name, 'type': mtype, 'content': content}
@@ -147,11 +162,11 @@ def send(from_name, to_name, mtype, content):
             s.sendall(encode(msg))
             # 等 reply（除非 notify） · wait for a reply (unless notify)
             if mtype == 'notify':
-                _append_inbox(msg, '发')
+                _append_inbox(msg, '发', root=root)
                 return True, 'notify 已送达'
             try:
                 data = s.recv(4096)
-                _append_inbox(msg, '发')
+                _append_inbox(msg, '发', root=root)
                 if data:
                     msgs, _ = decode_stream(data)
                     if msgs:
@@ -164,27 +179,38 @@ def send(from_name, to_name, mtype, content):
 
 
 def main():
-    if len(sys.argv) < 2:
+    argv = list(sys.argv[1:])
+    root = None
+    if '--root' in argv:
+        i = argv.index('--root')
+        if i + 1 < len(argv):
+            root = argv[i + 1]
+            del argv[i:i + 2]
+        else:
+            print('--root 缺参数'); return 2
+    if len(argv) < 1:
         print(__doc__); return 1
-    cmd = sys.argv[1]
-    if cmd == 'serve' and len(sys.argv) >= 3:
-        name = sys.argv[2]
-        srv = AgentServer(name)
+    cmd = argv[0]
+    if cmd == 'serve' and len(argv) >= 2:
+        name = argv[1]
+        srv = AgentServer(name, root=root)
         print('Agent %s 监听 %s' % (name, srv.sock_path))
+        print('消息卷 %s' % inbox_path(root))
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
             srv.server_close()
             print('退出')
-    elif cmd == 'send' and len(sys.argv) >= 6:
-        ok, reply = send(sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5])
+    elif cmd == 'send' and len(argv) >= 5:
+        ok, reply = send(argv[1], argv[2], argv[3], argv[4], root=root)
         print('OK' if ok else 'FAIL', reply or '')
     elif cmd == 'tail':
         # 看消息卷 · view the message volume
-        if not os.path.exists(INBOX_VOL):
+        path = inbox_path(root)
+        if not os.path.exists(path):
             print('（无）'); return 0
         from safeio import read_vol
-        text, _enc, _why = read_vol(INBOX_VOL)
+        text, _enc, _why = read_vol(path)
         for line in text.splitlines():
             print(line.rstrip('\n'))
     else:
