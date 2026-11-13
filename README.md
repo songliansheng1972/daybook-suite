@@ -95,14 +95,14 @@ daybook-suite/            ← this repo
 
 ## Version & build number (reproducible)
 
-- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.4**.
+- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.5**.
 - **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels, launcher, test scripts) and docs are **not** counted.
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v4.0.4  | 7                   | 2197         |
-| daybook-mcp  | v4.0.4  | 12                  | 4319         |
-| daybook-orch | v4.0.4  | 10                  | 2755         |
+| daybook      | v4.0.5  | 7                   | 2197         |
+| daybook-mcp  | v4.0.5  | 12                  | 4319         |
+| daybook-orch | v4.0.5  | 10                  | 2755         |
 
 **Code size**: **9,271 lines** across the three packages' product files (2,197 + 4,319 + 2,755).
 
@@ -216,16 +216,22 @@ daybook-suite/            ← 本仓
 - **想改代码**：改 `src/`，再跑 `python3 src/pack.py` 重打包（`--out` 默认＝本仓根）。
 - **纪律**：三包是**产物**；手改产物会被下次打包**静默抹掉**。`pack.py` 自带「**产物 == 源**」一致守卫，失配即非零退出。
 
+## 压测（`bench/`）
+
+- **复现**：`bench/run.sh --quick`（判据自证 + 10 万×64）；全档 `bench/run.sh`（1000 并发档先 `ulimit -n 8192`）。
+- **读数**：[bench/RESULTS_20261114.md](bench/RESULTS_20261114.md)；用法、判据与离线跑法见 [bench/README.md](bench/README.md)。
+- **边界**：`bench/` 是开发者工具，**不入三包 payload**；wheel、临时数据、日志不入 git。默认从 PyPI 安装当前 `SUITE_VERSION`，`--wheel-dir` 仅供离线。
+
 ## 版本号与构建号（可复现）
 
-- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.4**。
+- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.5**。
 - **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵、启动器、测试脚本）与文档**不计入**。
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.4 | 7          | 2197 |
-| 璇玑  | v4.0.4 | 12         | 4319 |
-| 司南  | v4.0.4 | 10         | 2755 |
+| 起居注 | v4.0.5 | 7          | 2197 |
+| 璇玑  | v4.0.5 | 12         | 4319 |
+| 司南  | v4.0.5 | 10         | 2755 |
 
 **代码规模**：三包产品件合计 **9,271 行**（2,197 ＋ 4,319 ＋ 2,755）。
 

@@ -61,7 +61,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '4.0.4'
+SUITE_VERSION = '4.0.5'
+
+# ── 开发者工具目录（不入包 payload）───────────────────────
+# bench/ 是并发与容量压测工具，位于仓根，不在 src/ 源清单内，也不属于任何包盒。
+# pack.py 只按 PACKAGES 的显式清单从 src/ 取件，故 bench/ 天然不入包；
+# 这里再显式声明并在 plan_for() 设门：任何包定义若误把 bench/ 下的件写进
+# prog/doc/sub，立即非零退出（宁停不夹带）。
+# Dev-only dirs (never enter payload): bench/ lives at the repo root, outside src/ and
+# outside every package box; plan_for() below rejects any spec path under it.
+DEV_ONLY_DIRS = ('bench',)
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)
@@ -235,6 +244,10 @@ def plan_for(spec, src):
             + spec.get('conf', []) + spec.get('doc', [])
             + spec.get('sub', []))
     for f in flat:
+        if f.split('/')[0] in DEV_ONLY_DIRS:
+            # 开发者工具不进发行件：宁可停构建，也不夹带
+            # Dev tooling must not ship: stop the build rather than smuggle it in.
+            raise SystemExit('✗ %s/ 是开发者工具目录，禁止进入包 payload：%s' % (f.split('/')[0], f))
         sp = os.path.join(src, f)
         if not os.path.exists(sp):
             missing.append(f)
