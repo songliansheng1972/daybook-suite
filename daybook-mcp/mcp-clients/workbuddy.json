@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "daybook": {
+      "command": "/Users/song/Desktop/daybook-suite/daybook-mcp/daybook-mcp",
+      "args": [],
+      "env": {
+        "MCP_READ_ONLY": "1",
+        "DAYBOOK_ROOT": "/Users/song/Desktop/小数学家/daybook-ledger",
+        "DAYBOOK_AGENT_ID": "WORKBUDDY"
+      }
+    }
+  }
+}
