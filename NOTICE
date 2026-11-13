@@ -1,0 +1,42 @@
+daybook-suite · NOTICE
+======================
+
+本仓按「件」分层授权，逐件归属如下。许可全文见 `LICENSES/`，各包内亦各带一份。
+This repository is licensed per part. Per-part attribution is below. Full texts
+live in `LICENSES/`; each package also ships its own copy.
+
+  件 / Part                       盒 / Box         许可 / License            全文 / Full text
+  ------------------------------  --------------  ------------------------  ---------------------------------
+  起居注 Daybook                   daybook/        MIT                       LICENSES/MIT.txt · daybook/LICENSE
+  璇玑   Daybook MCP               daybook-mcp/    MIT                       LICENSES/MIT.txt · daybook-mcp/LICENSE
+  司南   Daybook Orch              daybook-orch/   AGPL-3.0-or-later         LICENSES/AGPL-3.0-or-later.txt · daybook-orch/LICENSE
+
+源侧原件 / Source-side originals
+  src/LICENSE（MIT）· src/LICENSE.orch（AGPL-3.0-or-later）
+
+组合表达 / Combined expression
+  本仓整体：SPDX-License-Identifier: MIT AND AGPL-3.0-or-later
+  —— 即：MIT 件须满足 MIT；AGPL 件须满足 AGPL-3.0-or-later。逐件以各包内 LICENSE 为准。
+  Whole repository: MIT AND AGPL-3.0-or-later (MIT parts under MIT; AGPL parts under AGPL-3.0-or-later).
+
+分发形态 / Distribution artifacts
+  PyPI: daybook-suite（MIT）· daybook-mcp（MIT）· daybook-orch（AGPL-3.0-or-later）
+  构建期元数据（pyproject 的 license 字段）逐包写单值 SPDX，与上表一致。
+  PyPI artifacts carry a single SPDX value each, matching the table above.
+
+商业许可 / Commercial license
+  daybook-orch 的商业许可（AGPL 豁免：闭源嵌入 · 对外 SaaS 而不开源 · 官方支持与合规背书）：
+  <songliansheng@vip.sina.com>（AGPL-3.0-or-later 的 §13 网络交互条款仍适用；商业许可是另行授权，不是放弃开源。）
+
+商标 / Trademarks
+  daybook · 起居注 · 璇玑 · 司南 及三个发行名 daybook-suite / daybook-mcp / daybook-orch 为署名标识；
+  码可用，名不可冒用。范围与规则见各包内 TRADEMARK.md。
+
+说明 / Note
+  仓根 `LICENSE` 是**标准 MIT 全文**，覆盖 `src/`、`daybook-mcp/` 与由其生成的 `daybook/` 包；
+  **司南（`daybook-orch/`）不在其覆盖范围内**，适用 `daybook-orch/LICENSE` 的 AGPL-3.0-or-later
+  （或另购商业许可）。AGPL 全文另见 `LICENSES/AGPL-3.0-or-later.txt`。
+  The root `LICENSE` is the standard MIT full text covering `src/`, `daybook-mcp/` and the generated
+  `daybook/` package; **Daybook Orch (`daybook-orch/`) is outside that scope** and is licensed under
+  AGPL-3.0-or-later per `daybook-orch/LICENSE` (or a separate commercial license).
+  The AGPL full text is also at `LICENSES/AGPL-3.0-or-later.txt`.

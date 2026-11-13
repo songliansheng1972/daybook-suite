@@ -38,11 +38,33 @@ _CMD = "@@CMD@@"
 _ENTRY = "@@ENTRY@@"
 _CONF = "daybook.conf"
 _SAMPLE = "sample"
+# 同套件三件的顶层模块名（#83447：统一入口 `daybook mcp` / `daybook orchestrate` 需要另两包的 payload）
+# Top-level module names of the three suite packages (#83447: the unified entry `daybook mcp` /
+# `daybook orchestrate` needs the payloads of the other two packages)
+_SIBLINGS = ("daybook_suite", "daybook_mcp", "daybook_orch")
 
 
 def payload_dir():
     """包内产品件目录。"""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "payload")
+
+
+def sibling_payloads():
+    """已安装的同套件各件的 payload 目录（按模块名排序；未装的跳过）。
+    Payload dirs of the installed suite packages (sorted by module name; uninstalled ones are skipped)."""
+    import importlib.util
+    out = []
+    for mod in _SIBLINGS:
+        try:
+            spec = importlib.util.find_spec(mod)
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None or not spec.origin:
+            continue
+        p = os.path.join(os.path.dirname(spec.origin), "payload")
+        if os.path.isdir(p) and p not in out:
+            out.append(p)
+    return out
 
 
 def resolve_home(argv):
@@ -75,8 +97,41 @@ def resolve_home(argv):
     return os.path.join(os.path.expanduser("~"), ".daybook"), rest
 
 
+def _link_payload(home, payload, made, reassign):
+    """把一个 payload 内的件链进运行目录。
+
+    reassign=True 时，已有软链指错目标会被改指（本包 payload 优先）；
+    False 时只补缺，不动已有链接（避免兄弟包覆盖本包的同名件）。
+    Link one payload's files into the run directory.
+    With reassign=True an existing link pointing elsewhere is repointed (own payload wins);
+    with False only missing ones are created (so sibling packages never hijack same-named files).
+    """
+    for name in sorted(os.listdir(payload)):
+        if name in (_CONF, _SAMPLE):
+            continue
+        link = os.path.join(home, name)
+        target = os.path.join(payload, name)
+        if os.path.islink(link):
+            if reassign and os.path.realpath(link) != os.path.realpath(target):
+                os.remove(link)
+                os.symlink(target, link)
+                made.append(name)
+            continue
+        if os.path.exists(link):
+            continue  # 用户自留的实体件：不动 / a real file kept by the user: leave it alone
+        os.symlink(target, link)
+        made.append(name)
+
+
 def _ensure_home(home, payload):
-    """在运行目录就位：conf/sample 缺失才复制；其余件一律软链指回 payload。"""
+    """在运行目录就位：conf/sample 缺失才复制；其余件一律软链指回 payload。
+
+    已装的兄弟包 payload 一并链入（#83447）：统一入口 `daybook mcp` / `daybook orchestrate`
+    裸 import mcp_server / orchestrator，靠的正是这些链接。
+    Set up the run directory: copy conf/sample only when absent; symlink everything else back to the payload.
+    Payloads of the other installed suite packages are linked in too (#83447): the unified entry
+    `daybook mcp` / `daybook orchestrate` does a bare import of mcp_server / orchestrator, which relies on those links.
+    """
     os.makedirs(home, exist_ok=True)
     fresh = not os.path.exists(os.path.join(home, _CONF))
     if fresh:
@@ -84,21 +139,11 @@ def _ensure_home(home, payload):
     if fresh and not os.path.exists(os.path.join(home, _SAMPLE)):
         shutil.copytree(os.path.join(payload, _SAMPLE), os.path.join(home, _SAMPLE))
     made = []
-    for name in sorted(os.listdir(payload)):
-        if name in (_CONF, _SAMPLE):
+    _link_payload(home, payload, made, reassign=True)
+    for p in sibling_payloads():
+        if os.path.abspath(p) == os.path.abspath(payload):
             continue
-        link = os.path.join(home, name)
-        target = os.path.join(payload, name)
-        if os.path.islink(link):
-            if os.path.realpath(link) != os.path.realpath(target):
-                os.remove(link)
-                os.symlink(target, link)
-                made.append(name)
-            continue
-        if os.path.exists(link):
-            continue  # 用户自留的实体件：不动
-        os.symlink(target, link)
-        made.append(name)
+        _link_payload(home, p, made, reassign=False)
     return made, fresh
 
 
@@ -113,6 +158,11 @@ def main(argv=None):
         return 2
     sys.path.insert(0, home)
     sys.path.insert(0, payload)
+    # 兄弟包 payload 也进 sys.path（#83447）：软链之外再兜一层，防平台不支持软链
+    # Sibling payloads also join sys.path (#83447): a second layer in case the platform lacks symlink support
+    for p in reversed(sibling_payloads()):
+        if p not in sys.path:
+            sys.path.insert(0, p)
     # mcp/orch 各件支持 DAYBOOK_ROOT 覆盖（其自带测试逃生门）·一并设上以求一致
     os.environ.setdefault("DAYBOOK_ROOT", home)
     if made or fresh:

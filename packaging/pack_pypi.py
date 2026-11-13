@@ -133,7 +133,7 @@ Repository = "https://github.com/songliansheng1972/daybook-suite"
 where = ["src"]
 
 [tool.setuptools.package-data]
-@@MODULE@@ = ["payload/*", "payload/sample/*"]
+@@MODULE@@ = ["payload/*", "payload/sample/*", "payload/mcp-clients/*"]
 """
 
 INIT_PY = '''"""@@SUMMARY@@"""

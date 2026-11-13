@@ -41,6 +41,7 @@ Usage
 Exit codes: 0 normal; 2 for argument/missing-file errors.
 """
 import argparse
+import fnmatch
 import glob
 import hashlib
 import io
@@ -60,7 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '3.2.4'
+SUITE_VERSION = '4.0.0'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)
@@ -151,6 +152,9 @@ PACKAGES = {
             # #314-C · mcp package sample conf · copied with rename to daybook.conf · does not pollute the source's real daybook.conf ledger
             (['daybook.sample.conf'], 'daybook.conf'),
         ],
+        # 启动器 daybook-mcp（shell·一行起服务）与两个测试脚本不计入构建号
+        # Launcher daybook-mcp (shell · one-command start) and the two test scripts are not counted in the build number
+        'prog_aux': ['daybook-mcp', 'mcp_p0_regression.py', 'mcp_test.py'],
         # I18N.md / CHANGELOG.md 随包（与本包 conf 注释「见 I18N.md」对齐）
         # I18N.md / CHANGELOG.md ship with the package (aligned with this package's conf comment "see I18N.md")
         'doc': ['LICENSE', 'LICENSING.md', 'volume_format_spec.md',
@@ -159,7 +163,11 @@ PACKAGES = {
             (['README.mcp.md'], 'README.md'),
             (['README.mcp.en.md'], 'README.en.md'),
         ],
-        'sub': SAMPLE,
+        # 客户端接入模板（三件）·与 README 的挂载示例互指
+        # Client integration templates (three files) · cross-referenced by the README mount examples
+        'sub': SAMPLE + ['mcp-clients/README.md',
+                         'mcp-clients/deepseek-harness.json',
+                         'mcp-clients/workbuddy.json'],
     },
     'orch': {
         'box': 'daybook-orch',
@@ -167,6 +175,11 @@ PACKAGES = {
                  'agent_heartbeat.py', 'agent_message.py', 'task_volume.py',
                  'cross_ref.py', 'daybook_append.py', 'safeio.py'],
         'conf_rename': [
+            # 司南亦随一份样板 daybook.conf（卷表空·空跑不崩）：pip 发行版的运行目录初始化
+            # 以它为模板，缺此件则首跑即 FileNotFoundError（单装 daybook-orch 实测）。
+            # Sinan also ships a sample daybook.conf (empty volume table · runs without crashing):
+            # the pip wrapper seeds the run directory from it; without it the first run dies with FileNotFoundError.
+            (['daybook.sample.conf'], 'daybook.conf'),
             (['orchestration_routing.conf', '编排_路由表.conf'], 'orchestration_routing.conf'),
             (['orchestration_roles.conf', '编排_角色.conf'], 'orchestration_roles.conf'),
         ],
@@ -272,6 +285,35 @@ def verify_all(targets, src, out_root):
     return 0
 
 
+def foreign_files(dest, plan):
+    """列出盒目录里「清单未列出、也非运行时残留」的文件（相对路径·排序）。
+    List files in the box directory that are neither on the copy plan nor known runtime residue (relative paths, sorted).
+
+    用途：build_one 重建前先核一遍，出现清单外文件就报错，绝不静默 rmtree 抹掉。
+    Purpose: build_one checks this before rebuilding; any unlisted file is an error, never silently wiped by rmtree.
+    """
+    if not os.path.isdir(dest):
+        return []
+    allowed = set(dn.replace(os.sep, '/') for _sp, dn in plan)
+    allowed.add('version.txt')          # 打包器自己写的版本凭据 / written by the packer itself
+    junk_files = ('.safeio_lock.*', 'volumes.md', 'index_*', '*.pyc')
+    junk_dirs = ('__pycache__', 'multilevel', '多级')
+    extra = []
+    for dirpath, dirs, files in os.walk(dest):
+        at_root = os.path.abspath(dirpath) == os.path.abspath(dest)
+        if at_root:
+            dirs[:] = [d for d in dirs if d not in junk_dirs]
+        for f in files:
+            rel = f if at_root else os.path.relpath(os.path.join(dirpath, f), dest)
+            rel = rel.replace(os.sep, '/')
+            if rel in allowed:
+                continue
+            if at_root and any(fnmatch.fnmatch(f, p) for p in junk_files):
+                continue
+            extra.append(rel)
+    return sorted(extra)
+
+
 def build_one(pkg_key, spec, src, out_root, dry=False):
     box = spec['box']
     dest = os.path.join(out_root, box)
@@ -291,6 +333,14 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
     if dry:
         print('  (dry·不拷贝)')
         return 0
+
+    extra = foreign_files(dest, plan)
+    if extra:
+        print('  盒内有清单未列出的文件 %d 件（拒绝重建·先补清单或移走）：' % len(extra),
+              file=sys.stderr)
+        for f in extra:
+            print('    ✗ %s/%s' % (box, f), file=sys.stderr)
+        return 4
 
     if os.path.exists(dest):
         shutil.rmtree(dest)   # 仅删本包目录（产物·可删，承 §八）；不动根与源
