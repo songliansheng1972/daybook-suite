@@ -4,7 +4,7 @@
 #
 # 任意 MCP 客户端一行命令即可起服务：
 # One command starts the server from any MCP client:
-#   /Users/song/Desktop/小数学家/daybook-suite/daybook-mcp/daybook-mcp
+#   /path/to/daybook-suite/daybook-mcp/daybook-mcp
 #
 # 环境变量 / Environment:
 #   MCP_READ_ONLY=1     只读模式：隐藏并拒绝四个写工具，审计走 stderr

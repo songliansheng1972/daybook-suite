@@ -124,6 +124,9 @@ PACKAGES = {
                      # 通用入口烟雾测试：--help 不得 NameError（挡模块尾 sys 未导入）
                      # Generic entry smoke test: --help must not NameError (blocks a missing module-level sys import)
                      'entry_smoke_test.py',
+                     # 产物本机路径机检：出厂件不得出现作者本机绝对路径
+                     # Artifact local-path check: shipped files must not carry the author's absolute paths
+                     'path_leak_check.py',
                      # append-only 判据回归（挡「未变」退回 size+mtime 的静默回退）·不计构建号
                      # append-only criterion regression (blocks silent fallback to size+mtime) · not counted in build number
                      'ledger_guard_test.py'],
@@ -171,7 +174,9 @@ PACKAGES = {
         # Launcher daybook-mcp (shell · one-command start) and the two test scripts are not counted in the build number
         'prog_aux': ['daybook-mcp', 'mcp_p0_regression.py', 'mcp_test.py',
                      # 通用入口烟雾测试（同上）· generic entry smoke test (same as above)
-                     'entry_smoke_test.py'],
+                     'entry_smoke_test.py',
+                     # 产物本机路径机检（同上）· artifact local-path check (same as above)
+                     'path_leak_check.py'],
         # I18N.md / CHANGELOG.md 随包（与本包 conf 注释「见 I18N.md」对齐）
         # I18N.md / CHANGELOG.md ship with the package (aligned with this package's conf comment "see I18N.md")
         'doc': ['LICENSE', 'LICENSING.md', 'volume_format_spec.md',
@@ -195,7 +200,9 @@ PACKAGES = {
         # Two test scripts plus one performance A/B script ship with the package · not counted in the build number
         'prog_aux': ['orch_fixes_test.py', 'orch_mutation_check.py', 'orch_perf_bench.py',
                      # 通用入口烟雾测试（同上）· generic entry smoke test (same as above)
-                     'entry_smoke_test.py'],
+                     'entry_smoke_test.py',
+                     # 产物本机路径机检（同上）· artifact local-path check (same as above)
+                     'path_leak_check.py'],
         'conf_rename': [
             # 司南随一份**司南专用**样板 daybook.conf（卷表空·空跑不崩）：pip 发行版的运行目录初始化
             # 以它为模板，缺此件则首跑即 FileNotFoundError（单装 daybook-orch 实测）。

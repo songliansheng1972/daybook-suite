@@ -12,10 +12,10 @@ Templates for the two pending clients, stdio only. Read-only is mandatory: with
 
 | 项 | 值 |
 |---|---|
-| 启动命令 | `/Users/song/Desktop/daybook-suite/daybook-mcp/daybook-mcp` |
+| 启动命令 | `/path/to/daybook-suite/daybook-mcp/daybook-mcp` |
 | 传输 | stdio（换行分隔 JSON-RPC 2.0） |
 | 协议版本 | `2024-11-05` |
-| 账本根 | `DAYBOOK_ROOT=/Users/song/Desktop/小数学家/daybook-ledger`（示例值，换成自己的账本根）。**发布版内置 conf 是空卷样板，必须显式给 `DAYBOOK_ROOT` 或改 conf，否则启动告警 `volumes 为空`** |
+| 账本根 | `DAYBOOK_ROOT=/path/to/daybook-ledger`（示例值，换成自己的账本根）。**发布版内置 conf 是空卷样板，必须显式给 `DAYBOOK_ROOT` 或改 conf，否则启动告警 `volumes 为空`** |
 | 身份 | `DAYBOOK_AGENT_ID`（模板里是占位值，改成实际 agent_id；也可在请求 `_meta.agentId` 里逐条携带） |
 | 写权限 | **不提供**。开写前置是密钥轮换，方案另出，未获批准前不开放 |
 
@@ -37,14 +37,14 @@ Templates for the two pending clients, stdio only. Read-only is mandatory: with
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"resources/list"}' \
-| MCP_READ_ONLY=1 DAYBOOK_ROOT=/Users/song/Desktop/小数学家/daybook-ledger \
-  /Users/song/Desktop/daybook-suite/daybook-mcp/daybook-mcp
+| MCP_READ_ONLY=1 DAYBOOK_ROOT=/path/to/daybook-ledger \
+  /path/to/daybook-suite/daybook-mcp/daybook-mcp
 ```
 
 期望（stderr 一行 + stdout 两行）：
 
 ```
-[daybook-mcp] root=/Users/song/Desktop/小数学家/daybook-ledger volumes=1
+[daybook-mcp] root=/path/to/daybook-ledger volumes=1
 {"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2024-11-05", ...}}
 {"jsonrpc": "2.0", "id": 2, "result": {"resources": [{"uri": "daybook://2026", "size": 1502, ...}]}}
 ```
@@ -61,4 +61,4 @@ printf '%s\n' \
 
 - 本轮只开只读；写工具不开放。
 - 开写的前置是密钥轮换（影响面、旧内联明文处置、轮换后各 agent 重发），方案另出，未批准前不动手。
-- 不修改 `/Users/song/Desktop/小数学家/开源版/` 下任何文件。
+- 不修改 `<你的开源版目录>` 下任何文件。

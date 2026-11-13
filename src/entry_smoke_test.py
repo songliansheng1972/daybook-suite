@@ -11,9 +11,11 @@ Symptom: sys is imported inside main(), yet the __main__ block calls sys.exit(ma
       ⇒ immediate NameError on every run. The CLI is dead while unit tests still pass.
 
 做法：遍历目标目录里所有带 __main__ 入口的模块，逐个跑 `python3 <模件> --help`，
-      只要 stderr/stdout 出现 NameError 即 FAIL。
-How: scan every module with a __main__ block and run `python3 <module> --help`;
-     any NameError in stderr/stdout is a FAIL.
+      只要 stderr/stdout 出现 NameError、未捕获异常栈，或退出码不在 0/1/2 即 FAIL；
+      一个入口都没扫到（零入口）也算 FAIL，防测试自己假绿。
+How: scan every module with a __main__ block and run `python3 <module> --help`.
+     NameError, any uncaught traceback, or a status outside 0/1/2 is a FAIL; zero modules
+     scanned is also a FAIL so the test cannot fake its own green.
 
 排除：测试/校验/压测脚本（本身不是 CLI 入口）与阻塞型服务器（chatroom_server）。
 Exclusions: test/check/bench scripts (not CLI entry points) and blocking servers.
@@ -33,6 +35,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TIMEOUT = 15
+ALLOWED_RC = (0, 1, 2)   # --help 约定：0 正常 / 1 打用法 / 2 参数错 · conventional --help statuses
 # 测试/校验/压测脚本不是 CLI 入口 · test/check/bench scripts are not CLI entry points
 EXCLUDE_RE = re.compile(r'(^|_)(test|check|bench|regression|mutation)(\.py$|_)')
 # 阻塞型服务器：忽略 --help 直接起服务 · blocking server: ignores --help and starts serving
@@ -95,6 +98,15 @@ def run_one(path):
     if 'NameError' in text:
         detail = next((l.strip() for l in text.splitlines() if 'NameError' in l), '')
         return 'FAIL', detail[:160]
+    # ★ 非约定异常退出一律 FAIL：--help 允许 0/1（用法）/2（参数错），其余退出码或任何
+    #   未捕获异常栈都不算「跑得动」。
+    # ★ Any non-conventional abnormal exit fails: --help may return 0/1 (usage)/2 (bad args);
+    #   any other status or an uncaught traceback is not "it runs".
+    if 'Traceback' in text:
+        detail = next((l.strip() for l in text.splitlines() if 'Error' in l), '')
+        return 'FAIL', ('未捕获异常 · traceback: ' + detail)[:160]
+    if r.returncode not in ALLOWED_RC:
+        return 'FAIL', '非约定退出码 rc=%d' % r.returncode
     return 'PASS', 'rc=%d' % r.returncode
 
 
@@ -120,23 +132,26 @@ def _clean_residue(work_dir, before):
 
 def mutation_check():
     """变异自检：合成「main 内 import sys + 模块尾 sys.exit(main())」的旧写法，必须报红。
-    Mutation check: synthesise the old shape and require it to go red."""
-    tmp = tempfile.mkdtemp(prefix='entry_mut_')
-    bad = os.path.join(tmp, 'bad_entry.py')
-    with open(bad, 'w', encoding='utf-8') as f:
-        f.write('def main():\n'
-                '    import sys\n'
-                '    return 0\n\n\n'
-                "if __name__ == '__main__':\n"
-                '    sys.exit(main())\n')
-    status, detail = run_one(bad)
+    Mutation check: synthesise the old shape and require it to go red.
+    临时目录用 TemporaryDirectory 托管，跑完即清（不留 mkdtemp 垃圾）。
+    The temp dir is managed by TemporaryDirectory so nothing is left behind."""
+    with tempfile.TemporaryDirectory(prefix='entry_mut_') as tmp:
+        bad = os.path.join(tmp, 'bad_entry.py')
+        with open(bad, 'w', encoding='utf-8') as f:
+            f.write('def main():\n'
+                    '    import sys\n'
+                    '    return 0\n\n\n'
+                    "if __name__ == '__main__':\n"
+                    '    sys.exit(main())\n')
+        status, detail = run_one(bad)
     return status == 'FAIL', status, detail
 
 
 def main():
     fails = []
+    skips = []
     total = 0
-    print('=== 通用入口烟雾测试（--help 不得 NameError）· generic entry smoke test ===')
+    print('=== 通用入口烟雾测试（--help 不得 NameError / 不得异常退出）· generic entry smoke test ===')
     for d in _dirs():
         print('  目录 · dir: %s' % d)
         for path in _modules(d):
@@ -147,16 +162,24 @@ def main():
             sys.stdout.flush()
             if status == 'FAIL':
                 fails.append(rel)
+            elif status == 'SKIP':
+                skips.append(rel)
     ok_mut, mut_status, mut_detail = mutation_check()
     print('    [%s] 变异体：旧写法必红 · mutation must be red%s'
           % ('PASS' if ok_mut else 'FAIL', (' · ' + mut_detail) if mut_detail else ''))
     if not ok_mut:
         fails.append('mutation:old-shape')
-    print('  共 %d 个入口模块，FAIL %d 个' % (total, len(fails)))
+    # ★ 零入口 = 测试自己没找到东西，属假绿，必须 FAIL
+    # ★ Zero entry modules means the test found nothing — a false green, so FAIL.
+    if total == 0:
+        fails.append('zero-entries')
+    print('  共 %d 个入口模块，FAIL %d 个，SKIP %d 个' % (total, len(fails), len(skips)))
+    if skips:
+        print('  SKIP: %s' % '、'.join(skips))
     if fails:
         print('  FAIL: %s' % '、'.join(fails))
         return 1
-    print('  PASS: 所有入口模块 --help 均无 NameError，且变异体已红 ✓')
+    print('  PASS: 入口模块 --help 无 NameError / 无异常退出，零入口与变异体均被拦住 ✓')
     return 0
 
 
