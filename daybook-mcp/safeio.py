@@ -109,6 +109,9 @@ def sniff_bytes(raw):
             → (gb18030/big5/cp936/shift_jis 严格·首个成功者) → gb18030（replace 兜底）。
     Detection order: BOM (utf-8-sig/utf-16) → strict utf-8
             → (gb18030/big5/cp936/shift_jis strict · first success) → gb18030 (replace fallback).
+    ★ replace 兜底仍永不抛错，但不再静默：编码名标 gb18030!replace，依据里写明替换处数。
+    ★ The replace fallback still never throws, but is no longer silent: the encoding label
+      becomes gb18030!replace and the reason carries the number of replaced bytes.
     ⚠ 无中文占比阈值：阈值会把 gb18030 短卷（心跳等）误推 latin-1 乱码，
        且对 big5 并无保护（实测有损无益·#463）。切勿再加阈值。
     ⚠ No Chinese-ratio threshold: a threshold misroutes short gb18030 volumes (heartbeat, etc.) to latin-1 mojibake
@@ -126,7 +129,10 @@ def sniff_bytes(raw):
             return raw.decode(enc), enc, '严格 %s 解码通过' % enc
         except UnicodeDecodeError:
             continue
-    return raw.decode('gb18030', 'replace'), 'gb18030', '兜底（replace·永不失败）'
+    txt = raw.decode('gb18030', 'replace')
+    bad = txt.count('\ufffd')
+    return txt, ('gb18030!replace' if bad else 'gb18030'), \
+        '兜底（replace·%d 处不可解码→U+FFFD·损坏不静默）' % bad
 
 
 def read_vol(path):

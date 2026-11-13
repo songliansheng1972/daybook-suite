@@ -40,7 +40,51 @@ Customers may edit daybook.conf to define fields and volumes.
 import io, os, re, sys, time, hashlib, json, shutil
 
 ENC_REPORT = []
+VIOLATIONS = []      # 本轮 build 的 append-only 违例（卷, 说明）；CLI index 据此非零退出
+RULE_WARN = []       # 字段规则告警（tag:N 无法解析等），每轮去重后上报·不再静默
+CURSOR_FMT = 2       # 游标代次：1=size+mtime+头尾探针（旧·可伪造⇒判过期）；2=全卷 sha256
+INDEX_FMT = 2        # 索引代次：写进 .head_stamp.json 与卷首清单，旧代一律视为过期
+HASH_CHUNK = 1 << 20
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+_RULE_WARN_SEEN = set()
+
+
+def _rule_warn(msg):
+    """规则告警去重登记（同一配置只报一次）。De-duplicated rule warning (once per build)."""
+    if msg in _RULE_WARN_SEEN:
+        return
+    _RULE_WARN_SEEN.add(msg)
+    RULE_WARN.append(msg)
+
+
+def _hash_vol(path, prefix_limit=None):
+    """单遍流式 sha256：返回 (全卷哈希, 前 prefix_limit 字节哈希或 None)。
+    One-pass streaming SHA-256: returns (whole-file hex, prefix[0:prefix_limit] hex or None).
+    ★ 全卷哈希是「未变」与「等长改写」的唯一判据；mtime/size 只作快筛线索，不作判据。
+    ★ 不整卷入内存，14 MB 账卷的读取＋哈希约十几毫秒。"""
+    h_full = hashlib.sha256()
+    h_pref = hashlib.sha256() if prefix_limit is not None else None
+    n = 0
+    with open(path, 'rb') as f:
+        while True:
+            b = f.read(HASH_CHUNK)
+            if not b:
+                break
+            h_full.update(b)
+            if h_pref is not None and n < prefix_limit:
+                take = min(len(b), prefix_limit - n)
+                if take > 0:
+                    h_pref.update(b[:take])
+            n += len(b)
+    return h_full.hexdigest(), (h_pref.hexdigest() if h_pref is not None else None)
+
+
+def _cursor_current(cur):
+    """游标是否为本代（含全卷哈希）。旧代游标一律不参与「未变」判定。
+    Whether the cursor is current-generation (carries a whole-file hash)."""
+    return bool(cur) and cur.get('fmt') == CURSOR_FMT \
+        and isinstance(cur.get('size'), int) and cur.get('content_hash')
 
 # ── 条目头默认口径（唯一真源）─────────────────────────────────
 # ── Default entry-head pattern (single source of truth). ──
@@ -156,17 +200,31 @@ def fill(row, fields, rules, line, tag, lines=None, head_re=None, is_extra=False
         if r.startswith('tag:'):
             try:
                 g = int(r.split(':', 1)[1])
-                if tag:
-                    t = tag.match(line or '')
-                    if t and g <= len(t.groups()) and t.group(g) is not None:
-                        val = t.group(g)
-                # ★ 附头（MD 标题）不匹配标正则 ⇒ 退回用标题文字
-                # ★ Extra heads (MD titles) miss the tag regex ⇒ fall back to the title text
-                if not val and is_extra and head_re:
-                    hm = head_re.match(line or '')
-                    if hm and g == 1: val = '标题'
-                    elif hm: val = (line or '')[len(hm.group(0)):].strip()
-            except Exception: val = ''
+                if g < 1:
+                    raise ValueError
+            except ValueError:
+                # ★ 规则写坏（tag:abc / tag:0）⇒ 空列不许静默，登记告警进清单
+                # ★ A broken rule must not silently become an empty column
+                _rule_warn('tag 规则无法解析：%r（应为 tag:N，N≥1）' % r)
+                g = None
+            if g is not None:
+                try:
+                    if tag:
+                        t = tag.match(line or '')
+                        if t and g <= len(t.groups()) and t.group(g) is not None:
+                            val = t.group(g)
+                        elif t and g > len(t.groups()):
+                            _rule_warn('tag:%d 超出标签正则分组数 %d（该列恒空）'
+                                       % (g, len(t.groups())))
+                    # ★ 附头（MD 标题）不匹配标正则 ⇒ 退回用标题文字
+                    # ★ Extra heads (MD titles) miss the tag regex ⇒ fall back to the title text
+                    if not val and is_extra and head_re:
+                        hm = head_re.match(line or '')
+                        if hm and g == 1: val = '标题'
+                        elif hm: val = (line or '')[len(hm.group(0)):].strip()
+                except (IndexError, AttributeError):
+                    _rule_warn('tag:%d 取值失败（正则分组越界）' % g)
+                    val = ''
         elif r == 'len':
             val = str(len(re.sub(r'\s', '', text)))
         elif r.startswith('contains:'):
@@ -226,6 +284,22 @@ def _criterion_gate(conf, outdir, vols, prefix, report):
         except Exception:
             old = {}
     prev = old.get('口径')
+    prev_fmt = old.get('index_fmt')
+    if prev is not None and prev_fmt != INDEX_FMT:
+        # ★ 索引代次过期：旧判据（size+mtime 即可判「未变」）不可信，暂存的索引一律重建。
+        # ★ Stale index generation: the old "unchanged" criterion is forgeable; rebuild all.
+        for vol in vols:
+            for name in (os.path.join(outdir, '%s%s.tsv' % (prefix, vol)),
+                         os.path.join(outdir, '%s%s.txt' % (prefix, vol)),
+                         os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol)),
+                         _cursor_path(outdir, vol), _legacy_cursor_path(outdir, vol)):
+                try:
+                    os.remove(name)
+                except OSError:
+                    pass
+        report.append(('格式闸', '★ 索引格式过期（第 %s 代 → 第 %d 代）：旧索引不可静默沿用，已清索引与游标·全量重扫'
+                       % (prev_fmt if prev_fmt is not None else '无标记', INDEX_FMT)))
+        return True
     if prev is None:
         report.append(('口径闸', '存量索引无口径戳·本轮补戳（口径未溯源）·legacy index, stamp added'))
         return False
@@ -244,12 +318,31 @@ def _criterion_gate(conf, outdir, vols, prefix, report):
                    % (prev[:8], now_stamp[:8])))
     return True
 
+
+def _cursor_obj(size, mtime, resume_byte, n, last_lineno, enc, content_hash):
+    """游标对象（第 2 代）：全卷 sha256 为唯一「未变」判据，size/mtime 仅供快筛与记述。
+    Cursor object (generation 2): the whole-file SHA-256 is the only "unchanged" criterion;
+    size/mtime serve as hints and provenance only."""
+    return {'fmt': CURSOR_FMT, 'hash': 'sha256', 'content_hash': content_hash,
+            'size': size, 'mtime': mtime, 'resume_byte': resume_byte, 'n': n,
+            'last_lineno': last_lineno, 'enc': enc}
+
+
+def _write_cursor(path, obj):
+    """写游标 json（与 index 同临界区）。Write the cursor json (same critical section as the index)."""
+    with io.open(path, 'w', encoding='utf-8') as f:
+        f.write(json.dumps(obj, ensure_ascii=False))
+
+
 def build(conf, root='.'):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
     tail-read on pure append, flag violations when the old part was rewritten."""
     ENC_REPORT.clear()  # ★ 每轮 build 清空编码报告，防 watch 多轮累积
                         # ★ Clear the encoding report each build so watch does not accumulate
+    VIOLATIONS.clear()
+    RULE_WARN.clear()
+    _RULE_WARN_SEEN.clear()
     vols = conf.get('volumes', {})
     head = re.compile(conf['entries'].get('head_regex', DEFAULT_HEAD_REGEX))
     # ★ 作者 ID 红线（老宋定）：新格式 [时间][类][标题][作者] 4 段优先；
@@ -294,75 +387,100 @@ def build(conf, root='.'):
                 except Exception: cur = None
 
             rows, mode, n_old = [], 'full', 0
+            content_hash = None
 
-            # ── 情形一：文件未变 ⇒ 跳过 ──
-            # ── Case 1: file unchanged ⇒ skip ──
-            if cur and os.path.exists(idf) and cur.get('size') == size and cur.get('mtime') == mt:
-                per[vol] = cur.get('n', 0); total += per[vol]
-                report.append((vol, '未变·跳过'))
-                ENC_REPORT.append((vol, cur.get('enc', '?'), '游标缓存'))
-                # ★ 老宋定：未变跳过时也要确保索引 TXT 存在（首次升级到带 TXT 版时补齐）
-                # ★ Song: even when skipping, make sure the TXT index exists (first upgrade)
-                itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                if not os.path.exists(itxt) and os.path.exists(idf):
-                    with io.open(idf, encoding='utf-8') as src:
-                        with io.open(itxt, 'w', encoding='utf-8') as dst:
-                            dst.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
-                            dst.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
-                            dst.write('# Generated by daybook.py index · rebuildable from the volumes at any time\n')
-                            dst.write('# 由 daybook.py index 自动生成·可随时从原文重算\n')
-                            dst.write('# The index is a catalogue, not the record. The record is the volumes.\n')
-                            dst.write('# 索引是目录不是真相·真相在各卷原文\n\n')
-                            lines = src.read().split('\n')
-                            for line in lines[1:]:  # 跳过表头 / skip the header
-                                if not line.strip(): continue
-                                cols = line.split('\t')
-                                dst.write('[%s] line=%s category=%s title=%s author=%s\n' % (
-                                    cols[2] if len(cols) > 2 else '',
-                                    cols[1] if len(cols) > 1 else '',
-                                    cols[3] if len(cols) > 3 else '',
-                                    cols[4] if len(cols) > 4 else '',
-                                    cols[5] if len(cols) > 5 else ''))
-                continue
+            def _violate(msg):
+                report.append((vol, msg))
+                VIOLATIONS.append((vol, msg))
 
-            # ── 情形二：只追加 ⇒ 读尾部 ＋ 追加写索引 ──
-            # ── Case 2: pure append ⇒ tail-read + append to the index ──
-            if (cur and cur.get('resume_byte') is not None
-                    and size > cur['size']):
-                n_old_b = cur['resume_byte']
-                with open(p, 'rb') as f:
-                    f.seek(n_old_b); tail = f.read()
-                    f.seek(0); head4 = f.read(min(4096, n_old_b))          # ★ 以旧大小为界 / bounded by old size
-                    q = max(0, n_old_b - 4096)
-                    f.seek(q); pre4 = f.read(n_old_b - q)                 # ★ 同样以旧大小为界 / same bound
-                probe = hashlib.sha256(head4 + pre4).hexdigest()[:16]
-                n_idx = _count_index_rows(idf)
-                if probe == cur.get('probe_hash') and n_idx == cur.get('n', -1):
-                    enc = cur.get('enc')
-                    if not enc:
-                        txt, enc, _ = sniff(tail)  # 旧游标无 enc，当场 sniff / legacy cursor has no enc
+            # ── 游标代次闸：旧代游标（无全卷哈希）不参与任何「未变」判定 ──
+            # ── Cursor-generation gate: an old cursor (no whole-file hash) can never claim "unchanged" ──
+            if cur is not None and not _cursor_current(cur):
+                report.append((vol, '★ 旧游标格式（第 %s 代）·视为过期·全量重扫'
+                               % (cur.get('fmt') if cur.get('fmt') is not None else '无标记')))
+                cur = None
+
+            # ── 情形一：字节数与游标相同 ⇒ 必验全卷哈希（mtime 可被 os.utime 恢复，不作判据）──
+            # ── Case 1: same size as the cursor ⇒ verify the whole-file hash (mtime is forgeable) ──
+            if cur and os.path.exists(idf) and cur.get('size') == size:
+                content_hash, _ = _hash_vol(p)
+                if content_hash == cur.get('content_hash'):
+                    per[vol] = cur.get('n', 0); total += per[vol]
+                    if mt != cur.get('mtime'):
+                        report.append((vol, '未变·跳过（全卷哈希一致·mtime 已变化，仅记入游标）'))
+                        _write_cursor(cp, _cursor_obj(size, mt, size, cur.get('n', 0),
+                                                      cur.get('last_lineno', 0),
+                                                      cur.get('enc', '?'), content_hash))
                     else:
-                        try:
-                            txt = tail.decode(enc, 'replace')
-                        except (LookupError, UnicodeDecodeError):
-                            txt, enc, _ = sniff(tail)
-                    base_ln = cur.get('last_lineno', 0)                # ★ 从游标读旧最后一行行号 / resume line number
-                    rows, final_ln = _parse(txt, heads, fields, rules, tag, vol, base_ln)
-                    mode = 'append'; n_old = n_idx
-                    report.append((vol, '只追加·读尾部 %d 字节·索引 append %d 行'
-                                   % (len(tail), len(rows))))
-                    ENC_REPORT.append((vol, enc, '尾部续读·按游标编码'))
-                else:
-                    report.append((vol, '★ 旧部分被改或索引不符·append-only 违例·全重扫'))
+                        report.append((vol, '未变·跳过（全卷哈希一致）'))
+                    ENC_REPORT.append((vol, cur.get('enc', '?'), '游标缓存·全卷哈希复核'))
+                    # ★ 老宋定：未变跳过时也要确保索引 TXT 存在（首次升级到带 TXT 版时补齐）
+                    # ★ Song: even when skipping, make sure the TXT index exists (first upgrade)
+                    itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
+                    if not os.path.exists(itxt) and os.path.exists(idf):
+                        with io.open(idf, encoding='utf-8') as src:
+                            with io.open(itxt, 'w', encoding='utf-8') as dst:
+                                dst.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
+                                dst.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
+                                dst.write('# Generated by daybook.py index · rebuildable from the volumes at any time\n')
+                                dst.write('# 由 daybook.py index 自动生成·可随时从原文重算\n')
+                                dst.write('# The index is a catalogue, not the record. The record is the volumes.\n')
+                                dst.write('# 索引是目录不是真相·真相在各卷原文\n\n')
+                                lines = src.read().split('\n')
+                                for line in lines[1:]:  # 跳过表头 / skip the header
+                                    if not line.strip(): continue
+                                    cols = line.split('\t')
+                                    dst.write('[%s] line=%s category=%s title=%s author=%s\n' % (
+                                        cols[2] if len(cols) > 2 else '',
+                                        cols[1] if len(cols) > 1 else '',
+                                        cols[3] if len(cols) > 3 else '',
+                                        cols[4] if len(cols) > 4 else '',
+                                        cols[5] if len(cols) > 5 else ''))
+                    continue
+                _violate('★ 等长改写（字节数未变·全卷哈希不符）·append-only 违例·全重扫')
 
-            # ── 情形二·补：字节数未变而 mtime 变 ⇒ 原地改过 ⇒ 违例 ──
-            # ── Case 2b: same size but new mtime ⇒ in-place edit ⇒ violation ──
-            if mode == 'full' and cur and size == cur.get('size') and mt != cur.get('mtime'):
-                report.append((vol, '★ 原地改过（字节数未变·mtime 变）·append-only 违例·全重扫'))
+            # ── 情形二：只追加 ⇒ 已知前缀验哈希 ＋ 读尾部 ＋ 追加写索引 ──
+            # ── Case 2: pure append ⇒ verify the known prefix hash + tail-read + append to the index ──
+            elif cur and size > cur.get('size'):
+                content_hash, pref_hash = _hash_vol(p, prefix_limit=cur['size'])
+                n_old_b = cur.get('resume_byte')
+                if pref_hash != cur.get('content_hash'):
+                    content_hash = None
+                    _violate('★ 旧部分被改（前缀全卷哈希不符）·append-only 违例·全重扫')
+                elif not isinstance(n_old_b, int) or not 0 <= n_old_b <= size:
+                    content_hash = None
+                    _violate('★ 游标 resume_byte 越界（%r）·append-only 违例·全重扫' % (n_old_b,))
+                else:
+                    with open(p, 'rb') as f:
+                        f.seek(n_old_b); tail = f.read()
+                    n_idx = _count_index_rows(idf)
+                    if n_idx != cur.get('n', -1):
+                        content_hash = None
+                        _violate('★ 索引行数与游标不符（索引 %d 行 / 游标 %r）·append-only 违例·全重扫'
+                                 % (n_idx, cur.get('n')))
+                    else:
+                        enc = cur.get('enc')
+                        if not enc:
+                            txt, enc, _ = sniff(tail)  # 旧游标无 enc，当场 sniff / legacy cursor has no enc
+                        else:
+                            try:
+                                txt = tail.decode(enc, 'replace')
+                            except (LookupError, UnicodeDecodeError):
+                                txt, enc, _ = sniff(tail)
+                        base_ln = cur.get('last_lineno', 0)                # ★ 从游标读旧最后一行行号 / resume line number
+                        rows, final_ln = _parse(txt, heads, fields, rules, tag, vol, base_ln)
+                        mode = 'append'; n_old = n_idx
+                        report.append((vol, '只追加·验已知前缀哈希·读尾部 %d 字节·索引 append %d 行'
+                                       % (len(tail), len(rows))))
+                        ENC_REPORT.append((vol, enc, '尾部续读·按游标编码'))
+
+            elif cur and size < cur.get('size'):
+                _violate('★ 卷变短（%d → %d 字节）·append-only 违例·全重扫' % (cur['size'], size))
 
             # ── 情形三：全量 ── / ── Case 3: full rescan ──
             if mode == 'full':
                 raw = open(p, 'rb').read()
+                content_hash = hashlib.sha256(raw).hexdigest()
                 txt, enc, why = sniff(raw)
                 rows, final_ln = _parse(txt, heads, fields, rules, tag, vol, 0)
                 if not any(r[0] == vol for r in report):
@@ -403,30 +521,27 @@ def build(conf, root='.'):
                             r[5] if len(r) > 5 else ''))
                 n_total = len(rows)
             per[vol] = n_total; total += n_total
-            with open(p, 'rb') as f:
-                f.seek(0); h4 = f.read(min(4096, size))
-                q2 = max(0, size - 4096)
-                f.seek(q2); p4 = f.read(size - q2)
-            with io.open(cp, 'w', encoding='utf-8') as f:
-                f.write(json.dumps({
-                    'size': size, 'mtime': mt, 'resume_byte': size, 'n': n_total,
-                    'last_lineno': final_ln,                                    # ★ 存最后行号供下次 append / resume point
-                    'enc': enc,                                                  # ★ 存编码供增量解码 / decode hint
-                    'probe_hash': hashlib.sha256(h4 + p4).hexdigest()[:16]}, ensure_ascii=False))
+            _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
 
         with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
-            f.write('# 卷首清单 / Volume manifest\n\n| volume | entries | index file |\n|---|---|---|\n')
+            f.write('# 卷首清单 / Volume manifest\n')
+            f.write('# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
+                    % (INDEX_FMT, CURSOR_FMT))
+            f.write('| volume | entries | index file |\n|---|---|---|\n')
             for v, n in per.items(): f.write('| %s | %d | %s%s.tsv |\n' % (v, n, prefix, v))
             f.write('| **合计 / total** | **%d** | |\n\n' % total)
             f.write('索引是目录，不是真相。真相在各卷原文。索引可随时从原文重算。\n')
             f.write('The index is a catalogue, not the record. The record is the volumes; the index is rebuildable.\n\n')
             f.write('## 本次增量报告 / This run\n\n| volume | action |\n|---|---|\n')
             for v, w in report: f.write('| %s | %s |\n' % (v, w))
+            for w in RULE_WARN: f.write('| 规则 / rules | ★ %s |\n' % w)
             f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
             for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
         # 口径戳：本轮判据落盘，供下轮比对（与 TSV／游标同临界区）
         with io.open(os.path.join(outdir, '.head_stamp.json'), 'w', encoding='utf-8') as f:
             f.write(json.dumps({'口径': _criterion_stamp(conf),
+                                'index_fmt': INDEX_FMT,
+                                'cursor_fmt': CURSOR_FMT,
                                 'head_regex': conf.get('entries', {}).get('head_regex', ''),
                                 '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
         return per, total, report
@@ -502,11 +617,20 @@ def backup(conf, root='.'):
     return bdir, n
 
 def hash_volumes(paths):
-    """Hash volume metadata (mtime and size) only; this does not read contents.
-    只哈希卷的元数据（mtime 与大小），不读内容。"""
+    """卷内容指纹（含 mtime/size 作变更线索）。watch 的变动判定不得只看元数据：
+    等长改写＋os.utime 恢复会让纯元数据指纹完全看不出变化。
+    Volume content fingerprint (mtime/size kept as change hints). watch must not rely on
+    metadata alone: an equal-length rewrite plus os.utime restoration is invisible to it.
+    ★ 代价：每次轮询顺序读一遍各卷（14 MB ≈ 十几毫秒）；这是抓得住篡改的最小代价。"""
     h = hashlib.sha256()
     for p in paths:
-        if os.path.exists(p): h.update(str(os.path.getmtime(p)).encode()); h.update(str(os.path.getsize(p)).encode())
+        if not os.path.exists(p): continue
+        h.update(str(os.path.getmtime(p)).encode()); h.update(str(os.path.getsize(p)).encode())
+        try:
+            full, _ = _hash_vol(p)
+        except OSError:
+            continue  # 卷正在被替换/删除：本轮不当变动，下轮再看
+        h.update(full.encode())
     return h.hexdigest()[:12]
 
 def query(conf, root, args):
@@ -555,61 +679,75 @@ def query(conf, root, args):
     prefix = conf['index'].get('index_prefix', 'index_')
     fields = [x.strip() for x in conf['entries'].get('fields', 'volume,line,time,category,title').split(',')]
     vols = conf.get('volumes', {})
-    matched = []
-    # 预编译过滤器：字段索引 + 期望子串
-    # Pre-compute filters: field index + expected substring
-    # filters: {字段名: 期望子串} → 字段在 header 中的下标 + 子串
-    for vol in vols:
-        idf = os.path.join(outdir, '%s%s.tsv' % (prefix, vol))
-        if not os.path.exists(idf):
-            idf = os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol))   # 旧名回退 / legacy fallback
-        if not os.path.exists(idf): continue
-        with io.open(idf, encoding='utf-8') as f:
-            header = f.readline().rstrip('\n').split('\t')
-            # 表头可能来自旧中文版 ⇒ 归一后比对。Header may be legacy Chinese ⇒ normalise.
-            header_c = [canon_field(h) for h in header]
-            # ★ 每卷按自己的 header 重算 filter_idx（修③：原"仅一次"致第一卷缺字段则后续全跳过）
-            # ★ Recompute filter_idx per volume (fix 3): a missing column in volume 1 no longer
-            #   silently skips every later volume.
-            filter_idx = []  # [(field_idx, needle)]
-            for k, v in filters.items():
-                if k in header_c: filter_idx.append((header_c.index(k), v))
-            # 缺字段则本卷跳过 / skip this volume if a field is missing
-            if len(filter_idx) != len(filters):
-                continue
-            for line in f:
-                # 快速 split + 长度校验 / fast split + length check
-                cells = line.rstrip('\n').split('\t')
-                if len(cells) < len(header): continue
-                # 直接按下标比对，不做 dict / compare by index, no dict
-                ok = True
-                for fi, needle in filter_idx:
-                    if needle not in cells[fi]:
-                        ok = False; break
-                if ok:
-                    row = dict(zip(header_c, cells))
-                    row['_vol_path'] = vols.get(vol, '')
-                    matched.append(row)
+
+    def _iter_rows():
+        """逐条产出命中行（生成器·不在内存里攒全集）。
+        Yield matching rows one at a time (generator; never accumulates the full hit set)."""
+        for vol in vols:
+            idf = os.path.join(outdir, '%s%s.tsv' % (prefix, vol))
+            if not os.path.exists(idf):
+                idf = os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol))   # 旧名回退 / legacy fallback
+            if not os.path.exists(idf): continue
+            with io.open(idf, encoding='utf-8') as f:
+                header = f.readline().rstrip('\n').split('\t')
+                # 表头可能来自旧中文版 ⇒ 归一后比对。Header may be legacy Chinese ⇒ normalise.
+                header_c = [canon_field(h) for h in header]
+                # ★ 每卷按自己的 header 重算 filter_idx（修③：原"仅一次"致第一卷缺字段则后续全跳过）
+                # ★ Recompute filter_idx per volume (fix 3): a missing column in volume 1 no longer
+                #   silently skips every later volume.
+                filter_idx = []  # [(field_idx, needle)]
+                for k, v in filters.items():
+                    if k in header_c: filter_idx.append((header_c.index(k), v))
+                # 缺字段则本卷跳过 / skip this volume if a field is missing
+                if len(filter_idx) != len(filters):
+                    continue
+                for line in f:
+                    # 快速 split + 长度校验 / fast split + length check
+                    cells = line.rstrip('\n').split('\t')
+                    if len(cells) < len(header): continue
+                    # 直接按下标比对，不做 dict / compare by index, no dict
+                    ok = True
+                    for fi, needle in filter_idx:
+                        if needle not in cells[fi]:
+                            ok = False; break
+                    if ok:
+                        row = dict(zip(header_c, cells))
+                        row['_vol_path'] = vols.get(vol, '')
+                        yield row
+
     out = []
-    out.append('命中 %d 条' % len(matched))  # 契约行：保持「命中 N 条」原样·勿加英文（e11_test 等按此解析）· contract line, keep as-is
+    # ★ --count：只数不攒；--limit：边扫边截；--sample：两遍（先数后抽），内存均有上限。
+    # ★ --count counts without storing; --limit truncates while scanning; --sample counts
+    #   first and samples in a second pass. All three bounded in memory.
     if count_only:
+        n = sum(1 for _ in _iter_rows())
+        out.append('命中 %d 条' % n)  # 契约行·保持原样 / contract line, keep as-is
         return '\n'.join(out)
-    # --sample N：均匀抽样 N 条 / even sample of N
-    if sample_n > 0 and len(matched) > sample_n:
-        step = len(matched) / sample_n
-        sampled = [matched[int(i * step)] for i in range(sample_n)]
-        out.append('采样 %d/%d（步长 %.2f）' % (sample_n, len(matched), step))
-        matched = sampled
+
+    if sample_n > 0:
+        total_hits = sum(1 for _ in _iter_rows())
+        matched = []
+        if total_hits > sample_n:
+            step = total_hits / sample_n
+            want = set(int(i * step) for i in range(sample_n))
+            matched = [r for i, r in enumerate(_iter_rows()) if i in want]
+        else:
+            matched = list(_iter_rows())
+        out.append('命中 %d 条' % total_hits)  # 契约行 / contract line
+        if total_hits > sample_n:
+            out.append('采样 %d/%d（步长 %.2f）' % (sample_n, total_hits, step))
+    else:
+        total_hits = 0
+        matched = []
+        for r in _iter_rows():
+            total_hits += 1
+            if len(matched) < limit:
+                matched.append(r)
+        out.append('命中 %d 条' % total_hits)  # 契约行 / contract line
     # 按卷分组读 lines 一次，所有命中复用
     # Read each volume once; every hit reuses the lines
     vol_lines_cache = {}
-    shown = 0
-    target = sample_n if sample_n else limit
     for r in matched:
-        if shown >= target:
-            out.append('---')
-            out.append('（已显示 %d 条，共 %d 命中，用 --limit N / --sample N 调）' % (target, len(matched)))
-            break
         out.append('---')
         out.append('[%s] [%s] [%s] [volume=%s line=%s]' % (
             r.get('time', ''), r.get('category', ''), r.get('title', ''),
@@ -645,7 +783,9 @@ def query(conf, root, args):
                         if head_re.match(lines[end].rstrip('\n')): break
                         end += 1
                     out.append(''.join(lines[ln-1:end]).rstrip())
-        shown += 1
+    if total_hits > len(matched):
+        out.append('---')
+        out.append('（已显示 %d 条，共 %d 命中，用 --limit N / --sample N 调）' % (len(matched), total_hits))
     return '\n'.join(out)
 
 
@@ -669,7 +809,14 @@ def main():
     if cmd == 'index':
         per, total, rep = build(conf, root)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
+        for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
         print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
+        if VIOLATIONS:
+            sys.stderr.write('★ append-only 违例 %d 处（索引已按违例全量重扫，但账本本身已被改写）：\n'
+                             % len(VIOLATIONS))
+            for v, w in VIOLATIONS:
+                sys.stderr.write('  %s: %s\n' % (v, w))
+            sys.exit(3)
     elif cmd in ('multiindex', '多级索引'):
         # 四库式多级目录（部/类/属·跨卷总目）·派生件·零依赖·与 index 同源同入口
         # Four-branch multilevel catalogue (derived data; same entry point as index)
@@ -702,6 +849,10 @@ def main():
                     bdir, n = backup(conf, root)
                     print('[%s] 变动 %s ⇒ 索引重算，合计 %d 条%s + 备份 %d 卷 ⇒ %s' % (
                         time.strftime('%H:%M:%S'), cur, total, m_note, n, os.path.basename(bdir)), flush=True)
+                    for v, w in VIOLATIONS:
+                        print('  ★ 违例 %s: %s' % (v, w), flush=True)
+                    for w in RULE_WARN:
+                        print('  ★ 规则告警：%s' % w, flush=True)
                 except Exception as e:
                     print('[%s] 变动 %s ⇒ 重算失败（卷可能正在被写入）：%s' % (
                         time.strftime('%H:%M:%S'), cur, e), flush=True)
