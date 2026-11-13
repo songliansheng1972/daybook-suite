@@ -95,14 +95,14 @@ daybook-suite/            ← this repo
 
 ## Version & build number (reproducible)
 
-- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.5**.
+- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.6**.
 - **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels, launcher, test scripts) and docs are **not** counted.
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v4.0.5  | 7                   | 2197         |
-| daybook-mcp  | v4.0.5  | 12                  | 4319         |
-| daybook-orch | v4.0.5  | 10                  | 2755         |
+| daybook      | v4.0.6  | 7                   | 2765         |
+| daybook-mcp  | v4.0.6  | 12                  | 4895         |
+| daybook-orch | v4.0.6  | 10                  | 2950         |
 
 **Code size**: **9,271 lines** across the three packages' product files (2,197 + 4,319 + 2,755).
 
@@ -224,14 +224,14 @@ daybook-suite/            ← 本仓
 
 ## 版本号与构建号（可复现）
 
-- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.5**。
+- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.6**。
 - **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵、启动器、测试脚本）与文档**不计入**。
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.5 | 7          | 2197 |
-| 璇玑  | v4.0.5 | 12         | 4319 |
-| 司南  | v4.0.5 | 10         | 2755 |
+| 起居注 | v4.0.6 | 7          | 2765 |
+| 璇玑  | v4.0.6 | 12         | 4895 |
+| 司南  | v4.0.6 | 10         | 2950 |
 
 **代码规模**：三包产品件合计 **9,271 行**（2,197 ＋ 4,319 ＋ 2,755）。
 

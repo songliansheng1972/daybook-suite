@@ -4,27 +4,35 @@
 
 > ### ⚠ 升级前必读：两处行为变更 / Read before upgrading: two behaviour changes
 >
-> 1. **非空卷首次索引退 5，复跑为 0**。首次索引会建立封存证据（`.head_stamp.json` 的
->    `vol_seals`），因为「没有外部锚就不许判未变」，第一次运行以 5 告知「已初始化」。
->    **升级后对每卷各跑两次 `daybook.py index`**：第一次 5、第二次 0 即正常。
->    **The first index of a non-empty volume exits 5; the second run exits 0.** After upgrading,
->    run `daybook.py index` twice per volume: 5 then 0 means everything is fine.
+> 1. **非空卷首次索引退 5，需显式认基线**。首次索引会建立封存证据，但按新裁定**不再自动写回**：
+>    先返回 5，执行一次 `python3 daybook.py baseline`（别名 `认基线`）后才写回游标与封存，
+>    之后再跑 `index` 为 0。证据缺失（索引/游标/封存丢失、游标不可解析）同样停在 5，直到认基线。
+>    MCP 的**签名 `daybook_index` 调用视为显式认基线**（未签名的路径永不自动重建）。
+>    **The first index of a non-empty volume exits 5 and writes nothing back.** Run
+>    `daybook.py baseline` once to accept the baseline; then `index` is 0. Missing evidence
+>    likewise stays at 5 until a baseline is accepted.
 > 2. **作者必填，占位拒写**。`daybook_append.py` 从此只接受
 >    `卷 类 标题 作者 "正文"`；3/4 参旧形态（作者默认「未标」）、显式 `未标`/空值、
->    `--name=` 覆盖入口全部删除，一律 rc=2 且不落条。MCP 工具层不受影响（仍以
->    agent_id 验签后写显示名 + `[id=ag-…]` 附注）。
+>    `--name=` 覆盖入口全部删除，一律 rc=2 且不落条；**独立模式（无注册表）也拒机器 id**。
+>    MCP 工具层不受影响（仍以 agent_id 验签后写显示名 + `[id=ag-…]` 附注）。
 >    **The author is mandatory.** Legacy 3/4-arg forms, `未标`/empty placeholders and `--name=`
->    are removed and refused with rc=2. The MCP tool path is unaffected.
+>    are removed and refused with rc=2; standalone mode also refuses machine ids.
+>    The MCP tool path is unaffected.
 
 ### 复核 P0（海东青四项）
 
-- **篡改不再洗成「证据缺失」**：索引缺失但游标/封存仍在时，仍对当前卷算全卷哈希并比对；
-  不符退 3（append-only 违例），一致才退 5（索引重建）。只有三类证据全无才退 5。
-- **证据缺失路径不再崩溃**：正常追加后删索引走「卷变大」分支会数不存在的索引文件
-  （`FileNotFoundError` rc=1）；现于分支前判「索引不存在」，直接全量重扫并报 5。
-- **诚实上限**：三件派生件全删、或卷+游标+封存同时自洽改写，本实现不再声称能识别。
-  卷存在而无任何封存证据 ⇒ 退 5（已重建·请复跑确认），第二次运行才是 0。
-- **版本锚**：`SUITE_VERSION`、三包 `version.txt`、README、CHANGELOG 统一 4.0.6。
+- **索引缺失时仍验哈希（范围如实）**：当**只删索引、游标与封存未动**时，同长按全卷哈希、
+  变长按旧前缀哈希比对，不符退 3。**不承诺**识别「同时改写两份派生件」或「卷+游标+封存
+  三者自洽改写」——本实现没有外部锚（封存仍在账本目录内、无签名），这类改写与真实写入
+  不可区分。外部锚（移出目录/加密签名）另开一单，不在 4.0.6。
+  **Hashes are still verified when only the index is deleted**; a mismatch exits 3. Rewriting
+  two derived artifacts together, or a self-consistent rewrite of volume+cursor+seal, is
+  **not** claimed to be detectable without an external anchor.
+- **证据缺失不再自动重建**：退 5 后不写回索引/游标/封存，状态保持 5，直到显式
+  `baseline`（认基线）。首次建立同样走这条。
+- **证据缺失路径不再崩溃**：正常追加后删索引会走「卷变大」分支数不存在的索引文件
+  （`FileNotFoundError` rc=1）；现于分支前判「索引不存在」，直接退 5。
+- **版本锚**：`SUITE_VERSION`、三包 `version.txt`、仓根与包内 README、CHANGELOG 统一 4.0.6。
 
 ### 复核 P1
 

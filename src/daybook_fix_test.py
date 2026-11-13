@@ -320,6 +320,16 @@ def test_author_cli_backdoor(tmp):
                        universal_newlines=True)
     _ok('⑫3 --name= 后门被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
     _ok('⑫4 三次拒写都没落条目', io.open(vol, encoding='utf-8').read().strip() == '')
+    # 独立模式（无注册表）也拒机器 id：作者位只许显示名
+    # Standalone mode (no registry) also refuses a machine id: the author slot is a display name only
+    iso = os.path.join(d, '独立')
+    os.makedirs(iso)
+    ivol = os.path.join(iso, '卷.txt')
+    _write(ivol, '')
+    r = subprocess.run([sys.executable, cli, ivol, '聊', '标题', AID, '正文'],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('⑫5 独立模式拒机器 id（rc=2）', r.returncode == 2, 'rc=%d' % r.returncode)
 
 
 # ── ④ 作者口径（作者位＝显示名·id 只作附注）────────────────────

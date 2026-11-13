@@ -57,11 +57,13 @@ pip install @@DIST@@
 
 ## 升级须知（v4.0.6 行为变更，必读） / Upgrade notes (v4.0.6)
 
-1. **非空卷首次索引退 5**：首次索引建立封存证据后返回 5，复跑一次即为 0；不是故障。
-   **The first index of a non-empty volume exits 5** (it seals evidence); run it again to get 0.
+1. **非空卷首次索引退 5，需认基线**：首次索引不写回证据，先退 5；执行一次
+   `python3 daybook.py baseline` 后才写回游标与封存，之后 `index` 为 0。证据缺失同样停在 5。
+   **The first index of a non-empty volume exits 5** and writes nothing back; run
+   `daybook.py baseline` once, then `index` is 0.
 2. **作者必填**：`daybook_append.py` 只接受 `卷 类 标题 作者 "正文"`；旧 3/4 参形态、显式
-   `未标`/空值与 `--name=` 一律拒写并退 2。MCP 写路径不受影响（仍验签后写显示名 + `[id=…]`）。
-   **The author is mandatory**; legacy forms and placeholders exit 2. The MCP write path is unaffected.
+   `未标`/空值与 `--name=` 一律拒写并退 2；独立模式也拒机器 id。MCP 写路径不受影响。
+   **The author is mandatory**; legacy forms and placeholders exit 2; the MCP path is unaffected.
 
 ## 发行名归属（官方渠道声明）
 

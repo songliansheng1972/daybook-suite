@@ -346,12 +346,16 @@ def test_daybook_append_signed(tmp_root):
         return False
     r = subprocess.run([sys.executable, 'daybook.py', 'index'],
                        cwd=tmp_root, capture_output=True, text=True)
-    if not _ok('P1-1.4 首次索引不红（0 或 5=建立封存证据）', r.returncode in (0, 5),
+    if not _ok('P1-1.4 首次索引不红（0 或 5=待认基线）', r.returncode in (0, 5),
                'rc=%d' % r.returncode):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    if not _ok('P1-1.5 认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
         return False
     r = subprocess.run([sys.executable, 'daybook.py', 'index'],
                        cwd=tmp_root, capture_output=True, text=True)
-    if not _ok('P1-1.5 复跑索引 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
+    if not _ok('P1-1.5b 认基线后索引 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
         return False
     r = subprocess.run([sys.executable, 'daybook.py', 'checkauthors'],
                        cwd=tmp_root, capture_output=True, text=True)

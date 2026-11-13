@@ -977,7 +977,11 @@ def call_tool(name, args, agent_id=None, signature=None):
             _verify_agent(agent_id, signature, 'reindex:%d' % ts)
             _record_signature('daybook_index', agent_id, signature, 'reindex:%d' % ts, ts=ts)
             conf = _load_conf()
-            per, total, _rep = _db.build(conf, _root())
+            # 带签名的 index 调用＝显式认基线：证据缺失时重建并写回游标/封存，
+            # 不新增开关，也不让未签名的路径自动重建。
+            # A signed index call is an explicit baseline acceptance: it rebuilds and writes the
+            # cursor/seal back. No extra switch, and no unsigned path ever auto-rebuilds.
+            per, total, _rep = _db.build(conf, _root(), baseline=True)
             summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total
             _audit('index', agent_id, '→ %d 条' % total)
             return _tool_ok(summary)

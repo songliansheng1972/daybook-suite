@@ -7,19 +7,20 @@ Daybook · append-only criterion regression (ledger guard)
 在判据退回后仍会全绿，本文件不会。
 
 Cases
-  A 首次索引非空卷                              ⇒ rc=5（无封存证据·已重建），复跑 rc=0
+  A 首次索引非空卷                              ⇒ rc=5（无封存证据·不写回），认基线后 0
   B 未变复跑两次                                ⇒ rc=0 且判「未变」，不得全扫
   C 纯追加一行                                  ⇒ rc=0，且走「只追加」
   D 全卷中部等长替换＋os.utime 恢复 mtime        ⇒ rc=3（等长改写）
   E 同一手法但不恢复 mtime                      ⇒ rc=3
   F 旧格式索引（fmt<2）                         ⇒ rc=0，报过期并全量重建
   G 删索引后等长替换                            ⇒ rc=3（索引缺失仍验哈希·不得洗成 5）
-  H 删游标后等长替换                            ⇒ rc=5（证据缺失）
-  I 游标写成 {}                                 ⇒ rc=5（不可信·证据缺失）
+  H 删游标后等长替换                            ⇒ rc=5（证据缺失·不写回）
+  I 游标写成 {}                                 ⇒ rc=5（不可信·不自动修好）
   J 替换后自己重写游标的 hash/size/mtime         ⇒ rc=3（与封存指纹不符·游标被改写）
-  K 删索引加删游标                              ⇒ rc=5（证据缺失）
+  K 删索引加删游标                              ⇒ rc=5（证据缺失·不重建）
   L 正常追加后删索引                            ⇒ rc=5 且无 traceback（旧实现 FileNotFoundError rc=1）
-  M 三件派生件全删                              ⇒ rc=5（无外部锚·已重建），复跑 rc=0
+  M 三件派生件全删                              ⇒ rc=5（无外部锚·复跑仍 5），认基线后 0
+  N 索引缺失且卷变长、旧前缀被改                 ⇒ rc=3（不能因「卷变大」跳过前缀校验）
 
 变异验证 / mutation check
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
@@ -108,6 +109,12 @@ def _run(tmp):
                           universal_newlines=True)
 
 
+def _base(tmp):
+    return subprocess.run([sys.executable, 'daybook.py', 'baseline'],
+                          cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True)
+
+
 def _log(tag, r):
     print('    [%s] rc=%d' % (tag, r.returncode))
     out = (r.stdout + r.stderr).strip().splitlines()
@@ -139,16 +146,24 @@ def main():
         _prepare(work)
         vol = os.path.join(work, '账卷.txt')
         idf = os.path.join(work, '索引', 'index_账.tsv')
+        cp = os.path.join(work, '索引', '.cursor_账.json')
+        sp = os.path.join(work, '索引', '.head_stamp.json')
 
-        # A：首次索引非空卷 ⇒ 无任何封存证据，退 5；复跑才 0
-        # A: first index of a non-empty volume has no sealed evidence ⇒ 5; a second run is 0
+        # A：首次索引非空卷 ⇒ 无任何封存证据，退 5 且不写回；认基线后才 0
+        # A: first index of a non-empty volume has no sealed evidence ⇒ 5 and nothing written
+        #    back; only an explicit baseline makes it 0
         r = _run(work)
         txt = r.stdout + r.stderr
         _ok('A 首次索引 ⇒ rc=5（无封存证据）', r.returncode == 5, 'rc=%d' % r.returncode)
         _ok('A 报「无任何封存证据」', '无任何封存证据' in txt)
+        _ok('A 不写回游标/索引', not os.path.exists(cp) and not os.path.exists(idf))
         _log('A', r)
         r = _run(work)
-        _ok('A 复跑 ⇒ rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+        _ok('A 未认基线前复跑仍 rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
+        r = _base(work)
+        _ok('A 认基线 ⇒ rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+        r = _run(work)
+        _ok('A 认基线后 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
 
         # D：中部等长替换 + 恢复 mtime ⇒ 必须违例（不是未变跳过）
         st, pos = _tamper_mid(vol, 0.50)
@@ -188,8 +203,7 @@ def main():
         _log('C', r)
 
         # F：旧格式索引（游标 fmt<2、口径戳无 index_fmt）⇒ 首跑报格式过期、全量重建、rc=0
-        cp = os.path.join(work, '索引', '.cursor_账.json')
-        sp = os.path.join(work, '索引', '.head_stamp.json')
+        # F: legacy index format ⇒ report staleness, rebuild fully, rc=0
         cur = json.load(io.open(cp, encoding='utf-8'))
         cur.pop('fmt', None)
         cur.pop('content_hash', None)
@@ -229,9 +243,10 @@ def main():
         _ok('G 报「索引缺失但哈希不符」', '索引缺失但全卷哈希' in txt or '等长改写' in txt,
             ' | '.join(l.strip() for l in txt.splitlines() if '★' in l)[:160])
         _ok('G 不得判未变', '未变·跳过' not in txt)
-        _ok('G 已重建索引', os.path.exists(idf), 'exists=%s' % os.path.exists(idf))
+        _ok('G 不自动重建（违例后须认基线）', not os.path.exists(idf),
+            'exists=%s' % os.path.exists(idf))
         _log('G', r)
-        _run(work)
+        _base(work)
 
         # H 删游标后等长替换 ⇒ 证据缺失（rc=5）
         os.remove(cp)
@@ -241,18 +256,22 @@ def main():
         _ok('H 删游标+等长替换 ⇒ rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
         _ok('H 报证据缺失（游标丢失）', '证据缺失' in txt and '游标' in txt)
         _ok('H 不得判未变', '未变·跳过' not in txt)
+        _ok('H 不写回游标', not os.path.exists(cp))
         _log('H', r)
-        _run(work)
+        r = _run(work)
+        _ok('H 未认基线前复跑仍 5', r.returncode == 5, 'rc=%d' % r.returncode)
+        _base(work)
 
-        # I 游标写成 {} ⇒ 不可信，证据缺失（rc=5）
+        # I 游标写成 {} ⇒ 不可信，证据缺失（rc=5），且不自动修好
         with io.open(cp, 'w', encoding='utf-8') as f:
             f.write('{}')
         r = _run(work)
         txt = r.stdout + r.stderr
         _ok('I 游标={} ⇒ rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
         _ok('I 报证据缺失且不得判未变', '证据缺失' in txt and '未变·跳过' not in txt)
+        _ok('I 不自动重写游标', io.open(cp, encoding='utf-8').read().strip() == '{}')
         _log('I', r)
-        _run(work)
+        _base(work)
 
         # J 替换后自己重写游标的 hash/size/mtime ⇒ 与封存指纹不符 ⇒ rc=3
         st, _pos = _tamper_mid(vol, 0.40)
@@ -272,7 +291,7 @@ def main():
         _log('J', r)
         _run(work)
 
-        # K 删索引加删游标 ⇒ 证据缺失（rc=5）
+        # K 删索引加删游标 ⇒ 证据缺失（rc=5），不写回；认基线后才恢复
         os.remove(idf)
         os.remove(cp)
         r = _run(work)
@@ -280,8 +299,9 @@ def main():
         _ok('K 删索引+删游标 ⇒ rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
         _ok('K 报证据缺失', '证据缺失' in txt)
         _ok('K 不得判未变', '未变·跳过' not in txt)
+        _ok('K 不自动重建索引入口', not os.path.exists(idf))
         _log('K', r)
-        _run(work)
+        _base(work)
 
         # L 正常追加后删索引 ⇒ 卷变大分支不得数不存在的索引文件（旧实现 FileNotFoundError rc=1）
         with io.open(vol, 'a', encoding='utf-8') as f:
@@ -293,9 +313,9 @@ def main():
         _ok('L 无 Traceback（不崩）', 'Traceback' not in txt and 'FileNotFoundError' not in txt)
         _ok('L 报证据缺失', '证据缺失' in txt)
         _log('L', r)
-        _run(work)
+        _base(work)
 
-        # M 三件派生件全删 ⇒ 无外部锚 ⇒ rc=5；复跑 0
+        # M 三件派生件全删 ⇒ 无外部锚 ⇒ rc=5，复跑仍 5；认基线才 0
         for q in (idf, cp, sp):
             if os.path.exists(q):
                 os.remove(q)
@@ -305,10 +325,26 @@ def main():
         _ok('M 报「无任何封存证据」', '无任何封存证据' in txt)
         _log('M', r)
         r = _run(work)
-        _ok('M 复跑 ⇒ rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+        _ok('M 未认基线前复跑仍 5', r.returncode == 5, 'rc=%d' % r.returncode)
+        r = _base(work)
+        _ok('M 认基线 ⇒ rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+        r = _run(work)
+        _ok('M 认基线后 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+
+        # N 索引缺失且卷变长：旧前缀被改 ⇒ 仍须判 3（不能因「卷变大」跳过校验）
+        os.remove(idf)
+        _tamper_mid(vol, 0.30)
+        with io.open(vol, 'a', encoding='utf-8') as f:
+            f.write('[2026-11-13 14:00:00] [测试] [变长] [皮特] 变长追加\n')
+        r = _run(work)
+        txt = r.stdout + r.stderr
+        _ok('N 索引缺失+变长+旧前缀改 ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
+        _ok('N 报旧前缀哈希不符', ('旧前缀' in txt) or ('前缀哈希不符' in txt))
+        _log('N', r)
+        _base(work)
 
         n_rows = sum(1 for l in io.open(idf, encoding='utf-8') if l.strip()) - 1
-        _ok('索引行数与卷条目一致', n_rows == 122, 'rows=%d' % n_rows)
+        _ok('索引行数与卷条目一致', n_rows == 123, 'rows=%d' % n_rows)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -316,7 +352,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–M 十三组用例全绿')
+    print('PASS: A–N 十四组用例全绿')
     return 0
 
 

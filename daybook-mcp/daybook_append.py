@@ -265,17 +265,21 @@ def resolve_cli_author(author, vol_path):
     a = (author or '').strip()
     if a in AUTHOR_PLACEHOLDERS:
         return a or '未标', None, False
+    # 机器 id 一律拒写（独立模式也一样）：作者位只许显示名
+    # Machine ids are refused even in standalone mode: the author slot is a display name only
+    if AUTHOR_ID_RE.match(a):
+        reg = _registry_for(vol_path)
+        if reg is not None:
+            name = next((n for n, i in _read_registry(reg)[1].items() if i == a), None)
+            if name:
+                return name, a, False
+        raise ValueError('作者位写显示名；不接受机器 id（%s，未注册或无注册表）' % a)
     reg = _registry_for(vol_path)
     if reg is None:
         return a, None, False
     by_id, by_name = _read_registry(reg)
     if a in by_name:
         return a, by_name[a], False
-    if AUTHOR_ID_RE.match(a):
-        name = next((n for n, i in by_name.items() if i == a), None)
-        if name:
-            return name, a, False
-        raise ValueError('作者位写显示名；“%s” 是未注册的机器 id，无法反查显示名' % a)
     sys.stderr.write('★ 警告：作者「%s」未在 %s 注册·仍写入并标 [未注册]\n' % (a, reg))
     return a, None, True
 

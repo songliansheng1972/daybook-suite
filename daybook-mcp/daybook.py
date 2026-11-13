@@ -10,6 +10,10 @@ Zero dependencies: Python standard library only.
 
 用法 / Usage:
   python3 daybook.py index        生成/刷新索引 · build/refresh the index
+  python3 daybook.py baseline     认基线：证据缺失（退 5）后显式重建索引并写回游标/封存
+                                  accept a baseline: after evidence loss (exit 5) rebuild the
+                                  index and write the cursor/seal back
+      别名 / alias: 认基线
   python3 daybook.py multiindex   生成四库式多级目录（部/类/属·跨卷总目）·派生件
                                   build the four-branch multilevel catalogue (derived)
   python3 daybook.py watch [秒]   监视各卷，变动即自动重算索引 + 自动续建多级目录 + 自动备份
@@ -44,7 +48,8 @@ Customers may edit daybook.conf to define fields and volumes.
   2 卷配置错 · volume configuration error
   3 append-only 违例（账本被改写）· append-only violation (ledger rewritten)
   4 作者口径（作者位出现机器 id 或两种形态混用）· author convention (machine id or mixing)
-  5 派生件证据缺失（索引/游标/封存丢失或不可解析·已重建）· derived evidence missing (rebuilt)
+  5 派生件证据缺失（索引/游标/封存丢失或不可解析·**不写回**·用 baseline 认基线）
+    derived evidence missing (nothing is written back; run `baseline` to accept one)
   多类同现：屏幕每类都打印，退出码取语义严重度最高的一类
   When several occur, every class is printed and the exit code is the most severe:
   3 违例 > 4 作者 > 2 配置错 > 5 证据缺失（3 不会被 2 掩盖，也不会被 5 洗掉）
@@ -440,15 +445,22 @@ def _write_cursor(path, obj):
         f.write(json.dumps(obj, ensure_ascii=False))
 
 
-def build(conf, root='.'):
+def build(conf, root='.', baseline=False):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
-    tail-read on pure append, flag violations when the old part was rewritten."""
+    tail-read on pure append, flag violations when the old part was rewritten.
+
+    baseline=True：证据缺失/被清除后**显式认一次基线**（重建索引并写回游标与封存）。
+    普通 index 遇到证据缺失只报 5，不写回任何派生证据——状态保持 5，直到认基线。
+    baseline=True: explicitly accept a baseline after evidence was lost (rebuild the index and
+    write the cursor/seal back). A plain index only reports 5 and writes nothing back, so the
+    state stays 5 until a baseline is accepted."""
     ENC_REPORT.clear()  # ★ 每轮 build 清空编码报告，防 watch 多轮累积
                         # ★ Clear the encoding report each build so watch does not accumulate
     VIOLATIONS.clear()
     CONFIG_ERRORS.clear()
     EVIDENCE_MISSING.clear()
+    blocked = set()     # 证据缺失的卷：本轮不写回索引/游标/封存 · evidence-missing volumes: no writes
     RULE_WARN.clear()
     _RULE_WARN_SEEN.clear()
     vols = conf.get('volumes', {})
@@ -529,6 +541,8 @@ def build(conf, root='.'):
             def _evidence(msg):
                 report.append((vol, msg))
                 EVIDENCE_MISSING.append((vol, msg))
+                blocked.add(vol)     # 证据缺失 ⇒ 本轮不写回派生证据，状态保持 5
+                                     # evidence lost ⇒ write nothing back; the state stays 5
 
             # ── 派生件三态：真未变 / 派生件丢失（重建并报告）/ 内容不符（违例）──
             # ── Three states: genuinely unchanged / derived artifacts lost (rebuild + report)
@@ -571,9 +585,9 @@ def build(conf, root='.'):
                     _violate('★ 派生件互相矛盾（游标与封存指纹不符）·游标可能被改写·全重扫')
                     cur = None
 
-            # ── 索引缺失但游标/封存还在：仍对当前卷算哈希，不符即违例（不得洗成证据缺失）──
-            # ── Index missing but cursor/seal still there: still hash the volume; a mismatch is
-            #    a violation, never laundered into "evidence missing". ──
+            # ── 索引缺失但游标/封存还在：仍验哈希（同长比全卷、变长比旧前缀），不符即违例 ──
+            # ── Index missing but cursor/seal still there: still verify hashes (whole file when
+            #    same size, old prefix when grown); a mismatch is a violation. ──
             if incremental and not index_present and (cur is not None or seals.get(vol) is not None):
                 ref = cur if cur is not None else seals[vol]
                 if ref.get('size') == size:
@@ -584,7 +598,15 @@ def build(conf, root='.'):
                     if content_hash not in ref_hashes:
                         _violate('★ 索引缺失但全卷哈希与游标/封存不符·等长改写·append-only 违例·全重扫')
                     else:
-                        report.append((vol, '索引缺失·游标/封存指纹一致·重建索引'))
+                        report.append((vol, '索引缺失·游标/封存指纹一致·待认基线后重建'))
+                elif size > (ref.get('size') or 0):
+                    _content_hash, pref_hash = _hash_vol(p, prefix_limit=ref['size'])
+                    if pref_hash != ref.get('content_hash'):
+                        _violate('★ 索引缺失且卷变长但旧前缀哈希不符·append-only 违例·全重扫')
+                    else:
+                        report.append((vol, '索引缺失·卷变长但旧前缀哈希一致·待认基线后重建'))
+                elif size < (ref.get('size') or 0):
+                    _violate('★ 索引缺失但卷变短·append-only 违例·全重扫')
 
             # ── 情形一：字节数与游标相同 ⇒ 必验全卷哈希（mtime 可被 os.utime 恢复，不作判据）──
             # ── Case 1: same size as the cursor ⇒ verify the whole-file hash (mtime is forgeable) ──
@@ -678,7 +700,11 @@ def build(conf, root='.'):
                 ENC_REPORT.append((vol, enc, why))
 
             # ── 写索引 ── / ── Write the index ──
-            if mode == 'append':
+            # 证据缺失的卷不写回任何派生件（除非显式认基线）：否则「5」会被自己的写回洗掉
+            # Evidence-missing volumes write nothing back (unless a baseline is accepted);
+            # otherwise the write-back would launder the 5 away.
+            write_ok = baseline or gated or vol not in blocked
+            if mode == 'append' and write_ok:
                 with io.open(idf, 'a', encoding='utf-8') as f:
                     for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
                 # ★ 索引 TXT 同步追加（老宋定：TSV+TXT 同目录·人读＋机读）
@@ -692,27 +718,32 @@ def build(conf, root='.'):
                             r[5] if len(r) > 5 else ''))
                 n_total = n_old + len(rows)
             else:
-                with io.open(idf, 'w', encoding='utf-8') as f:
-                    f.write('\t'.join(fields) + '\n')
-                    for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
-                # ★ 索引 TXT 同步生成（全扫重建） / ★ TXT rebuilt too (full rescan)
-                itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                with io.open(itxt, 'w', encoding='utf-8') as f:
-                    f.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
-                    f.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
-                    f.write('# Generated by daybook.py index · rebuildable from the volumes at any time\n')
-                    f.write('# 由 daybook.py index 自动生成·可随时从原文重算\n')
-                    f.write('# The index is a catalogue, not the record. The record is the volumes.\n')
-                    f.write('# 索引是目录不是真相·真相在各卷原文\n\n')
-                    for r in rows:
-                        f.write('[%s] line=%s category=%s title=%s author=%s\n' % (
-                            r[2] if len(r) > 2 else '', r[1] if len(r) > 1 else '',
-                            r[3] if len(r) > 3 else '', r[4] if len(r) > 4 else '',
-                            r[5] if len(r) > 5 else ''))
+                if write_ok:
+                    with io.open(idf, 'w', encoding='utf-8') as f:
+                        f.write('\t'.join(fields) + '\n')
+                        for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
+                    # ★ 索引 TXT 同步生成（全扫重建） / ★ TXT rebuilt too (full rescan)
+                    itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
+                    with io.open(itxt, 'w', encoding='utf-8') as f:
+                        f.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
+                        f.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
+                        f.write('# Generated by daybook.py index · rebuildable from the volumes at any time\n')
+                        f.write('# 由 daybook.py index 自动生成·可随时从原文重算\n')
+                        f.write('# The index is a catalogue, not the record. The record is the volumes.\n')
+                        f.write('# 索引是目录不是真相·真相在各卷原文\n\n')
+                        for r in rows:
+                            f.write('[%s] line=%s category=%s title=%s author=%s\n' % (
+                                r[2] if len(r) > 2 else '', r[1] if len(r) > 1 else '',
+                                r[3] if len(r) > 3 else '', r[4] if len(r) > 4 else '',
+                                r[5] if len(r) > 5 else ''))
                 n_total = len(rows)
             per[vol] = n_total; total += n_total
-            _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
-            new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
+            if write_ok:
+                _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
+                new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
+            elif seals.get(vol) is not None:
+                new_seals[vol] = seals[vol]   # 保留旧封存，不让清单写回把证据抹掉
+                                              # keep the old seal so the stamp rewrite cannot erase it
 
         with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
             f.write('# 卷首清单 / Volume manifest\n')
@@ -1078,7 +1109,8 @@ def main():
     Usage and unknown subcommands are handled before load_conf(): a missing conf gets a clear
     message instead of a traceback."""
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'index'
-    known = ('index', 'checkauthors', '查作者口径', 'multiindex', '多级索引',
+    known = ('index', 'baseline', '认基线', 'checkauthors', '查作者口径',
+             'multiindex', '多级索引',
              'backup', 'query', 'watch', 'mcp', 'orchestrate', '编排', '司南')
     if cmd in ('-h', '--help', 'help', '用法'):
         print(__doc__)
@@ -1135,10 +1167,11 @@ def main():
                 sys.stderr.write('  %s: %s\n' % (v, w))
             codes.append(EXIT_VIOLATION)
         if EVIDENCE_MISSING:
-            sys.stderr.write('★ 派生件证据缺失 %d 处（索引/游标丢失或不可解析·已重建并报告；'
-                             '这不是「未变」）：\n' % len(EVIDENCE_MISSING))
+            sys.stderr.write('★ 派生件证据缺失 %d 处（索引/游标/封存丢失或不可解析·本轮不写回）：\n'
+                             % len(EVIDENCE_MISSING))
             for v, w in EVIDENCE_MISSING:
                 sys.stderr.write('  %s: %s\n' % (v, w))
+            sys.stderr.write('  要重建并写回派生证据，请显式认基线：python3 daybook.py baseline\n')
             codes.append(EXIT_EVIDENCE)
         # ★ 作者口径机检：作者位必须是显示名，机器 id 或混用直接报红
         # ★ Author-convention gate: the author slot must hold a display name; ids or mixing go red
@@ -1147,6 +1180,23 @@ def main():
         rc = worst_exit(codes)
         if rc:
             sys.exit(rc)
+    elif cmd in ('baseline', '认基线'):
+        # 显式认基线：证据缺失后由人确认「以当前卷为新基线」，此后才写回游标与封存
+        # Explicit baseline: a human accepts the current volumes as the new baseline; only then
+        # are the cursor and seal written back.
+        per, total, rep = build(conf, root, baseline=True)
+        for v, w in rep: print('  %s: %s' % (v, w), flush=True)
+        print('基线已认：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
+              + '｜合计 %d 条' % total, flush=True)
+        codes = []
+        if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
+        if VIOLATIONS:
+            sys.stderr.write('★ append-only 违例 %d 处（认基线只重建派生件，不掩盖账本被改写）：\n'
+                             % len(VIOLATIONS))
+            for v, w in VIOLATIONS:
+                sys.stderr.write('  %s: %s\n' % (v, w))
+            codes.append(EXIT_VIOLATION)
+        sys.exit(worst_exit(codes))
     elif cmd in ('checkauthors', '查作者口径'):
         # 只跑作者口径机检：绿返 0，红返 1
         # Author-convention check only: 0 green, 1 red
