@@ -839,13 +839,18 @@ def call_tool(name, args, agent_id=None, signature=None):
             if not vol_path:
                 raise ValueError('卷 %r 不在 daybook.conf 卷表' % vol)
             full_path = vol_path if os.path.isabs(vol_path) else os.path.join(_root(), vol_path)
+            # 作者口径：作者位写显示名，注册表 id 只作 [id=ag-…] 附注
+            # Author convention: the author slot holds the display name; the registry id is an [id=ag-…] annotation
+            _agent = _agent_reg().lookup(agent_id)
+            author_slot = (_agent.name if _agent and _agent.name else agent_id)
             # 签名先落边车·写失败则不动卷（保证事后可验签）
             # Record the signature to the sidecar first · if that fails the volume is untouched (post-hoc verifiability guaranteed)
             _record_signature('daybook_append', agent_id, signature, payload,
                               volume=vol, tag=tag, subtag=subtag, to=to or '', ts=ts)
             # 调 daybook_append.append_one 原子写·传 to
             # call daybook_append.append_one for an atomic write · passing `to`
-            rc = _dba.append_one(full_path, tag, subtag, content, author=author, to=to)
+            rc = _dba.append_one(full_path, tag, subtag, content, author=author_slot,
+                                 to=to, author_id=agent_id)
             if rc != 0:
                 raise RuntimeError('append_one rc=%d' % rc)
             _audit('append', agent_id, 'vol=%s tag=%s to=%s → %s' % (vol, tag, to or '广播', full_path))
@@ -912,7 +917,10 @@ def call_tool(name, args, agent_id=None, signature=None):
             hb_vol = os.path.join(_root(), '心跳卷.txt')
             msg = 'alive' + ('｜负载=%s' % load if load else '')
             _record_signature('daybook_heartbeat', agent_id, signature, payload, load=load, ts=ts)
-            rc = _dba.append_one(hb_vol, '心跳', agent_id, msg, author=agent_id)
+            _hb_agent = _agent_reg().lookup(agent_id)
+            _hb_author = (_hb_agent.name if _hb_agent and _hb_agent.name else agent_id)
+            rc = _dba.append_one(hb_vol, '心跳', agent_id, msg, author=_hb_author,
+                                 author_id=agent_id)
             if rc != 0:
                 raise RuntimeError('heartbeat append_one rc=%d' % rc)
             _audit('heartbeat', agent_id, 'load=%s' % load)

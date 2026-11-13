@@ -93,6 +93,8 @@ import agent_lock as _lock
 import daybook_append as _dba
 import volume_paths as _vp
 
+AUTHOR_ID_RE = _dba.AUTHOR_ID_RE   # 作者附注 [id=ag-…] 与条号 [id=m…] 的区分依据
+
 DEFAULT_RULE = os.path.join(HERE, 'orchestration_routing.conf')
 DEFAULT_ROLES = os.path.join(HERE, 'orchestration_roles.conf')
 
@@ -466,6 +468,7 @@ def parse_ledger(path):
                 inline = inline[1:]
             # 作者可选·致=/id=/re=/sig= 段可在其后 / author optional · 致=/id=/re=/sig= may follow
             author = ''
+            author_id = ''
             to = ''
             eid = ''
             re_ref = ''
@@ -474,7 +477,12 @@ def parse_ledger(path):
                 if _s.startswith('致='):
                     to = _s[2:]
                 elif _s.startswith('id='):
-                    eid = _s[3:]
+                    # [id=ag-…] 是作者附注，不是条号；条号形如 m<hex>
+                    # [id=ag-…] is the author annotation, not the entry id; entry ids look like m<hex>
+                    if AUTHOR_ID_RE.match(_s[3:]):
+                        author_id = _s[3:]
+                    else:
+                        eid = _s[3:]
                 elif _s.startswith('re='):
                     re_ref = _s[3:]
                 elif _s.startswith('sig='):
@@ -482,8 +490,8 @@ def parse_ledger(path):
                 elif not author and not is_field_seg(_s):
                     author = _s
             e = {'time': m.group(1), 'kind': kind, 'title': title,
-                 'author': author, 'to': to, 'id': eid, 're': re_ref,
-                 'sig': sig, 'inline': inline, 'body': []}
+                 'author': author, 'author_id': author_id, 'to': to, 'id': eid,
+                 're': re_ref, 'sig': sig, 'inline': inline, 'body': []}
             cur = e
         elif cur is not None:
             cur['body'].append(line)
@@ -528,12 +536,16 @@ class Hub:
         if not e.get('sig'):
             return 'unsigned'
         author = e.get('author') or ''
-        if not self.reg.lookup(author):
+        # 作者位是显示名；选钥用 [id=ag-…] 附注（旧条目没有附注则退回作者位）
+        # The author slot holds the display name; key selection uses the [id=ag-…] annotation
+        # (legacy entries without it fall back to the author slot).
+        key_id = e.get('author_id') or author
+        if not self.reg.lookup(key_id):
             return 'unknown-key'
         payload = entry_payload(e.get('time'), e.get('kind'), e.get('title'),
                                 author, e.get('to'), e.get('id'), e.get('re'),
                                 entry_body(e))
-        return 'ok' if self.reg.verify(author, payload, e['sig']) else 'invalid'
+        return 'ok' if self.reg.verify(key_id, payload, e['sig']) else 'invalid'
 
     def _actor(self, explicit):
         """身份解析：显式参数优先；缺省才由 DAYBOOK_AGENT_ID 选钥（环境变量只选钥，不证明身份）。
@@ -548,15 +560,20 @@ class Hub:
         body = (msg or title or '').rstrip('\n')
         eid = 'm' + secrets.token_hex(8)
         now = time.strftime('%Y-%m-%d %H:%M:%S')
+        # 作者位写显示名（人读）·注册表 id 只作 [id=ag-…] 附注；签名载荷与落盘作者位一致
+        # The author slot holds the display name (human-readable); the registry id is only an
+        # [id=…] annotation. The signature payload uses the same string that lands on disk.
+        disp = self._name_of(author) or author
         sig = None
         try:
-            sig = self.reg.sign(author, entry_payload(now, kind, title, author,
+            sig = self.reg.sign(author, entry_payload(now, kind, title, disp,
                                                       to_ids, eid, re_ref, body))
         except (KeyError, PermissionError) as exc:
             sys.stderr.write('⚠ 未签名条目 id=%s author=%s：%s（读取侧将标 unsigned）\n'
                              % (eid, author, exc))
-        _dba.append_one(self.ledger, kind, title, body, author=author, to=to_ids,
-                        msg_id=eid, re_ref=re_ref, sig=sig, now=now)
+        _dba.append_one(self.ledger, kind, title, body, author=disp, to=to_ids,
+                        msg_id=eid, re_ref=re_ref, sig=sig, now=now,
+                        author_id=author if AUTHOR_ID_RE.match(author or '') else None)
         return eid
 
     def _resolve_to(self, to):

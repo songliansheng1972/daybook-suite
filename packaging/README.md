@@ -26,7 +26,7 @@ conf 不在脚本旁会直接报错；即便随包带上 conf，**账本与数�
 
 ```
 分包内  <mod>/payload/          ← 代码在此（随 pip 升级生效）
-运行目录  $DAYBOOK_HOME|~/.daybook|当前目录(若已有 conf)|--home=
+运行目录  --home=|$DAYBOOK_HOME|当前目录(若已有 conf)   ← 必须显式，不再默认 ~/.daybook
           ├─ daybook.conf       ← 复制一份（用户可改）
           ├─ sample/            ← 复制一份
           └─ daybook.py, *.py … ← 软链，指回 payload

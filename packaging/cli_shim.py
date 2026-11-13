@@ -71,7 +71,11 @@ def resolve_home(argv):
     """挑运行目录，并把 `--home` 从参数里摘掉。
 
     优先次序：`--home=X` > 环境变量 `DAYBOOK_HOME` > **当前目录**（仅当它已含 `daybook.conf`，
-    即「用我自己那本账」）> `~/.daybook`
+    即「用我自己那本账」）。三者都没有 ⇒ 报错要求显式指定：绝不隐式改 `~/.daybook`
+    （曾因默认落到家目录软链而误改真实账本）。
+    Priority: --home=X > DAYBOOK_HOME > cwd containing daybook.conf. With none of the three,
+    refuse and demand an explicit location: never implicitly touch ~/.daybook (a default that
+    landed on a home-directory symlink once mutated a real ledger).
     """
     rest = []
     home = None
@@ -94,7 +98,10 @@ def resolve_home(argv):
         return os.path.abspath(os.path.expanduser(env)), rest
     if os.path.isfile(os.path.join(os.getcwd(), _CONF)):
         return os.getcwd(), rest
-    return os.path.join(os.path.expanduser("~"), ".daybook"), rest
+    sys.stderr.write(
+        "%s: 未指定账本目录。请用 --home=<目录> 或环境变量 DAYBOOK_HOME 显式指定"
+        "（不再默认使用 ~/.daybook）。\n" % _CMD)
+    raise SystemExit(2)
 
 
 def _link_payload(home, payload, made, reassign):

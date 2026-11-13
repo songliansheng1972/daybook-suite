@@ -10,8 +10,8 @@ Principle: O_APPEND + single write ≤ PIPE_BUF ⇒ POSIX guarantees atomicity �
 Usage:
   python3 daybook_append.py <卷文件> <类> <标题> <作者> "正文"   # 标准条目（作者必填）· standard entry (author required)
   python3 daybook_append.py <卷文件> <类> <标题> <作者> "正文" --name=显示名
-                                                              # 作者位＝注册表 id·显示名只作附注
-                                                              # author slot = registry id · display name is annotation only
+                                                              # 作者位＝显示名·注册表 id 只作 [id=…] 附注
+                                                              # author slot = display name · registry id is only an [id=…] annotation
   python3 daybook_append.py <卷文件> <类> <标题> "正文"           # 兼容（作者默认"未标"）· compatible (author defaults to "未标")
   echo "正文" | python3 daybook_append.py <卷文件> [<类> <标题> <作者>]
 所有写者对同一卷并发调用都安全（每条必须 ≤ PIPE_BUF）。
@@ -24,59 +24,79 @@ PIPE_BUF is probed dynamically via os.pathconf(path, 'PC_PIPE_BUF'):
 Author ID iron rule: every entry must carry an author, auditable, verifiable and traceable.
 ★ 唯一落盘入口：CLI 与 MCP 都走本件 append_one，不许各自拼行。
 ★ Single landing entry: both the CLI and MCP go through append_one; no one formats lines elsewhere.
-★ 作者单一来源：注册表 id（ag-<16 hex>）；显示名只写 [名=…] 附注，不顶 id 位。
-★ Single author source: the registry id (ag-<16 hex>); display names are only a [name=…] annotation.
-★ 同卷口径机检：check_author_consistency() 抓「id / 显示名 / 未标」混用。
-★ Per-volume convention check: check_author_consistency() flags id/display/unmarked mixtures.
+★ 作者位＝显示名（人读）；注册表 id 降为 [id=ag-…] 附注。作者位出现机器 id 即判红。
+★ The author slot holds the display name (human-readable); the registry id is demoted to an
+  [id=ag-…] annotation. A machine id in the author slot is red.
+★ 未注册的名字允许写入：stderr 警告 + 附注 [未注册]（人记账不该先登记才能记事）。
+★ Unregistered names are allowed: a stderr warning plus an [未注册] annotation.
+★ 同卷口径机检：check_author_consistency() 只按 head_regex 锚定条目头，抓机器 id 与混用。
+★ Per-volume convention check: check_author_consistency() anchors entry heads by head_regex only,
+  and flags machine ids / mixed conventions.
 """
 import io, os, re, sys, time
 
 FALLBACK_LIMIT = 4096          # POSIX PIPE_BUF 之保守值（探测失败兜底）· conservative POSIX PIPE_BUF value (fallback on probe failure)
 PROMPT_TEMPLATE = '★ 本条超 {limit} 字节：POSIX 只保证 ≤ PIPE_BUF 之单次 write 原子。请拆条或改用加锁写入。\n'
 
-# ── 作者口径（单一来源＝注册表 id）────────────────────────────
-# ── Author convention (single source = registry id). ──
+# ── 作者口径（作者位＝显示名·id 只作附注）──────────────────────
+# ── Author convention (author slot = display name · id is annotation only). ──
 AUTHOR_ID_RE = re.compile(r'^ag-[0-9a-f]{16}$')          # 注册表 id 形态 · registry-id shape
 AUTHOR_PLACEHOLDERS = frozenset(('', '未标', '_', '（未标）'))  # 未标占位 · unmarked placeholders
 ENTRY_NO_RE = re.compile(r'^#\d+$')                      # 可选的 [#N] 条号前缀 · optional [#N] entry number
 REG_BRACKET_RE = re.compile(r'\[([^\]]*)\]')
+# 条头之后的结构/附注段：作者位到此为止（防「旧三段条目正文里的 [致=…] 被当作者」）
+# Structural/annotation tokens after the head: the author slot ends here, so a body-level
+# [致=…] in a legacy 3-part entry can never be mistaken for an author.
+STRUCT_PREFIXES = ('致=', 'id=', 're=', 'sig=', 'thread=', '名=')
+DEFAULT_HEAD_RE = re.compile(r'^(?:\[#\d+\][ ]*)?\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]')
 
 
 def _head_tokens(line):
-    """取行首连续的 [..] 段（遇到正文即停）。返回 token 列表。
-    Take the leading [..] tokens of a line (stop at the body). Returns the token list."""
+    """取行首连续的 [..] 段（遇到结构/附注段或正文即停）。返回 token 列表。
+    Take the leading [..] tokens (stop at a structural/annotation token or the body)."""
     tokens, rest = [], line
     while rest.startswith('['):
         end = rest.find(']')
         if end < 0:
             break
-        tokens.append(rest[1:end])
+        tok = rest[1:end]
+        if tok.startswith(STRUCT_PREFIXES):
+            break
+        tokens.append(tok)
         rest = rest[end + 1:].lstrip(' ')
     return tokens
 
 
 def classify_author(author):
-    """作者口径归类：id / 显示名 / 未标。
-    Classify an author value: id / display / unmarked."""
+    """作者口径归类：显示名 / 机器id / 未标。
+    Classify an author value: display / machine-id / unmarked."""
     a = (author or '').strip()
     if a in AUTHOR_PLACEHOLDERS:
         return '未标'
     if AUTHOR_ID_RE.match(a):
-        return 'id'
+        return '机器id'
     return '显示名'
 
 
-def check_author_consistency(path):
-    """机检：同一卷内 author 字段必须同一口径，混用即报红。
-    Machine check: one author convention per volume; mixing conventions is red.
+def check_author_consistency(path, head_regex=None):
+    """机检：作者位必须是显示名；出现机器 id、或同卷混两种形态即报红。
+    Machine check: the author slot must hold a display name; a machine id, or two
+    conventions mixed in one volume, is red.
     返回 (ok, detail)；detail = {kinds, samples, summary}。
     Returns (ok, detail); detail = {kinds, samples, summary}.
-    只认四段条目头（[时间][类][标题][作者]）；旧三段条目无作者位，不参与判定。
-    Only 4-part entry heads ([time][tag][title][author]) count; legacy 3-part heads have no author slot."""
+    条目头只由 head_regex 锚定——正文里的 [注][甲][乙][老宋] 不会被当成条目。
+    Entry heads are anchored by head_regex only, so body lines like [注][甲][乙][老宋]
+    are never mistaken for entries.
+    旧三段条目无作者位，不参与判定。
+    Legacy 3-part heads have no author slot and take no part in the verdict."""
+    head_re = re.compile(head_regex) if head_regex else DEFAULT_HEAD_RE
     entries = []
     try:
         with io.open(path, encoding='utf-8', errors='replace') as f:
             for ln, line in enumerate(f, 1):
+                line = line.rstrip('\n')
+                if not head_re.match(line):
+                    continue          # 非条目头（含正文行）· not an entry head (body lines included)
                 tokens = _head_tokens(line)
                 if tokens and ENTRY_NO_RE.match(tokens[0]):
                     tokens = tokens[1:]
@@ -88,6 +108,9 @@ def check_author_consistency(path):
         return False, {'kinds': ['读失败'], 'samples': [(0, str(exc), '读失败')],
                        'summary': '读失败'}
     kinds = sorted({c for _ln, _a, c in entries})
+    if '机器id' in kinds:
+        return False, {'kinds': kinds, 'samples': entries[:200],
+                       'summary': '作者位出现机器 id（应为显示名）'}
     if len(kinds) <= 1:
         return True, {'kinds': kinds, 'samples': [],
                       'summary': '%s × %d 条' % (kinds[0] if kinds else '无条目', len(entries))}
@@ -110,15 +133,20 @@ def get_pipe_buf(path):
 
 
 def append_one(path, kind, title, msg, author='未标', to=None,
-               msg_id=None, re_ref=None, sig=None, now=None, display_name=None):
+               msg_id=None, re_ref=None, sig=None, now=None, author_id=None,
+               unregistered=False):
     """原子追加一条（**唯一落盘入口**：CLI 与 MCP 共用）。to 为收件人列表或字符串·写入 [致=...] 段·不填即广播。
     Atomically append one entry (**the single landing entry**: shared by the CLI and the MCP). `to` is a recipient list or string · writes a [致=...] segment · broadcasts when omitted.
-    格式：[时间] [类] [标题] [作者] [名=…] [id=…] [re=…] [sig=…] [致=汤姆,老宋] 正文
+    格式：[时间] [类] [标题] [作者显示名] [id=ag-…] [未注册] [id=<条号>] [re=…] [sig=…] [致=汤姆,老宋] 正文
     Format: the tokens above plus the body text.
 
-    display_name：显示名附注 [名=…]；作者位永远保持注册表 id，不被显示名顶替。
-    display_name: a display-name annotation [名=…]; the author slot always keeps the registry
-    id and is never replaced by a display name.
+    author：作者位写**显示名**（人读）。
+    author: the author slot holds the **display name** (human-readable).
+    author_id：注册表 id 只作 [id=ag-…] 附注，不占作者位。
+    author_id: the registry id is only an [id=ag-…] annotation, never the author slot.
+    unregistered：未注册作者仍写入，附注 [未注册]（并已由调用方在 stderr 警告）。
+    unregistered: unregistered authors are still written, annotated [未注册]
+                  (the caller has already warned on stderr).
 
     msg_id / re_ref / sig：消息总线字段（显式条号、显式回应引用、条目签名）。
     msg_id / re_ref / sig: message-bus fields (explicit entry id, explicit reply reference, entry signature).
@@ -136,8 +164,10 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     limit = get_pipe_buf(path)
     now = now or time.strftime('%Y-%m-%d %H:%M:%S')  # W-75 修⑥：分钟⇒秒（心跳 alive 判定需秒级）· W-75 fix ⑥: minutes ⇒ seconds (heartbeat alive check needs second resolution)
     head = '[%s] [%s] [%s] [%s] ' % (now, kind, title, author)
-    if display_name:
-        head += '[名=%s] ' % str(display_name).replace(']', '').replace('\n', ' ').strip()
+    if author_id:
+        head += '[id=%s] ' % author_id
+    if unregistered:
+        head += '[未注册] '
     if msg_id:
         head += '[id=%s] ' % msg_id
     if re_ref:
@@ -225,24 +255,31 @@ def _registry_for(vol_path):
 
 
 def resolve_cli_author(author, vol_path):
-    """CLI 作者解析（注册表在则强制 id 源头）。返回 (作者位, 显示名附注或 None)。
-    CLI author resolution (id is mandatory when a registry exists). Returns (author slot, display name or None).
-    · 已是注册表 id ⇒ 原样，无附注
-    · 是已注册显示名 ⇒ 换成 id，显示名作附注
-    · 注册表存在但既非 id 也未注册 ⇒ 抛 ValueError（不许显示名顶 id 位）
-    · 无注册表 ⇒ 独立模式，原样落盘（兼容单机无注册用法）
+    """CLI 作者解析：作者位写显示名，注册表 id 只作附注。返回 (作者位, id 附注或 None, 是否未注册)。
+    CLI author resolution: the author slot holds the display name; the registry id is annotation
+    only. Returns (author slot, id annotation or None, unregistered flag).
+    · 已注册显示名 ⇒ 原样作作者位，id 作附注
+    · 注册表 id     ⇒ 反查显示名作作者位，id 作附注
+    · 未注册的名字   ⇒ 仍写入，打 stderr 警告并标 [未注册]（人记账不该先登记才能记事）
+    · 未注册的机器 id⇒ 拒写（无法反查显示名，且作者位不许出现 id）
+    · 无注册表      ⇒ 独立模式，名字原样落盘
     """
     a = (author or '').strip()
+    if a in AUTHOR_PLACEHOLDERS:
+        return a or '未标', None, False
     reg = _registry_for(vol_path)
     if reg is None:
-        return a, None
+        return a, None, False
     by_id, by_name = _read_registry(reg)
-    if a in by_id:
-        return a, None
     if a in by_name:
-        return by_name[a], a
-    raise ValueError('作者位必须是注册表 id（ag-…）：“%s” 既非 id 也未在 %s 注册；'
-                     '显示名请用 --name= 附注' % (a, reg))
+        return a, by_name[a], False
+    if AUTHOR_ID_RE.match(a):
+        name = next((n for n, i in by_name.items() if i == a), None)
+        if name:
+            return name, a, False
+        raise ValueError('作者位写显示名；“%s” 是未注册的机器 id，无法反查显示名' % a)
+    sys.stderr.write('★ 警告：作者「%s」未在 %s 注册·仍写入并标 [未注册]\n' % (a, reg))
+    return a, None, True
 
 
 def main():
@@ -252,7 +289,8 @@ def main():
     if len(sys.argv) < 3:
         print(__doc__); return 1
     path = sys.argv[1]
-    # --name=显示名：显示名只作附注，不占作者位 · display name is annotation only, never the author slot
+    # --name=显示名：显式指定作者位的显示名（作者位本就写显示名，此参作覆盖）
+    # --name=: explicitly set the display name in the author slot (the slot is a display name anyway)
     name = None
     argv = []
     for a in sys.argv[2:]:
@@ -277,12 +315,14 @@ def main():
     if not msg.strip():
         sys.stderr.write('空消息，未写。\n'); return 1
     try:
-        author_slot, auto_name = resolve_cli_author(author, path)
+        author_slot, author_id, unregistered = resolve_cli_author(author, path)
     except ValueError as exc:
         sys.stderr.write('%s\n' % exc)
         return 2
+    if name:
+        author_slot, unregistered = name, False
     return append_one(path, kind, title, msg, author_slot,
-                      display_name=name or auto_name)
+                      author_id=author_id, unregistered=unregistered)
 
 
 if __name__ == '__main__':

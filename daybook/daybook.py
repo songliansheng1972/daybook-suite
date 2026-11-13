@@ -44,11 +44,33 @@ import io, os, re, sys, time, hashlib, json, shutil
 ENC_REPORT = []
 VIOLATIONS = []      # 本轮 build 的 append-only 违例（卷, 说明）；CLI index 据此非零退出
 CONFIG_ERRORS = []   # 卷配置错误（目录型条目等）；解析层不崩溃，CLI 明确报错非零退出
+EVIDENCE_MISSING = []  # 派生件缺失/不可解析/不可信（证据缺失·重建）；与「未变」不得同码
 RULE_WARN = []       # 字段规则告警（tag:N 无法解析等），每轮去重后上报·不再静默
 CURSOR_FMT = 2       # 游标代次：1=size+mtime+头尾探针（旧·可伪造⇒判过期）；2=全卷 sha256
 INDEX_FMT = 2        # 索引代次：写进 .head_stamp.json 与卷首清单，旧代一律视为过期
 HASH_CHUNK = 1 << 20
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# ── 退出码（互不掩盖）────────────────────────────────────────
+# ── Exit codes (never mask each other). ──
+# 2 配置错 / 3 append-only 违例 / 4 作者口径 / 5 派生件证据缺失。
+# 同时出现多类时按严重度取最高：违例(3) > 作者(4) > 证据缺失(5) > 配置错(2)。
+# 屏幕各类都会打印，退出码必须反映最重那类——「检测到篡改」不能被 2 盖掉。
+# 2 config / 3 append-only violation / 4 author convention / 5 derived-evidence missing.
+# When several occur, the most severe wins: violation(3) > author(4) > evidence(5) > config(2).
+# Every class is printed; the status must reflect the heaviest one — tampering must not be masked by 2.
+EXIT_CONFIG = 2
+EXIT_VIOLATION = 3
+EXIT_AUTHOR = 4
+EXIT_EVIDENCE = 5
+_EXIT_SEVERITY = {EXIT_VIOLATION: 4, EXIT_AUTHOR: 3, EXIT_EVIDENCE: 2, EXIT_CONFIG: 1}
+
+
+def worst_exit(codes):
+    """多类同时出现时取最严重的一类（0=无问题）。Pick the most severe code (0 = clean)."""
+    codes = [c for c in codes if c]
+    return max(codes, key=lambda c: _EXIT_SEVERITY.get(c, 0)) if codes else 0
+
 
 _RULE_WARN_SEEN = set()
 
@@ -122,22 +144,46 @@ FIELD_ALIAS = {
     '类': 'category', '标题': 'title', '作者': 'author',
 }
 
-# ── [volumes] 段的非卷键（白名单过滤）─────────────────────────
-# ── Non-volume keys in the [volumes] section (whitelist filtering). ──
+# ── [volumes] 段的非卷键（键值双条件判据）────────────────────
+# ── Non-volume keys in the [volumes] section (key+value double criterion). ──
 # orch 与账本共用一份 daybook.conf 时，[volumes] 段同时挂着编排内部角色键：
 # registry/tasks/heartbeat/leases/ledger/inbox/locks，外加审计键 audit。
-# 这些不是内容卷——若当卷读，locks=.locks 会以目录身份进 build ⇒ IsADirectoryError。
-# 解析层显式跳过，并在 conf['volumes_skipped'] 里留痕（不静默）。
+# 只按键名跳过会把合法内容卷（哪怕叫 task、locks）一并吞掉，故判据是双条件：
+#   · 值指向已存在的普通文件 ⇒ 一律当内容卷（键名再不顺眼也不丢）
+#   · 值指向目录，或值为已知非卷默认（.locks / .audit / .daybook_keys …）⇒ 非卷，跳过
+# 被跳过的键不静默：stderr 一行 + volumes.md 一节。
 # When orch and the ledger share one daybook.conf, the [volumes] section also holds
-# orchestration-internal role keys (registry/tasks/heartbeat/leases/ledger/inbox/locks)
-# plus the audit key. They are not content volumes: reading locks=.locks as a volume
-# makes build() hit a directory ⇒ IsADirectoryError. Skip them at parse time and keep
-# a trace in conf['volumes_skipped'] (never silent).
+# orchestration role keys (registry/tasks/…/locks) plus audit. Skipping by key name alone
+# silently swallows legitimate content volumes (even one named task or locks), so the criterion
+# is twofold: a value pointing at an existing regular file is always a content volume; a value
+# pointing at a directory, or a known non-volume default, is skipped. Skipped keys are never
+# silent: one stderr line plus a section in volumes.md.
 NON_VOLUME_KEYS = frozenset((
     'registry', 'tasks', 'heartbeat', 'leases', 'ledger', 'inbox', 'locks',
     'audit', 'task', 'lease', 'lock',
     '注册卷', '任务卷', '心跳卷', '租约卷', '编排卷', '消息卷', '锁目录', '审计卷',
 ))
+NON_VOLUME_VALUES = frozenset((
+    '.locks', 'locks', '.lock', '.audit', 'audit', '.daybook_keys',
+    '锁目录', '审计卷', '.审计',
+))
+
+
+def _skip_non_volume(key, value, base):
+    """键值双条件：是否把该 [volumes] 条目当「非卷配置」跳过。
+    Key+value double criterion: should this [volumes] entry be skipped as non-volume config?
+    返回 None=是内容卷；否则返回跳过理由。Returns None for a content volume, else a reason."""
+    if key not in NON_VOLUME_KEYS:
+        return None
+    v = (value or '').strip()
+    p = v if os.path.isabs(v) else os.path.join(base, v)
+    if os.path.isfile(p):
+        return None                      # 值是真卷文件 ⇒ 合法内容卷，不丢
+    if os.path.isdir(p):
+        return '值指向目录（%s）·非卷' % v
+    if os.path.basename(v.rstrip('/\\')) in NON_VOLUME_VALUES or v in NON_VOLUME_VALUES:
+        return '已知非卷配置（%s）' % v
+    return None                          # 文件暂缺但非已知非卷默认 ⇒ 仍当内容卷
 
 
 def canon_sec(name):
@@ -178,6 +224,7 @@ def load_conf(path=None):
     载入配置为「节 → 键」两参字典；此处即中→英别名归一的唯一入口。
     Canonicalisation of Chinese legacy names happens here and nowhere else."""
     path = path or os.path.join(HERE, 'daybook.conf')
+    base = os.path.dirname(os.path.abspath(path))
     conf = {'volumes': {}, 'entries': {}, 'index': {}, 'trigger': {},
             'volumes_skipped': {}}
     sec = None
@@ -189,12 +236,14 @@ def load_conf(path=None):
         if sec and '=' in line:
             k, v = line.split('=', 1)
             k = canon_key(k.strip())
-            # ★ 卷表白名单：编排内部角色键/审计键不是内容卷，显式跳过并留痕
-            # ★ Volume-table whitelist: orchestration role keys / audit keys are not
-            #   content volumes; skip them explicitly and leave a trace.
-            if sec == 'volumes' and k in NON_VOLUME_KEYS:
-                conf['volumes_skipped'][k] = v.strip()
-                continue
+            # ★ 卷表键值双条件：只有「键名在内 + 值不是真卷」才算非卷配置，跳过并留痕
+            # ★ Twofold criterion: only when the key looks non-volume AND the value is not a
+            #   real volume do we skip it — and we always leave a trace.
+            if sec == 'volumes':
+                why = _skip_non_volume(k, v, base)
+                if why:
+                    conf['volumes_skipped'][k] = {'value': v.strip(), 'reason': why}
+                    continue
             if k == 'fields':
                 # 字段表里每个名字也归一。Field list members are canonicalised too.
                 v = ','.join(canon_field(x) for x in v.split(','))
@@ -369,6 +418,7 @@ def build(conf, root='.'):
                         # ★ Clear the encoding report each build so watch does not accumulate
     VIOLATIONS.clear()
     CONFIG_ERRORS.clear()
+    EVIDENCE_MISSING.clear()
     RULE_WARN.clear()
     _RULE_WARN_SEEN.clear()
     vols = conf.get('volumes', {})
@@ -388,6 +438,17 @@ def build(conf, root='.'):
     if not os.path.isdir(outdir): os.makedirs(outdir)
     incremental = conf['trigger'].get('incremental', '是') in ('是', '1', 'true', 'True', 'yes')
     per, total, report = {}, 0, []
+    # 封存指纹：.head_stamp.json 里另存一份「卷→内容指纹」。游标与卷同目录、写它与信它
+    # 是同一进程，单靠游标无法发现「改卷后顺手改游标」；两份派生件互相印证才有判据。
+    # Sealed fingerprints: a second copy of vol→content fingerprint in .head_stamp.json.
+    # The cursor lives next to the volume and is written and trusted by the same process, so
+    # a cursor rewrite after a volume rewrite is invisible to the cursor alone; two derived
+    # artifacts cross-checking each other give the criterion teeth.
+    stamp_path = os.path.join(outdir, '.head_stamp.json')
+    old_stamp = _read_json(stamp_path)
+    seals = old_stamp.get('vol_seals') if isinstance(old_stamp, dict) else None
+    seals = seals if isinstance(seals, dict) else {}
+    new_seals = {}
     # W-75 修②：索引写入全临界区（TSV/游标/清单·目录级锁）
     # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest, dir lock)
     from safeio import locked as _safe_locked
@@ -395,7 +456,10 @@ def build(conf, root='.'):
 
         # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
         # ── Criterion drift gate: a changed criterion forces a full rescan ──
-        _criterion_gate(conf, outdir, vols, prefix, report)
+        if _criterion_gate(conf, outdir, vols, prefix, report):
+            # 闸自己删了索引与游标：这是有意重建，不是证据缺失
+            # The gate dropped index and cursor on purpose: a deliberate rebuild, not lost evidence
+            seals = {}
 
         for vol, path in vols.items():
             p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -417,12 +481,11 @@ def build(conf, root='.'):
             size, mt = os.path.getsize(p), os.path.getmtime(p)
 
             cur = None
+            index_present = os.path.exists(idf) or os.path.exists(idf_legacy)
+            idf_use = idf if os.path.exists(idf) else idf_legacy
             # 读游标：新名优先，旧名回退（兼容改名前的账本）
             # Read cursor: new name first, legacy name as fallback (pre-rename books)
             cpath = cp if os.path.exists(cp) else (cp_legacy if os.path.exists(cp_legacy) else None)
-            if incremental and cpath and os.path.exists(idf):
-                try: cur = json.load(io.open(cpath, encoding='utf-8'))
-                except Exception: cur = None
 
             rows, mode, n_old = [], 'full', 0
             content_hash = None
@@ -431,16 +494,47 @@ def build(conf, root='.'):
                 report.append((vol, msg))
                 VIOLATIONS.append((vol, msg))
 
-            # ── 游标代次闸：旧代游标（无全卷哈希）不参与任何「未变」判定 ──
-            # ── Cursor-generation gate: an old cursor (no whole-file hash) can never claim "unchanged" ──
-            if cur is not None and not _cursor_current(cur):
-                report.append((vol, '★ 旧游标格式（第 %s 代）·视为过期·全量重扫'
-                               % (cur.get('fmt') if cur.get('fmt') is not None else '无标记')))
-                cur = None
+            def _evidence(msg):
+                report.append((vol, msg))
+                EVIDENCE_MISSING.append((vol, msg))
+
+            # ── 派生件三态：真未变 / 派生件丢失（重建并报告）/ 内容不符（违例）──
+            # ── Three states: genuinely unchanged / derived artifacts lost (rebuild + report)
+            #    / content mismatch (violation). ──
+            # 派生件被删不是「干净」，是「证据缺失」：不得与未变同码。
+            # A deleted derived artifact is not "clean" but "evidence lost": never the unchanged code.
+            if incremental:
+                if index_present and not cpath:
+                    _evidence('派生件丢失（索引在·游标丢失）·证据缺失·重建并报告')
+                elif cpath and not index_present:
+                    _evidence('派生件丢失（游标在·索引丢失）·证据缺失·重建并报告')
+                elif not index_present and not cpath and seals.get(vol) is not None:
+                    _evidence('派生件丢失（索引与游标同时丢失）·证据缺失·重建并报告')
+            if cpath:
+                try:
+                    cur = json.load(io.open(cpath, encoding='utf-8'))
+                except Exception:
+                    cur = None
+                    _evidence('游标不可解析（JSON 坏）·证据缺失·重建并报告')
+                if cur is not None and not _cursor_current(cur):
+                    if seals.get(vol) is not None:
+                        _evidence('游标不可信（第 %s 代·非全卷哈希代）·证据缺失·重建并报告'
+                                  % (cur.get('fmt') if cur.get('fmt') is not None else '无标记'))
+                    else:
+                        report.append((vol, '★ 旧游标格式（第 %s 代）·视为过期·全量重扫'
+                                       % (cur.get('fmt') if cur.get('fmt') is not None else '无标记')))
+                    cur = None
+            # 两份派生件互相印证：游标与封存指纹不符 ⇒ 游标被改写过
+            # Cross-check the two derived artifacts: cursor vs sealed fingerprint mismatch ⇒ cursor rewritten
+            if cur is not None and seals.get(vol) is not None:
+                seal = seals[vol]
+                if seal.get('content_hash') != cur.get('content_hash') or seal.get('size') != cur.get('size'):
+                    _violate('★ 派生件互相矛盾（游标与封存指纹不符）·游标可能被改写·全重扫')
+                    cur = None
 
             # ── 情形一：字节数与游标相同 ⇒ 必验全卷哈希（mtime 可被 os.utime 恢复，不作判据）──
             # ── Case 1: same size as the cursor ⇒ verify the whole-file hash (mtime is forgeable) ──
-            if cur and os.path.exists(idf) and cur.get('size') == size:
+            if cur and index_present and cur.get('size') == size:
                 content_hash, _ = _hash_vol(p)
                 if content_hash == cur.get('content_hash'):
                     per[vol] = cur.get('n', 0); total += per[vol]
@@ -455,8 +549,8 @@ def build(conf, root='.'):
                     # ★ 老宋定：未变跳过时也要确保索引 TXT 存在（首次升级到带 TXT 版时补齐）
                     # ★ Song: even when skipping, make sure the TXT index exists (first upgrade)
                     itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                    if not os.path.exists(itxt) and os.path.exists(idf):
-                        with io.open(idf, encoding='utf-8') as src:
+                    if not os.path.exists(itxt) and os.path.exists(idf_use):
+                        with io.open(idf_use, encoding='utf-8') as src:
                             with io.open(itxt, 'w', encoding='utf-8') as dst:
                                 dst.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
                                 dst.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
@@ -474,6 +568,10 @@ def build(conf, root='.'):
                                         cols[3] if len(cols) > 3 else '',
                                         cols[4] if len(cols) > 4 else '',
                                         cols[5] if len(cols) > 5 else ''))
+                    # 未变也是「有证据」：补记封存指纹，供下轮互证
+                    # Unchanged is still evidence: (re)seal the fingerprint for the next cross-check
+                    new_seals[vol] = {'size': size, 'content_hash': content_hash,
+                                      'n': cur.get('n', 0)}
                     continue
                 _violate('★ 等长改写（字节数未变·全卷哈希不符）·append-only 违例·全重扫')
 
@@ -491,7 +589,7 @@ def build(conf, root='.'):
                 else:
                     with open(p, 'rb') as f:
                         f.seek(n_old_b); tail = f.read()
-                    n_idx = _count_index_rows(idf)
+                    n_idx = _count_index_rows(idf_use)
                     if n_idx != cur.get('n', -1):
                         content_hash = None
                         _violate('★ 索引行数与游标不符（索引 %d 行 / 游标 %r）·append-only 违例·全重扫'
@@ -560,6 +658,7 @@ def build(conf, root='.'):
                 n_total = len(rows)
             per[vol] = n_total; total += n_total
             _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
+            new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
 
         with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
             f.write('# 卷首清单 / Volume manifest\n')
@@ -573,6 +672,26 @@ def build(conf, root='.'):
             f.write('## 本次增量报告 / This run\n\n| volume | action |\n|---|---|\n')
             for v, w in report: f.write('| %s | %s |\n' % (v, w))
             for w in RULE_WARN: f.write('| 规则 / rules | ★ %s |\n' % w)
+            # 被跳过的非卷键：不静默，进清单
+            # Skipped non-volume keys are never silent: recorded in the manifest
+            skipped = conf.get('volumes_skipped') or {}
+            if skipped:
+                f.write('\n## 已跳过的非卷键 / Skipped non-volume keys\n\n| key | value | reason |\n|---|---|---|\n')
+                for k, v in skipped.items():
+                    if isinstance(v, dict):
+                        f.write('| %s | %s | %s |\n' % (k, v.get('value', ''), v.get('reason', '')))
+                    else:
+                        f.write('| %s | %s | |\n' % (k, v))
+            # 派生件状态：未变 / 重建（证据缺失）/ 违例，三态分列
+            # Derived-artifact states: unchanged / rebuilt (evidence lost) / violation
+            f.write('\n## 派生件状态 / Derived-artifact state\n\n| volume | state |\n|---|---|\n')
+            for v in per:
+                if any(vv == v for vv, _m in VIOLATIONS):
+                    f.write('| %s | 违例（内容不符）·violation |\n' % v)
+                elif any(vv == v for vv, _m in EVIDENCE_MISSING):
+                    f.write('| %s | 重建（证据缺失）·rebuilt (evidence lost) |\n' % v)
+                else:
+                    f.write('| %s | 未变 / 正常·unchanged |\n' % v)
             f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
             for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
         # 口径戳：本轮判据落盘，供下轮比对（与 TSV／游标同临界区）
@@ -581,8 +700,20 @@ def build(conf, root='.'):
                                 'index_fmt': INDEX_FMT,
                                 'cursor_fmt': CURSOR_FMT,
                                 'head_regex': conf.get('entries', {}).get('head_regex', ''),
+                                'vol_seals': new_seals,
                                 '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
         return per, total, report
+
+
+def _read_json(path):
+    """读 JSON；缺/坏一律返回 {}（坏文件本身会在游标态里被报出来）。
+    Read JSON; missing/broken returns {} (a broken file is reported by the cursor state)."""
+    try:
+        with io.open(path, encoding='utf-8') as f:
+            obj = json.load(f)
+        return obj if isinstance(obj, dict) else {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _count_index_rows(idf):
@@ -639,13 +770,19 @@ def backup(conf, root='.'):
     n = 0
     for vol, path in vols.items():
         p = path if os.path.isabs(path) else os.path.join(root, path)
-        if os.path.exists(p):
+        # 只备份普通文件：目录型条目（locks=.locks）不得让 copy2 抛 IsADirectoryError
+        # Only regular files: a directory entry (locks=.locks) must not make copy2 raise
+        if os.path.isfile(p):
             shutil.copy2(p, os.path.join(bdir, os.path.basename(p)))
             n += 1
     # ★ 备份索引目录（TSV+TXT+清单+游标） / ★ Back up the index directory too
-    idx_dir = conf.get('index', {}).get('out_dir', '')
+    # ★ out_dir 为空时 os.path.join(root,'') 就是根目录本身：不能把整根复制进备份
+    # ★ An empty out_dir makes os.path.join(root,'') the root itself: never copy the whole root
+    idx_dir = conf.get('index', {}).get('out_dir', '').strip()
+    if not idx_dir:
+        return bdir, n
     idx_full = idx_dir if os.path.isabs(idx_dir) else os.path.join(root, idx_dir)
-    if os.path.isdir(idx_full):
+    if os.path.isdir(idx_full) and os.path.abspath(idx_full) != os.path.abspath(root):
         bidx = os.path.join(bdir, os.path.basename(idx_full))
         os.makedirs(bidx, exist_ok=True)
         for name in os.listdir(idx_full):
@@ -828,18 +965,26 @@ def query(conf, root, args):
 
 
 def check_authors(conf, root='.'):
-    """机检：同一卷内 author 字段必须同一口径（注册表 id / 显示名 / 未标）。
-    Machine check: within one volume the author field must use a single convention
-    (registry id / display name / unmarked).
-    返回 [(卷, 路径, ok, detail)]；ok=False 即「两种口径混用」⇒ 报红。
-    Returns [(volume, path, ok, detail)]; ok=False means two conventions are mixed ⇒ red."""
+    """机检：作者位必须是显示名；机器 id 或同卷混两种形态即红；配置卷不存在也红。
+    Machine check: the author slot must hold a display name; a machine id, mixed conventions,
+    or a missing configured volume is red.
+    返回 [(卷, 路径, ok, detail)]。
+    Returns [(volume, path, ok, detail)]."""
     from daybook_append import check_author_consistency
+    head_rx = conf.get('entries', {}).get('head_regex', '') or None
     rows = []
     for vol, path in conf.get('volumes', {}).items():
         p = path if os.path.isabs(path) else os.path.join(root, path)
+        if os.path.isdir(p):
+            continue      # 目录型条目已由 build 记为卷配置错误，不重复报「卷缺失」
         if not os.path.isfile(p):
+            # ★ 配置卷不存在 ⇒ 不是「无条目全绿」，是配置错，必须报红
+            # ★ A configured volume that does not exist is not "no entries ⇒ green" but a config error
+            rows.append((vol, p, False,
+                         {'kinds': ['卷缺失'], 'samples': [],
+                          'summary': '配置卷不存在（不是「无条目」）'}))
             continue
-        ok, detail = check_author_consistency(p)
+        ok, detail = check_author_consistency(p, head_regex=head_rx)
         rows.append((vol, p, ok, detail))
     return rows
 
@@ -854,8 +999,8 @@ def _report_authors(conf, root, quiet_green=False):
                 print('  作者口径 %s: 一致（%s）' % (vol, detail.get('summary', '')), flush=True)
             continue
         red = True
-        sys.stderr.write('★ 作者口径报红：卷 %s 混用 %s（%s）\n'
-                         % (vol, '＋'.join(detail.get('kinds', [])), p))
+        sys.stderr.write('★ 作者口径报红：卷 %s — %s（%s）\n'
+                         % (vol, detail.get('summary', '；'.join(detail.get('kinds', []))), p))
         for ln, author, cls in detail.get('samples', [])[:20]:
             sys.stderr.write('    L%d [%s] %s\n' % (ln, author, cls))
         if len(detail.get('samples', [])) > 20:
@@ -865,8 +1010,26 @@ def _report_authors(conf, root, quiet_green=False):
 
 def main():
     """Dispatch the selected command using the adjacent DAYBOOK configuration.
-    按所选子命令分派；配置取同目录 daybook.conf。"""
-    conf = load_conf()
+    按所选子命令分派；配置取同目录 daybook.conf。
+    用法与未知子命令在 load_conf() 之前处理：缺 conf 时给明确报错，不抛 traceback。
+    Usage and unknown subcommands are handled before load_conf(): a missing conf gets a clear
+    message instead of a traceback."""
+    cmd = sys.argv[1] if len(sys.argv) > 1 else 'index'
+    known = ('index', 'checkauthors', '查作者口径', 'multiindex', '多级索引',
+             'backup', 'query', 'watch', 'mcp', 'orchestrate', '编排', '司南')
+    if cmd in ('-h', '--help', 'help', '用法'):
+        print(__doc__)
+        return 0
+    if cmd not in known:
+        sys.stderr.write('★ 未知子命令：%r\n' % cmd)
+        print(__doc__)
+        return 2
+    try:
+        conf = load_conf()
+    except OSError as exc:
+        sys.stderr.write('★ 读不到 daybook.conf：%s\n'
+                         '  请把 daybook.conf 放在本程序同目录（配置里的 root 决定账本根）。\n' % exc)
+        return 2
     # 根目录：conf[index][root] 控制。空=HERE；..=dirname(HERE)；绝对路径=原样
     # Root: conf[index][root]. Empty = HERE; '..' = parent; absolute = as-is.
     root_cfg = conf.get('index', {}).get('root', '').strip()
@@ -878,30 +1041,43 @@ def main():
         root = root_cfg
     else:
         root = os.path.join(HERE, root_cfg)
-    cmd = sys.argv[1] if len(sys.argv) > 1 else 'index'
     vols = [v if os.path.isabs(v) else os.path.join(root, v) for v in conf.get('volumes', {}).values()]
+    # 被跳过的非卷键：打到 stderr（不静默）
+    # Skipped non-volume keys go to stderr (never silent)
+    for k, v in (conf.get('volumes_skipped') or {}).items():
+        if isinstance(v, dict):
+            sys.stderr.write('  ★ 跳过非卷键：%s=%s（%s）\n' % (k, v.get('value', ''), v.get('reason', '')))
+        else:
+            sys.stderr.write('  ★ 跳过非卷键：%s=%s\n' % (k, v))
     if cmd == 'index':
         per, total, rep = build(conf, root)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
         print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
-        rc = 0
+        codes = []
         if CONFIG_ERRORS:
             sys.stderr.write('★ 卷配置错误 %d 处（不是 append-only 违例·是 conf 写错）：\n'
                              % len(CONFIG_ERRORS))
             for v, w in CONFIG_ERRORS:
                 sys.stderr.write('  %s: %s\n' % (v, w))
-            rc = 2
+            codes.append(EXIT_CONFIG)
         if VIOLATIONS:
             sys.stderr.write('★ append-only 违例 %d 处（索引已按违例全量重扫，但账本本身已被改写）：\n'
                              % len(VIOLATIONS))
             for v, w in VIOLATIONS:
                 sys.stderr.write('  %s: %s\n' % (v, w))
-            rc = rc or 3
-        # ★ 作者口径机检：同一卷 author 必须同一口径，混用直接报红
-        # ★ Author-convention gate: one convention per volume; mixed conventions go red
+            codes.append(EXIT_VIOLATION)
+        if EVIDENCE_MISSING:
+            sys.stderr.write('★ 派生件证据缺失 %d 处（索引/游标丢失或不可解析·已重建并报告；'
+                             '这不是「未变」）：\n' % len(EVIDENCE_MISSING))
+            for v, w in EVIDENCE_MISSING:
+                sys.stderr.write('  %s: %s\n' % (v, w))
+            codes.append(EXIT_EVIDENCE)
+        # ★ 作者口径机检：作者位必须是显示名，机器 id 或混用直接报红
+        # ★ Author-convention gate: the author slot must hold a display name; ids or mixing go red
         if _report_authors(conf, root, quiet_green=True):
-            rc = rc or 4
+            codes.append(EXIT_AUTHOR)
+        rc = worst_exit(codes)
         if rc:
             sys.exit(rc)
     elif cmd in ('checkauthors', '查作者口径'):
@@ -984,4 +1160,4 @@ def main():
         print(__doc__)
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
