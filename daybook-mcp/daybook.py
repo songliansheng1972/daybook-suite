@@ -539,6 +539,10 @@ def build(conf, root='.', baseline=False):
                 VIOLATIONS.append((vol, msg))
 
             def _evidence(msg):
+                if baseline:
+                    # 认基线这一轮就是来重建的：不再报「证据缺失」，也不必提示认基线
+                    # A baseline run exists to rebuild: do not report missing evidence
+                    return
                 report.append((vol, msg))
                 EVIDENCE_MISSING.append((vol, msg))
                 blocked.add(vol)     # 证据缺失 ⇒ 本轮不写回派生证据，状态保持 5
@@ -556,13 +560,15 @@ def build(conf, root='.', baseline=False):
                     _evidence('派生件丢失（游标在·索引丢失）·证据缺失·重建并报告')
                 elif not index_present and not cpath and seals.get(vol) is not None:
                     _evidence('派生件丢失（索引与游标同时丢失）·证据缺失·重建并报告')
-                elif not index_present and not cpath and seals.get(vol) is None and size > 0:
-                    # 三件派生件全无：没有任何外部锚能证明「未变」，一律重建并要求复跑确认。
+                elif seals.get(vol) is None and size > 0:
+                    # 三件派生件全无，或只有 4.0.5 时代的索引+游标而无封存指纹：没有外部锚能
+                    # 证明「未变」，一律不写回、保持 5，等显式认基线。
                     # 这就是本实现的诚实上限：不声称能识别「卷/游标/封存三者自洽改写」。
-                    # With all three derived artifacts gone there is no external anchor for
-                    # "unchanged": rebuild and demand a confirmation run. This is the honest
-                    # ceiling — a self-consistent rewrite of volume+cursor+seal is undetectable.
-                    _evidence('无任何封存证据（首次索引或证据被清除）·已重建·请复跑确认')
+                    # No seal at all (first index, a 4.0.5-era index+cursor, or wiped evidence):
+                    # there is no anchor for "unchanged" — write nothing back and stay at 5
+                    # until a baseline is accepted. This is the honest ceiling: a self-consistent
+                    # rewrite of volume+cursor+seal is not detectable.
+                    _evidence('无任何封存证据（首次索引、旧版索引或证据被清除）·证据缺失·未写回·请认基线')
             if cpath:
                 try:
                     cur = json.load(io.open(cpath, encoding='utf-8'))
@@ -610,22 +616,29 @@ def build(conf, root='.', baseline=False):
 
             # ── 情形一：字节数与游标相同 ⇒ 必验全卷哈希（mtime 可被 os.utime 恢复，不作判据）──
             # ── Case 1: same size as the cursor ⇒ verify the whole-file hash (mtime is forgeable) ──
+            # 证据缺失的卷不写回任何派生件（除非显式认基线）：否则「5」会被自己的写回洗掉
+            # Evidence-missing volumes write nothing back (unless a baseline is accepted);
+            # otherwise the write-back would launder the 5 away.
+            write_ok = baseline or gated or vol not in blocked
             if cur and index_present and cur.get('size') == size:
                 content_hash, _ = _hash_vol(p)
                 if content_hash == cur.get('content_hash'):
                     per[vol] = cur.get('n', 0); total += per[vol]
                     if mt != cur.get('mtime'):
-                        report.append((vol, '未变·跳过（全卷哈希一致·mtime 已变化，仅记入游标）'))
-                        _write_cursor(cp, _cursor_obj(size, mt, size, cur.get('n', 0),
-                                                      cur.get('last_lineno', 0),
-                                                      cur.get('enc', '?'), content_hash))
+                        report.append((vol, '未变·跳过（全卷哈希一致·mtime 已变化，仅记入游标）'
+                                       + ('' if write_ok else '·证据缺失·未写回')))
+                        if write_ok:
+                            _write_cursor(cp, _cursor_obj(size, mt, size, cur.get('n', 0),
+                                                          cur.get('last_lineno', 0),
+                                                          cur.get('enc', '?'), content_hash))
                     else:
-                        report.append((vol, '未变·跳过（全卷哈希一致）'))
+                        report.append((vol, '未变·跳过（全卷哈希一致）'
+                                       + ('' if write_ok else '·证据缺失·未写回')))
                     ENC_REPORT.append((vol, cur.get('enc', '?'), '游标缓存·全卷哈希复核'))
                     # ★ 老宋定：未变跳过时也要确保索引 TXT 存在（首次升级到带 TXT 版时补齐）
                     # ★ Song: even when skipping, make sure the TXT index exists (first upgrade)
                     itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                    if not os.path.exists(itxt) and os.path.exists(idf_use):
+                    if write_ok and not os.path.exists(itxt) and os.path.exists(idf_use):
                         with io.open(idf_use, encoding='utf-8') as src:
                             with io.open(itxt, 'w', encoding='utf-8') as dst:
                                 dst.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
@@ -644,10 +657,14 @@ def build(conf, root='.', baseline=False):
                                         cols[3] if len(cols) > 3 else '',
                                         cols[4] if len(cols) > 4 else '',
                                         cols[5] if len(cols) > 5 else ''))
-                    # 未变也是「有证据」：补记封存指纹，供下轮互证
-                    # Unchanged is still evidence: (re)seal the fingerprint for the next cross-check
-                    new_seals[vol] = {'size': size, 'content_hash': content_hash,
-                                      'n': cur.get('n', 0)}
+                    # 未变也是「有证据」：补记封存指纹，供下轮互证（证据缺失时不写）
+                    # Unchanged is still evidence: (re)seal the fingerprint for the next
+                    # cross-check — unless evidence is missing, in which case nothing is written
+                    if write_ok:
+                        new_seals[vol] = {'size': size, 'content_hash': content_hash,
+                                          'n': cur.get('n', 0)}
+                    elif seals.get(vol) is not None:
+                        new_seals[vol] = seals[vol]
                     continue
                 _violate('★ 等长改写（字节数未变·全卷哈希不符）·append-only 违例·全重扫')
 
@@ -700,10 +717,6 @@ def build(conf, root='.', baseline=False):
                 ENC_REPORT.append((vol, enc, why))
 
             # ── 写索引 ── / ── Write the index ──
-            # 证据缺失的卷不写回任何派生件（除非显式认基线）：否则「5」会被自己的写回洗掉
-            # Evidence-missing volumes write nothing back (unless a baseline is accepted);
-            # otherwise the write-back would launder the 5 away.
-            write_ok = baseline or gated or vol not in blocked
             if mode == 'append' and write_ok:
                 with io.open(idf, 'a', encoding='utf-8') as f:
                     for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
@@ -780,13 +793,17 @@ def build(conf, root='.', baseline=False):
             f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
             for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
         # 口径戳：本轮判据落盘，供下轮比对（与 TSV／游标同临界区）
-        with io.open(os.path.join(outdir, '.head_stamp.json'), 'w', encoding='utf-8') as f:
-            f.write(json.dumps({'口径': _criterion_stamp(conf),
-                                'index_fmt': INDEX_FMT,
-                                'cursor_fmt': CURSOR_FMT,
-                                'head_regex': conf.get('entries', {}).get('head_regex', ''),
-                                'vol_seals': new_seals,
-                                '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
+        # 本轮什么都没写（全是证据缺失）时也不动口径戳：不让「5」把封存戳的字节改掉
+        # Stamp the criteria for the next comparison — but leave it untouched when this run
+        # wrote nothing (all evidence missing), so the 5 cannot change the stamp's bytes.
+        if new_seals or baseline or gated:
+            with io.open(os.path.join(outdir, '.head_stamp.json'), 'w', encoding='utf-8') as f:
+                f.write(json.dumps({'口径': _criterion_stamp(conf),
+                                    'index_fmt': INDEX_FMT,
+                                    'cursor_fmt': CURSOR_FMT,
+                                    'head_regex': conf.get('entries', {}).get('head_regex', ''),
+                                    'vol_seals': new_seals,
+                                    '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
         return per, total, report
 
 
@@ -1152,7 +1169,11 @@ def main():
         per, total, rep = build(conf, root)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
-        print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
+        if EVIDENCE_MISSING:
+            print('索引未写回（证据缺失·请先认基线）：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
+                  + '｜合计 %d 条' % total, flush=True)
+        else:
+            print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
         codes = []
         if CONFIG_ERRORS:
             sys.stderr.write('★ 卷配置错误 %d 处（不是 append-only 违例·是 conf 写错）：\n'

@@ -217,8 +217,27 @@ def test_daybook_index(tmp_root):
                                'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     if not _ok('7.1 daybook_index 有响应', len(out) == 1):
         return False
+    res = out[0].get('result', {})
+    text = res.get('content', [{}])[0].get('text', '')
+    # 签名只证明调用者是谁，不证明有人看过这卷：MCP 遇证据缺失必须拒认基线
+    # A signature proves who called, not that anyone reviewed the volume: MCP must refuse
+    if not _ok('7.2 证据缺失时 MCP 拒认基线（rc=5·isError）',
+               res.get('isError') is True and 'rc=5' in text, text[:100]):
+        return False
+    if not _ok('7.3 未写回索引（不自动重建）',
+               not os.path.exists(os.path.join(tmp_root, '索引', 'index_测试MCP.tsv'))):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'], cwd=tmp_root,
+                       capture_output=True, text=True)
+    if not _ok('7.4 人工认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
+        return False
+    ts = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts)
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                    'params': {'name': 'daybook_index',
+                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    return _ok('7.2 索引重建成功', '索引已重建' in text and '3 条' in text, text)
+    return _ok('7.5 认基线后索引重建成功', '索引已重建' in text and '3 条' in text, text)
 
 
 def test_daybook_query(tmp_root):
@@ -226,16 +245,11 @@ def test_daybook_query(tmp_root):
     Acceptance 5/P0-2: daybook_query filters by field · no longer returns everything.
     """
     os.environ['DAYBOOK_ROOT'] = tmp_root
-    # 先建索引（也要验签）
-    # Build the index first (also requires signature verification)
-    agent_id, secret = _register_test_agent(tmp_root)
-    # W-75 修④：同上，建索引须带 ts 且签名覆盖 "reindex:<ts>"
-    # W-75 fix ④: same as above · the index build must carry ts with a signature over "reindex:<ts>"
-    ts0 = int(time.time())
-    sig = _sign(secret, 'reindex:%d' % ts0)
-    _rpc([{'jsonrpc': '2.0', 'id': 0, 'method': 'tools/call',
-           'params': {'name': 'daybook_index',
-                      'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts0}}}])
+    # MCP 不再自动认基线：先由人（CLI）认一次基线，再查
+    # MCP no longer accepts a baseline automatically: a human accepts one via CLI first
+    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'], cwd=tmp_root,
+                       capture_output=True, text=True)
+    _ok('5.0 人工认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
     # 查 类=决策 → 只应命中 1 条（条目2）
     # Query category=决策 → should match only 1 entry (条目2)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
@@ -346,7 +360,7 @@ def test_daybook_append_signed(tmp_root):
         return False
     r = subprocess.run([sys.executable, 'daybook.py', 'index'],
                        cwd=tmp_root, capture_output=True, text=True)
-    if not _ok('P1-1.4 首次索引不红（0 或 5=待认基线）', r.returncode in (0, 5),
+    if not _ok('P1-1.4 索引不红（0 或 5=待认基线）', r.returncode in (0, 5),
                'rc=%d' % r.returncode):
         return False
     r = subprocess.run([sys.executable, 'daybook.py', 'baseline'],

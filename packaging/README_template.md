@@ -62,7 +62,8 @@ pip install @@DIST@@
    **The first index of a non-empty volume exits 5** and writes nothing back; run
    `daybook.py baseline` once, then `index` is 0.
 2. **作者必填**：`daybook_append.py` 只接受 `卷 类 标题 作者 "正文"`；旧 3/4 参形态、显式
-   `未标`/空值与 `--name=` 一律拒写并退 2；独立模式也拒机器 id。MCP 写路径不受影响。
+   `未标`/空值与 `--name=` 一律拒写并退 2；独立模式也拒机器 id。MCP 写路径不受影响；
+   **MCP 不认基线**，`daybook_index` 遇证据缺失返回 rc=5、不写不重建。
    **The author is mandatory**; legacy forms and placeholders exit 2; the MCP path is unaffected.
 
 ## 发行名归属（官方渠道声明）

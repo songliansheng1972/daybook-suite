@@ -12,8 +12,10 @@
 >    **The first index of a non-empty volume exits 5**; run `daybook.py baseline` once, then `index` is 0.
 > 2. **作者必填**：`daybook_append.py` 只接受 `卷 类 标题 作者 "正文"`；旧 3/4 参形态、显式
 >    `未标`/空值与 `--name=` 一律退 2；独立模式也拒机器 id。**MCP 写路径不受影响**
->    （仍以 agent_id 验签后写显示名 + `[id=ag-…]` 附注）。签名 `daybook_index` 视为认基线。
->    **The author is mandatory**; the MCP write path is unaffected.
+>    （仍以 agent_id 验签后写显示名 + `[id=ag-…]` 附注）。**MCP 不认基线**：签名只证明
+>    调用者是谁；`daybook_index` 遇证据缺失返回 rc=5、不写不重建，须由人在服务端 `baseline`。
+>    **The author is mandatory**; the MCP write path is unaffected. **MCP never accepts a
+>    baseline** — `daybook_index` returns rc=5 and writes nothing; a human runs `baseline`.
 
 ## 特点
 

@@ -7,7 +7,12 @@
 > 1. **非空卷首次索引退 5，需显式认基线**。首次索引会建立封存证据，但按新裁定**不再自动写回**：
 >    先返回 5，执行一次 `python3 daybook.py baseline`（别名 `认基线`）后才写回游标与封存，
 >    之后再跑 `index` 为 0。证据缺失（索引/游标/封存丢失、游标不可解析）同样停在 5，直到认基线。
->    MCP 的**签名 `daybook_index` 调用视为显式认基线**（未签名的路径永不自动重建）。
+>    **MCP 不认基线**：签名只证明调用者是谁，不证明有人看过这卷。MCP 的 `daybook_index`
+>    遇证据缺失原样返回 rc=5 错误、不写不重建，须由人在服务端执行 `baseline`。
+>    **MCP never accepts a baseline**: a signature proves who called, not that a human reviewed
+>    the volume. `daybook_index` returns rc=5 and writes nothing; a human runs `baseline`.
+>    升级路径：4.0.5 → 4.0.6 首次 `index` 为 5（4.0.5 无封存指纹），`baseline` 后为 0；
+>    实测记录见 `证据/升级演练_4.0.6_20261114.md`。
 >    **The first index of a non-empty volume exits 5 and writes nothing back.** Run
 >    `daybook.py baseline` once to accept the baseline; then `index` is 0. Missing evidence
 >    likewise stays at 5 until a baseline is accepted.
