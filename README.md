@@ -95,16 +95,16 @@ daybook-suite/            ← this repo
 
 ## Version & build number (reproducible)
 
-- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.2**.
+- **Version** — a standard **semantic version**, shared by all three packages (one source, released together): currently **v4.0.3**.
 - **Build number** — the sum of the line counts of that package's product `.py` files; a **build fingerprint**, not a version. Auxiliary files (`.sh` / `.c` / `.bas` / `.f` language ports, sentinels, launcher, test scripts) and docs are **not** counted.
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v4.0.2  | 7                   | 2159         |
-| daybook-mcp  | v4.0.2  | 12                  | 4279         |
-| daybook-orch | v4.0.2  | 9                   | 2277         |
+| daybook      | v4.0.3  | 7                   | 2215         |
+| daybook-mcp  | v4.0.3  | 12                  | 4335         |
+| daybook-orch | v4.0.3  | 10                  | 2624         |
 
-**Code size**: **8,715 lines** across the three packages' product files (2,159 + 4,279 + 2,277).
+**Code size**: **9,174 lines** across the three packages' product files (2,215 + 4,335 + 2,624).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -218,16 +218,16 @@ daybook-suite/            ← 本仓
 
 ## 版本号与构建号（可复现）
 
-- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.2**。
+- **版本号** —— 标准**语义版本**，三包统一（同源同发）：现为 **v4.0.3**。
 - **构建号** —— 该包「产品 `.py` 件」行数之和，是**构建指纹**，**非版本号**。辅助件（`.sh` / `.c` / `.bas` / `.f` 语言端口、哨兵、启动器、测试脚本）与文档**不计入**。
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.2 | 7          | 2159 |
-| 璇玑  | v4.0.2 | 12         | 4279 |
-| 司南  | v4.0.2 | 9          | 2277 |
+| 起居注 | v4.0.3 | 7          | 2215 |
+| 璇玑  | v4.0.3 | 12         | 4335 |
+| 司南  | v4.0.3 | 10         | 2624 |
 
-**代码规模**：三包产品件合计 **8,715 行**（2,159 ＋ 4,279 ＋ 2,277）。
+**代码规模**：三包产品件合计 **9,174 行**（2,215 ＋ 4,335 ＋ 2,624）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  

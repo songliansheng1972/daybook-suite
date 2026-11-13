@@ -61,7 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '4.0.2'
+SUITE_VERSION = '4.0.3'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)
@@ -176,7 +176,10 @@ PACKAGES = {
         'box': 'daybook-orch',
         'prog': ['orchestrator.py', 'agent_registry.py', 'agent_lock.py',
                  'agent_heartbeat.py', 'agent_message.py', 'task_volume.py',
-                 'cross_ref.py', 'daybook_append.py', 'safeio.py'],
+                 'cross_ref.py', 'daybook_append.py', 'safeio.py', 'volume_paths.py'],
+        # 两个测试脚本随包发·不计入构建号
+        # The two test scripts ship with the package · not counted in the build number
+        'prog_aux': ['orch_fixes_test.py', 'orch_mutation_check.py'],
         'conf_rename': [
             # 司南亦随一份样板 daybook.conf（卷表空·空跑不崩）：pip 发行版的运行目录初始化
             # 以它为模板，缺此件则首跑即 FileNotFoundError（单装 daybook-orch 实测）。

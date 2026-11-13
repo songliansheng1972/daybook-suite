@@ -16,13 +16,30 @@ Fallback: on platforms without fcntl (Windows), fall back to a mkdir atomic lock
 锁粒度：每个目标文件一把锁（.safeio_lock.<basename>），不锁卷原文。
 Lock granularity: one lock per target file (.safeio_lock.<basename>), never locking the volume contents themselves.
 """
-import os, io, json, contextlib
+import os, io, json, contextlib, threading
 
 try:
     import fcntl
     _HAS_FCNTL = True
 except ImportError:
     _HAS_FCNTL = False
+
+# 同线程已持锁表：{锁文件绝对路径: [fd, 深度]}。
+# 读卷会在持锁的临界区内被调用（如 task_volume.transition 里 read_vol），
+# 若不记重入，同进程第二个 fd 再要共享锁会与自己的独占锁冲突而死锁。
+# Per-thread held-lock map: {abs lock-file path: [fd, depth]}.
+# read_vol is called inside locked critical sections (e.g. task_volume.transition);
+# without reentrancy tracking, a second fd in the same process asking for a shared lock
+# would conflict with our own exclusive lock and deadlock.
+_HELD = threading.local()
+
+
+def _held_map():
+    m = getattr(_HELD, 'locks', None)
+    if m is None:
+        m = {}
+        _HELD.locks = m
+    return m
 
 
 def _lock_path(path):
@@ -33,15 +50,29 @@ def _lock_path(path):
 
 
 @contextlib.contextmanager
-def locked(path, timeout=None):
-    """独占锁上下文。退出自动释放（fd close ⇒ flock 自动解）。
-    Exclusive-lock context. Released automatically on exit (fd close ⇒ flock auto-unlock).
+def locked(path, timeout=None, shared=False):
+    """锁上下文。shared=True 取共享锁（读侧），False 取独占锁（写侧）。
+    Lock context. shared=True takes a shared lock (reader side); False takes an exclusive lock (writer side).
+    退出自动释放（fd close ⇒ flock 自动解）。
+    Released automatically on exit (fd close ⇒ flock auto-unlock).
+    同线程可重入：已在临界区内再取同一把锁直接放行（不再开第二个 fd）。
+    重入时不做 shared→exclusive 升级（防止自锁）。
+    Reentrant within one thread: re-locking the same file inside a held critical section passes through
+    without opening a second fd. No shared→exclusive upgrade on reentry (prevents self-deadlock).
     timeout 秒内拿不到则超时；None=阻塞等待。
     Times out if not acquired within timeout seconds; None=block indefinitely."""
     lp = _lock_path(path)
+    held = _held_map()
+    if lp in held:
+        held[lp][1] += 1
+        try:
+            yield held[lp][0]
+        finally:
+            held[lp][1] -= 1
+        return
     if _HAS_FCNTL:
         fd = os.open(lp, os.O_RDWR | os.O_CREAT, 0o644)
-        flag = fcntl.LOCK_EX
+        flag = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         if timeout is not None:
             import time
             deadline = time.time() + timeout
@@ -56,17 +87,22 @@ def locked(path, timeout=None):
                         raise TimeoutError('safeio: lock timeout for %s' % path)
                     time.sleep(0.05)
         else:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            fcntl.flock(fd, flag)
+        held[lp] = [fd, 1]
         try:
             yield fd
         finally:
+            held.pop(lp, None)
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
             os.close(fd)
     else:
-        # 降级：mkdir 原子锁（os.mkdir 天生原子·同路径只能成功一次） · fallback: mkdir atomic lock (os.mkdir is inherently atomic · the same path can succeed only once)
+        # 降级：mkdir 原子锁（os.mkdir 天生原子·同路径只能成功一次）
+        # 无共享锁原语，读侧也用独占锁（更强，不会放开撕裂窗口）。
+        # fallback: mkdir atomic lock (os.mkdir is inherently atomic).
+        # No shared-lock primitive: readers use the exclusive lock too (stronger; never opens a tearing window).
         import time
         if timeout is None:
             timeout = 10
@@ -79,9 +115,11 @@ def locked(path, timeout=None):
                 if time.time() >= deadline:
                     raise TimeoutError('safeio: mkdir lock timeout for %s' % path)
                 time.sleep(0.05)
+        held[lp] = [None, 1]
         try:
             yield None
         finally:
+            held.pop(lp, None)
             os.rmdir(lp)
 
 
@@ -138,10 +176,15 @@ def sniff_bytes(raw):
 def read_vol(path):
     """读卷·自动检测编码（零依赖·不静默）。MCP/orch/基座读卷一律经此。
     Read a volume · auto-detect encoding (zero dependencies · no silent fallback). All MCP/orch/base volume reads go through this.
+    读侧持**共享锁**：与写侧（atomic_append / read_modify_write / 超 PIPE_BUF 的加锁写）互斥，
+    长条目写到一半时不会读到半条（撕裂）。
+    The reader takes a **shared lock**, mutually exclusive with writers (atomic_append /
+    read_modify_write / the locked path for entries over PIPE_BUF), so a half-written long entry is never observed.
     返回 (text, enc, why)。检测逻辑唯一在 sniff_bytes（#463 合一）。
     Returns (text, enc, why). The detection logic lives only in sniff_bytes (merged in #463)."""
-    with open(path, 'rb') as f:
-        raw = f.read()
+    with locked(path, shared=True):
+        with open(path, 'rb') as f:
+            raw = f.read()
     return sniff_bytes(raw)
 
 

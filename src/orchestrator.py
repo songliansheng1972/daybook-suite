@@ -16,8 +16,8 @@ This file is the third, and the one that **welds the first two into a runnable c
 
 不造调度器，只把 daybook 底座上已有的六件原语接上**一个入口**：
 No scheduler is built; this merely wires the six existing primitives of the daybook base to **one entry point**:
-    身份   agent_registry    自述身份（仅登记发号·尚无签名校验）
-    identity  agent_registry    self-declared identity (registry only · no signature verification yet)
+    身份   agent_registry    密钥文件（0600/0700）+ HMAC-SHA256 落盘验签
+    identity  agent_registry   key files (0600/0700) + HMAC-SHA256 on-disk signatures
     任务   task_volume       待办→进行中→完成→待审→已审（终态拒迁）
     task      task_volume       todo → in-progress → done → pending-review → reviewed (terminal states reject transitions)
     锁     agent_lock        fcntl.flock + TTL 租约（认领并发互斥）
@@ -39,6 +39,14 @@ A closed loop:
     → pull (table lookup decides the next hand) → review (pass/reject) → close (reviewed)
 全程只 append 到 daybook 卷；真相在卷里，派生件（收件箱/看板）可删可重建。
 The whole flow only appends to daybook volumes; the truth is in the volumes, and derived views (inbox/board) can be deleted and rebuilt.
+
+编排卷条目头（v3.2 起）：
+Ledger entry header (since v3.2):
+    [时间] [类] [标题] [作者] [id=<条号>] [re=<回应条号>] [sig=<HMAC-SHA256>] [致=…] 正文
+    · pull 只认 [re=] 判「已回」；旧条目无 id=/sig= ⇒ unknown/unsigned，绝不默认合法。
+    · pull only honours [re=] as "replied"; legacy entries without id=/sig= ⇒ unknown/unsigned, never silently legal.
+    · 七卷路径全由 <root>/daybook.conf 的 [volumes] 段解析，--root 一处生效。
+    · All seven volume paths resolve from the [volumes] section of <root>/daybook.conf; --root takes effect in one place.
 
 三条戒律（与路由层同）：
 Three commandments (same as the routing layer):
@@ -69,6 +77,7 @@ import argparse
 import io
 import os
 import re
+import secrets
 import sys
 import time
 
@@ -80,6 +89,7 @@ import task_volume as _tv
 import agent_heartbeat as _hb
 import agent_lock as _lock
 import daybook_append as _dba
+import volume_paths as _vp
 
 DEFAULT_RULE = os.path.join(HERE, 'orchestration_routing.conf')
 DEFAULT_ROLES = os.path.join(HERE, 'orchestration_roles.conf')
@@ -121,6 +131,35 @@ def canon_field(name):
 HEAD = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]\s*(\[.*)$')
 BRK = re.compile(r'\[([^\]]*)\]')
 SPLIT_TO = re.compile(r'[,，/]')
+
+# 条头里不是作者的结构字段（作者字段固定第 4 段；这些前缀只在缺作者时才会被误当作者）
+# Structural header fields that are not the author (the author is fixed at segment 4;
+# these prefixes could be mistaken for an author only when the author is missing).
+ENTRY_FIELD_PREFIX = ('致=', 'id=', 're=', 'sig=', 'thread=')
+SIG_SCHEME = 'daybook-orch-entry-v1'
+
+
+def entry_payload(now, kind, title, author, to, eid, re_ref, body):
+    """条目签名的规范载荷（验签时从条头+正文同样重建）。
+    Canonical payload for an entry signature (rebuilt identically from header + body on verification)."""
+    return '\n'.join([SIG_SCHEME, now or '', kind or '', title or '', author or '',
+                      to or '', eid or '', re_ref or '', (body or '').rstrip('\n')])
+
+
+def is_field_seg(seg):
+    """该 [xxx] 段是否是结构字段（id=/re=/sig=/致=/thread=），而非作者。
+    Whether a [xxx] segment is a structural field (id=/re=/sig=/致=/thread=) rather than an author."""
+    return any(seg.startswith(p) for p in ENTRY_FIELD_PREFIX)
+
+
+def entry_body(e):
+    """条目正文：同行正文 + 后续行（与落盘字节一致）。验签用。
+    Entry body: inline text + following lines (identical to the bytes on disk). Used for verification."""
+    full = e.get('inline') or ''
+    lines = e.get('body') or []
+    if lines:
+        full = full + '\n' + '\n'.join(lines)
+    return full.rstrip('\n')
 
 
 def make_entry_ref(root, vol, lineno):
@@ -182,24 +221,11 @@ def load_roles(path):
 # ── v3.1 四库式多级目录：分发接上目录（读派生件·缺则原文兜底）──────────
 # v3.1 four-library-style multi-level directory: distribution hooked to the directory (reads derived artifacts · falls back to raw text if absent)
 def _load_volumes(root):
-    """读 <root>/daybook.conf [卷] 表 → {卷名: 相对/绝对路径}。缺则 {}。
-    Read the <root>/daybook.conf [volumes] table → {volume name: relative/absolute path}. {} if absent."""
-    path = os.path.join(root, 'daybook.conf')
-    vols, sec = {}, None
-    if not os.path.exists(path):
-        return vols
-    for line in io.open(path, encoding='utf-8'):
-        line = line.rstrip('\n')
-        if not line.strip() or line.lstrip().startswith('#'):
-            continue
-        m = re.match(r'^\[(.+)\]$', line.strip())
-        if m:
-            sec = m.group(1)
-            continue
-        if sec in ('volumes', '卷') and '=' in line:
-            k, v = line.split('=', 1)
-            vols[k.strip()] = v.strip()
-    return vols
+    """读 <root>/daybook.conf [volumes] 表 → {卷名: 相对/绝对路径}。缺则 {}。
+    orch 内部卷的保留键（registry/tasks/…）不算内容卷，此处过滤。
+    Read the <root>/daybook.conf [volumes] table → {volume name: relative/absolute path}. {} if absent.
+    Reserved orch-internal keys (registry/tasks/…) are not content volumes and are filtered out here."""
+    return _vp.content_volumes(root)
 
 
 def read_multidx_rows(root):
@@ -259,7 +285,7 @@ def _scan_vol_rows(path):
             title = segs[1] if len(segs) > 1 else ''
             author = ''
             for s in segs[2:]:
-                if s.startswith('致='):
+                if is_field_seg(s):
                     continue
                 if not author:
                     author = s
@@ -326,17 +352,30 @@ def parse_ledger(path):
             _segs = BRK.findall(_hm.group(1)) if _hm else []
             kind = _segs[0] if len(_segs) > 0 else ''
             title = _segs[1] if len(_segs) > 1 else ''
-            # 作者可选·致= 段可在第 3 或第 4 位
-            # Author is optional · the 致= segment may be in the 3rd or 4th position
+            # 条头之后的同行正文（条头末段后固定一个空格）· the inline body after the header (one space follows the last segment)
+            inline = m.group(2)[_hm.end():] if _hm else m.group(2)
+            if inline.startswith(' '):
+                inline = inline[1:]
+            # 作者可选·致=/id=/re=/sig= 段可在其后 / author optional · 致=/id=/re=/sig= may follow
             author = ''
             to = ''
+            eid = ''
+            re_ref = ''
+            sig = ''
             for _s in _segs[2:]:
                 if _s.startswith('致='):
                     to = _s[2:]
-                elif not author:
+                elif _s.startswith('id='):
+                    eid = _s[3:]
+                elif _s.startswith('re='):
+                    re_ref = _s[3:]
+                elif _s.startswith('sig='):
+                    sig = _s[4:]
+                elif not author and not is_field_seg(_s):
                     author = _s
             e = {'time': m.group(1), 'kind': kind, 'title': title,
-                 'author': author, 'to': to, 'body': []}
+                 'author': author, 'to': to, 'id': eid, 're': re_ref,
+                 'sig': sig, 'inline': inline, 'body': []}
             cur = e
         elif cur is not None:
             cur['body'].append(line)
@@ -350,21 +389,67 @@ class Hub:
     Orchestration hub: the six primitives + routing, under a single entry point."""
 
     def __init__(self, root=None, rule=None, roles=None):
-        self.root = root or HERE
-        self.reg = _reg.Registry(os.path.join(self.root, '注册卷.txt'))
-        self.tv = _tv.TaskVolume(os.path.join(self.root, '任务卷.txt'))
-        self.hb = _hb.Heartbeat(os.path.join(self.root, '心跳卷.txt'))
-        self.lock = _lock.AgentLock(os.path.join(self.root, '.locks'),
-                                    os.path.join(self.root, '租约卷.txt'))
-        self.ledger = os.path.join(self.root, '编排卷.txt')
+        # 单一根 + conf 驱动：七卷全由 <root>/daybook.conf 解析，--root 一处生效。
+        # Single root + conf-driven: all seven volumes resolve from <root>/daybook.conf, so --root takes effect in one place.
+        self.root = _vp.resolve_root(root)
+        self.vols = _vp.resolve_volumes(self.root)
+        # conf 指向自定义子目录时先建父目录（卷本身仍由各件按需创建）。
+        # Create parent directories first when conf points at custom subdirectories
+        # (the volume files themselves are still created on demand by each primitive).
+        for role, path in self.vols.items():
+            if role == 'root':
+                continue
+            parent = os.path.dirname(path)
+            if parent and not os.path.isdir(parent):
+                os.makedirs(parent, exist_ok=True)
+        self.reg = _reg.Registry(self.vols['registry'])
+        self.tv = _tv.TaskVolume(self.vols['tasks'])
+        self.hb = _hb.Heartbeat(self.vols['heartbeat'])
+        self.lock = _lock.AgentLock(self.vols['locks'], self.vols['leases'])
+        self.ledger = self.vols['ledger']
         self.rules = load_rules(rule or DEFAULT_RULE)
         self.roles = load_roles(roles or DEFAULT_ROLES)
 
     # —— 内部 ——
     # —— Internal ——
-    def _log(self, kind, title, msg, author, to=None):
+    def entry_auth(self, e):
+        """验签：返回 'ok' / 'unsigned' / 'invalid' / 'unknown-key'。
+        Verify a signature: returns 'ok' / 'unsigned' / 'invalid' / 'unknown-key'.
+        旧条目无 sig 字段 ⇒ unsigned（绝不默认当合法）；签名对不上 ⇒ invalid。
+        A legacy entry without a sig field ⇒ unsigned (never silently legal); a mismatched signature ⇒ invalid."""
+        if not e.get('sig'):
+            return 'unsigned'
+        author = e.get('author') or ''
+        if not self.reg.lookup(author):
+            return 'unknown-key'
+        payload = entry_payload(e.get('time'), e.get('kind'), e.get('title'),
+                                author, e.get('to'), e.get('id'), e.get('re'),
+                                entry_body(e))
+        return 'ok' if self.reg.verify(author, payload, e['sig']) else 'invalid'
+
+    def _actor(self, explicit):
+        """身份解析：显式参数优先；缺省才由 DAYBOOK_AGENT_ID 选钥（环境变量只选钥，不证明身份）。
+        Identity resolution: an explicit argument wins; DAYBOOK_AGENT_ID only selects a key when omitted
+        (the environment variable selects a key, it does not prove identity)."""
+        return (explicit or '').strip() or os.environ.get('DAYBOOK_AGENT_ID', '').strip()
+
+    def _log(self, kind, title, msg, author, to=None, re_ref=None):
+        """落一条带显式条号 + 签名 + 回应引用的编排卷条目。返回条号 id。
+        Append one ledger entry with an explicit id + signature + reply reference. Returns the entry id."""
         to_ids = self._resolve_to(to) if to else None
-        _dba.append_one(self.ledger, kind, title, msg or title, author=author, to=to_ids)
+        body = (msg or title or '').rstrip('\n')
+        eid = 'm' + secrets.token_hex(8)
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        sig = None
+        try:
+            sig = self.reg.sign(author, entry_payload(now, kind, title, author,
+                                                      to_ids, eid, re_ref, body))
+        except (KeyError, PermissionError) as exc:
+            sys.stderr.write('⚠ 未签名条目 id=%s author=%s：%s（读取侧将标 unsigned）\n'
+                             % (eid, author, exc))
+        _dba.append_one(self.ledger, kind, title, body, author=author, to=to_ids,
+                        msg_id=eid, re_ref=re_ref, sig=sig, now=now)
+        return eid
 
     def _resolve_to(self, to):
         """把 to 里的 token（名字或 id）解析为已注册 agent_id；解析不出的原样保留。
@@ -407,8 +492,11 @@ class Hub:
         return aid, secret
 
     def leave(self, aid):
-        self.reg.revoke(aid)
+        # 先落条再吊销：吊销后密钥不可再签，退场条会变成 unsigned。
+        # Log first, then revoke: after revocation the key cannot sign, and the leave entry would be unsigned.
+        aid = self._actor(aid)
         self._log('编', '退场', 'agent 退场', aid)
+        self.reg.revoke(aid)
 
     def who(self):
         return [(a.agent_id, a.name, self.hb.is_alive(a.agent_id), a.revoked)
@@ -417,7 +505,7 @@ class Hub:
     # —— 任务 ——
     # —— Tasks ——
     def open(self, title, by):
-        by_id = self._aid_of(by)
+        by_id = self._aid_of(self._actor(by))
         tid = self.tv.create(by_id, title)
         self._log('工', title, '开单 %s' % tid, by_id)
         return tid
@@ -425,6 +513,7 @@ class Hub:
     def claim(self, tid, aid):
         """认领：加锁 → 校验当前态 → 迁移进行中 → 解锁。锁使「读-判-写」原子。
         Claim: lock → verify current state → transition to in-progress → unlock. The lock makes read-check-write atomic."""
+        aid = self._actor(aid)
         lease = self.lock.acquire('task:%s' % tid, aid, ttl=60)
         if lease is None:
             return False, '并发争用：锁未获，请重试'
@@ -441,24 +530,26 @@ class Hub:
             self.lock.release(lease)
         return True, '认领成功'
 
-    def submit(self, tid, aid, note='', to=None):
-        """交活：进行中 → 完成 → 待审，落一条报条（可带 [致=]）。
-        Submit: in-progress → done → pending-review, writing one report entry (may carry [致=])."""
+    def submit(self, tid, aid, note='', to=None, re_ref=None):
+        """交活：进行中 → 完成 → 待审，落一条报条（可带 [致=] / [re=]）。
+        Submit: in-progress → done → pending-review, writing one report entry (may carry [致=] / [re=])."""
+        aid = self._actor(aid)
         self.tv.transition(tid, '完成', aid, note or '交活')
         self.tv.transition(tid, '待审', aid, note or '待审')
-        self._log('报', '交活 %s' % tid, note or '交活', aid, to=to)
+        self._log('报', '交活 %s' % tid, note or '交活', aid, to=to, re_ref=re_ref)
         person, why = self.route_for('报', '交活 %s' % tid, note, self._name_of(aid), to)
         return person, why
 
-    def review(self, tid, aid, verdict, note=''):
-        """裁决：通过→已审；驳回→进行中（返工）。
-        Review: pass → reviewed; reject → in-progress (rework)."""
+    def review(self, tid, aid, verdict, note='', re_ref=None):
+        """裁决：通过→已审；驳回→进行中（返工）。可带 [re=] 显式回应某条。
+        Review: pass → reviewed; reject → in-progress (rework). May carry [re=] to reply to a specific entry."""
+        aid = self._actor(aid)
         if verdict in ('通过', 'pass', '已审', 'ok'):
             self.tv.transition(tid, '已审', aid, note or '通过')
-            self._log('审', '裁决 %s·通过' % tid, note or '通过', aid)
+            self._log('审', '裁决 %s·通过' % tid, note or '通过', aid, re_ref=re_ref)
             return '已审'
         self.tv.transition(tid, '进行中', aid, note or '驳回')
-        self._log('审', '裁决 %s·驳回' % tid, note or '驳回', aid)
+        self._log('审', '裁决 %s·驳回' % tid, note or '驳回', aid, re_ref=re_ref)
         return '进行中'
 
     def route_for(self, kind, title, body, author, to):
@@ -470,11 +561,38 @@ class Hub:
     # —— 取件（派生视图·可删可重建） ——
     # —— Pull (derived view · deletable and rebuildable) ——
     def pull(self, who):
-        """按路由表算下一手，列出落脚于 who 且 who 尚未落条回应的条。
-        Compute the next hand via the routing table, listing entries that land on `who` and that `who` has not yet responded to."""
+        """按路由表算下一手，列出落脚于 who 且 who 尚未**显式引用回应**的条。
+        Compute the next hand via the routing table, listing entries that land on `who`
+        and that `who` has not yet explicitly referenced in a reply.
+
+        回复关系只认 `[re=<条号>]`：位置相邻、同作者、时间先后一律不作数。
+        Only `[re=<entry-id>]` counts as a reply: adjacency, same author or chronological order never do.
+        旧条目没有 `[id=]` → 回应对不上，判 unknown，照样列出（绝不默认当已回）。
+        A legacy entry without `[id=]` → its reply cannot be matched, so it is marked unknown and still listed
+        (never silently treated as replied).
+        回应条自身须验签通过；unsigned/invalid 的「回应」不计，并明确告警。
+        A reply must itself verify; unsigned/invalid "replies" are not counted and raise an explicit warning."""
         entries = parse_ledger(self.ledger)
         names = {a.name: a.agent_id for a in self.reg.list()}
         who_id = names.get(who, who)
+        auth = [self.entry_auth(e) for e in entries]
+
+        replied = set()
+        ignored = []
+        for j, e in enumerate(entries):
+            if e['author'] not in (who, who_id):
+                continue
+            refs = [t.strip() for t in SPLIT_TO.split(e.get('re') or '') if t.strip()]
+            if not refs:
+                continue
+            if auth[j] != 'ok':
+                ignored.append((e, auth[j]))
+                continue
+            replied.update(refs)
+        for e, st in ignored:
+            sys.stderr.write('⚠ %s 的回应 id=%s 验签=%s，不计为已回（引用=%s）\n'
+                             % (who, e.get('id') or '（无）', st, e.get('re')))
+
         pend = []
         for i, e in enumerate(entries):
             person, why = route(e['kind'], e['title'], '\n'.join(e['body']),
@@ -482,9 +600,18 @@ class Hub:
             targets = [t.strip() for t in SPLIT_TO.split(person or '') if t.strip()]
             if who not in targets and who_id not in targets:
                 continue
-            replied = any(entries[j]['author'] in (who, who_id) for j in range(i + 1, len(entries)))
-            if not replied:
-                pend.append((e, person, why))
+            e['auth'] = auth[i]
+            if not e.get('id'):
+                e['reply_state'] = 'unknown'
+            elif e['id'] in replied:
+                e['reply_state'] = 'replied'
+                continue
+            else:
+                e['reply_state'] = 'pending'
+            if e['auth'] != 'ok':
+                sys.stderr.write('⚠ 条目 id=%s author=%s 验签=%s，不得视为合法（位置决定处理优先级，不决定真伪）\n'
+                                 % (e.get('id') or '（无）', e['author'] or '（缺）', e['auth']))
+            pend.append((e, person, why))
         return pend
 
     # —— 分发接上目录（v3.1·派生视图·可删可重建） ——
@@ -530,7 +657,7 @@ class Hub:
         for t in [x for x in SPLIT_TO.split(to or '') if x.strip()]:
             try:
                 import agent_message as _am
-                ok, info = _am.send('司南', t, 'notify', summary)
+                ok, info = _am.send('司南', t, 'notify', summary, root=self.root)
             except Exception as e:
                 ok, info = False, '%s: %s' % (type(e).__name__, e)
             print('  推送 → %s：%s %s' % (t, 'OK' if ok else 'FAIL', info if not ok else ''))
@@ -591,10 +718,14 @@ def _print_board(hub):
 
 def _print_pull(hub, who):
     pend = hub.pull(who)
-    print('取件 %s：待办 %d 条' % (who, len(pend)))
+    unknown = sum(1 for e, _p, _w in pend if e.get('reply_state') == 'unknown')
+    unauth = sum(1 for e, _p, _w in pend if e.get('auth') != 'ok')
+    print('取件 %s：待办 %d 条（unknown %d · 验签非 ok %d）' % (who, len(pend), unknown, unauth))
     for e, person, why in pend:
         to = hub._to_names(e['to']) if e['to'] else (person or '广播')
-        print('  [%s] [%s] → %s  %s  ← %s' % (e['time'][11:], e['kind'], to, e['title'], why))
+        print('  [%s] [%s] id=%s auth=%s reply=%s → %s  %s  ← %s' % (
+            e['time'][11:], e['kind'], e.get('id') or '（无）', e.get('auth') or '?',
+            e.get('reply_state') or '?', to, e['title'], why))
 
 
 def main(argv=None):
@@ -605,16 +736,19 @@ def main(argv=None):
     sub = ap.add_subparsers(dest='cmd')
 
     p = sub.add_parser('join'); p.add_argument('name')
-    p = sub.add_parser('leave'); p.add_argument('agent_id')
+    p = sub.add_parser('leave'); p.add_argument('agent_id', nargs='?', default='')
     sub.add_parser('who')
     p = sub.add_parser('open'); p.add_argument('title'); p.add_argument('--by', required=True)
-    p = sub.add_parser('claim'); p.add_argument('tid'); p.add_argument('agent_id')
+    p = sub.add_parser('claim'); p.add_argument('tid')
+    p.add_argument('agent_id', nargs='?', default='')
     p = sub.add_parser('submit')
-    p.add_argument('tid'); p.add_argument('agent_id')
+    p.add_argument('tid'); p.add_argument('agent_id', nargs='?', default='')
     p.add_argument('--to', default=''); p.add_argument('--note', default='')
+    p.add_argument('--re', default='', help='显式回应条号 id=（消息总线回复关系）')
     p = sub.add_parser('review')
-    p.add_argument('tid'); p.add_argument('agent_id'); p.add_argument('verdict')
+    p.add_argument('tid'); p.add_argument('agent_id', nargs='?', default=''); p.add_argument('verdict')
     p.add_argument('--note', default='')
+    p.add_argument('--re', default='', help='显式回应条号 id=（消息总线回复关系）')
     p = sub.add_parser('pull'); p.add_argument('who')
     sub.add_parser('board')
     sub.add_parser('alarm')
@@ -651,10 +785,12 @@ def main(argv=None):
         print(('OK  ' if ok else 'FAIL ') + msg)
         return 0 if ok else 1
     elif args.cmd == 'submit':
-        person, why = hub.submit(args.tid, args.agent_id, args.note, args.to)
+        person, why = hub.submit(args.tid, args.agent_id, args.note, args.to,
+                                 re_ref=args.re or None)
         print('已交活 %s → 待审；下一手=%s（%s）' % (args.tid, person or '广播', why))
     elif args.cmd == 'review':
-        st = hub.review(args.tid, args.agent_id, args.verdict, args.note)
+        st = hub.review(args.tid, args.agent_id, args.verdict, args.note,
+                        re_ref=args.re or None)
         print('裁决 %s：→ %s' % (args.tid, st))
     elif args.cmd == 'pull':
         _print_pull(hub, args.who)

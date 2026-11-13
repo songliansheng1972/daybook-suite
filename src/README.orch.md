@@ -41,7 +41,7 @@ python3 orchestrator.py pull 皮特      # 取件（查表算下一手）
 python3 orchestrator.py board         # 看板
 ```
 
-`--root DIR` 指定卷根；`--rule / --roles` 换路由表 / 角色表。
+`--root DIR` 指定卷根；七卷路径读 `<root>/daybook.conf` 的 `[volumes]` 段（不写用默认文件名，`--root` 一处生效）。`--rule / --roles` 换路由表 / 角色表。
 
 ## 边界（诚实）
 
