@@ -1193,7 +1193,7 @@ def main():
                 sys.stderr.write('  %s: %s\n' % (v, w))
             codes.append(EXIT_CONFIG)
         if VIOLATIONS:
-            sys.stderr.write('★ append-only 违例 %d 处（索引已按违例全量重扫，但账本本身已被改写）：\n'
+            sys.stderr.write('★ append-only 违例 %d 处（违例卷未写回，账本本身已被改写）：\n'
                              % len(VIOLATIONS))
             for v, w in VIOLATIONS:
                 sys.stderr.write('  %s: %s\n' % (v, w))
@@ -1234,7 +1234,7 @@ def main():
         # 作者口径红只报不拦（人记账不必因未注册被卡），认基线继续
         # Author-convention red is reported but does not block a baseline
         if _report_authors(conf, root, quiet_green=True):
-            sys.stderr.write('★ 作者口径红：只报不拦，基线照认\n')
+            sys.stderr.write('★ 作者口径红：只报不拦，基线照认并已写回派生件\n')
         per, total, rep = build(conf, root, baseline=True)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         print('基线已认：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())

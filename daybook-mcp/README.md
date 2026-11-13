@@ -6,6 +6,17 @@
 > 名号「璇玑」：《尚书·舜典》「在璇玑玉衡，以齐七政」——古之观星、换算、读出的器具。  
 > **璇玑＝观／换算／读出**，正合 MCP 之职。
 
+> **升级须知（v4.0.6 行为变更，必读） / Upgrade notes (v4.0.6)**
+> 1. **非空卷首次索引退 5，需认基线**：先退 5、不写回证据；执行一次
+>    `python3 daybook.py baseline` 后才写回游标与封存，之后 `index` 为 0。证据缺失同样停在 5。
+>    **The first index of a non-empty volume exits 5**; run `daybook.py baseline` once, then `index` is 0.
+> 2. **作者必填**：`daybook_append.py` 只接受 `卷 类 标题 作者 "正文"`；旧 3/4 参形态、显式
+>    `未标`/空值与 `--name=` 一律退 2；独立模式也拒机器 id。**MCP 写路径不受影响**
+>    （仍以 agent_id 验签后写显示名 + `[id=ag-…]` 附注）。**MCP 不认基线**：签名只证明
+>    调用者是谁；`daybook_index` 遇证据缺失返回 rc=5、不写不重建，须由人在服务端 `baseline`。
+>    **The author is mandatory**; the MCP write path is unaffected. **MCP never accepts a
+>    baseline** — `daybook_index` returns rc=5 and writes nothing; a human runs `baseline`.
+
 ## 特点
 
 - **薄接口** —— 真相仍在卷里，它只把卷**读出去、写回来**。

@@ -1005,7 +1005,7 @@ def call_tool(name, args, agent_id=None, signature=None):
                                       len(_db.EVIDENCE_MISSING),
                                       '；'.join('%s: %s' % (v, w) for v, w in _db.EVIDENCE_MISSING)))
                 if _db.EXIT_AUTHOR in codes:
-                    detail.append('作者口径红（未写回）')
+                    detail.append('作者口径红（只报不拦，不阻断）')
                 if rc == _db.EXIT_VIOLATION:
                     _audit('index', agent_id, '违例·拒绝写回 → rc=3', ok=False)
                 raise ValueError('rc=%d %s' % (rc, '｜'.join(detail)))

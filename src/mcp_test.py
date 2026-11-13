@@ -102,6 +102,12 @@ def _setup_tmp_root():
     # Registration volume · contains 1 test agent
     with open(os.path.join(tmp_root, '注册卷.txt'), 'w', encoding='utf-8') as f:
         f.write('# G3 注册卷\n')
+    # 端到端用：把索引器放进根目录（与真实部署一致，conf 从脚本同目录读）
+    # For end-to-end: put the indexer in the root (matching real deployment; conf sits beside it)
+    for name in ('daybook.py', 'daybook_append.py', 'safeio.py'):
+        src = os.path.join(HERE, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(tmp_root, name))
     return tmp_root
 
 
@@ -211,8 +217,49 @@ def test_daybook_index(tmp_root):
                                'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     if not _ok('7.1 daybook_index 有响应', len(out) == 1):
         return False
+    res = out[0].get('result', {})
+    text = res.get('content', [{}])[0].get('text', '')
+    # 签名只证明调用者是谁，不证明有人看过这卷：MCP 遇证据缺失必须拒认基线
+    # A signature proves who called, not that anyone reviewed the volume: MCP must refuse
+    if not _ok('7.2 证据缺失时 MCP 拒认基线（rc=5·isError）',
+               res.get('isError') is True and 'rc=5' in text, text[:100]):
+        return False
+    if not _ok('7.3 未写回索引（不自动重建）',
+               not os.path.exists(os.path.join(tmp_root, '索引', 'index_测试MCP.tsv'))):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'], cwd=tmp_root,
+                       capture_output=True, text=True)
+    if not _ok('7.4 人工认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
+        return False
+    ts = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts)
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                    'params': {'name': 'daybook_index',
+                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    return _ok('7.2 索引重建成功', '索引已重建' in text and '3 条' in text, text)
+    if not _ok('7.5 认基线后索引重建成功', '索引已重建' in text and '3 条' in text, text):
+        return False
+    # 7.6 违例必须走同一聚合：isError + rc=3 + 不写回（一次签名调用不能把篡改重建为新基线）
+    # 7.6 a violation must go through the same aggregation: isError + rc=3 + nothing written
+    vol = os.path.join(tmp_root, '测试MCP.txt')
+    orig = open(vol, 'rb').read()
+    mid = len(orig) // 2
+    open(vol, 'wb').write(orig[:mid] + (b'X' if orig[mid:mid + 1] != b'X' else b'Y') + orig[mid + 1:])
+    cur_path = os.path.join(tmp_root, '索引', '.cursor_测试MCP.json')
+    cur_before = open(cur_path, 'rb').read() if os.path.exists(cur_path) else b''
+    ts = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts)
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                    'params': {'name': 'daybook_index',
+                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
+    res = out[0].get('result', {})
+    text = res.get('content', [{}])[0].get('text', '')
+    ok3 = _ok('7.6 违例 ⇒ MCP isError + rc=3', res.get('isError') is True and 'rc=3' in text,
+              text[:100])
+    ok4 = _ok('7.7 违例不写回游标',
+              (open(cur_path, 'rb').read() if os.path.exists(cur_path) else b'') == cur_before)
+    open(vol, 'wb').write(orig)
+    return ok3 and ok4
 
 
 def test_daybook_query(tmp_root):
@@ -220,16 +267,11 @@ def test_daybook_query(tmp_root):
     Acceptance 5/P0-2: daybook_query filters by field · no longer returns everything.
     """
     os.environ['DAYBOOK_ROOT'] = tmp_root
-    # 先建索引（也要验签）
-    # Build the index first (also requires signature verification)
-    agent_id, secret = _register_test_agent(tmp_root)
-    # W-75 修④：同上，建索引须带 ts 且签名覆盖 "reindex:<ts>"
-    # W-75 fix ④: same as above · the index build must carry ts with a signature over "reindex:<ts>"
-    ts0 = int(time.time())
-    sig = _sign(secret, 'reindex:%d' % ts0)
-    _rpc([{'jsonrpc': '2.0', 'id': 0, 'method': 'tools/call',
-           'params': {'name': 'daybook_index',
-                      'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts0}}}])
+    # MCP 不再自动认基线：先由人（CLI）认一次基线，再查
+    # MCP no longer accepts a baseline automatically: a human accepts one via CLI first
+    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'], cwd=tmp_root,
+                       capture_output=True, text=True)
+    _ok('5.0 人工认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
     # 查 类=决策 → 只应命中 1 条（条目2）
     # Query category=决策 → should match only 1 entry (条目2)
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
@@ -328,7 +370,33 @@ def test_daybook_append_signed(tmp_root):
     if not _ok('P1-1.1 签名 append 有响应', len(out) == 1):
         return False
     text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    return _ok('P1-1.2 签名 append 成功', 'appended' in text, text)
+    if not _ok('P1-1.2 签名 append 成功', 'appended' in text, text):
+        return False
+    # 作者必填口径下：作者位必须是显示名，id 只作 [id=ag-…] 附注，且 index/checkauthors 不红
+    # Under the author-mandatory convention: the author slot holds the display name, the id is
+    # only an [id=…] annotation, and index/checkauthors stay green.
+    vol = os.path.join(tmp_root, '测试MCP.txt')
+    last = [l for l in open(vol, encoding='utf-8').read().splitlines() if l.startswith('[')][-1]
+    if not _ok('P1-1.3 作者位＝显示名且带 id 附注',
+               '[测试Agent]' in last and ('[id=%s]' % agent_id) in last, last[:100]):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'index'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    if not _ok('P1-1.4 索引不红（0 或 5=待认基线）', r.returncode in (0, 5),
+               'rc=%d' % r.returncode):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    if not _ok('P1-1.5 认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'index'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    if not _ok('P1-1.5b 认基线后索引 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
+        return False
+    r = subprocess.run([sys.executable, 'daybook.py', 'checkauthors'],
+                       cwd=tmp_root, capture_output=True, text=True)
+    return _ok('P1-1.6 checkauthors 绿（显示名口径）', r.returncode == 0,
+               (r.stdout + r.stderr).strip().splitlines()[-1][:100])
 
 
 def test_daybook_append_bad_sig(tmp_root):

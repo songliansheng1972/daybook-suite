@@ -9,6 +9,14 @@
 > That is precisely the divide between this and "let the LLM guess the next hand":
 > **the orchestrator contributes no intelligence — only direction.**
 
+> **Upgrade notes (v4.0.6, read before upgrading)**
+> 1. The first index of a non-empty volume exits 5 and writes nothing back; run
+>    `python3 daybook.py baseline` once, then `index` returns 0. Missing evidence stays at 5
+>    until a baseline is accepted.
+> 2. The author is mandatory: legacy 3/4-arg forms, `未标`/empty placeholders and `--name=`
+>    exit 2; standalone mode refuses machine ids. Orchestration writes go through the same
+>    landing entry, with the display name in the author slot and `[id=ag-…]` as an annotation.
+
 ---
 
 ## In one line

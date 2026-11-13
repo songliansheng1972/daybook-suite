@@ -6,6 +6,15 @@
 > 名号「司南」：《韩非子·有度》「先王立司南以端朝夕」——以器定方向，**不因问者而异**：  
 > 同一条，任何时刻、任何人来问，都得**同一个下一手**。
 
+> **升级须知（v4.0.6 行为变更，必读） / Upgrade notes (v4.0.6)**
+> 1. **非空卷首次索引退 5，需认基线**：先退 5、不写回证据；执行一次
+>    `python3 daybook.py baseline` 后才写回游标与封存，之后 `index` 为 0。证据缺失同样停在 5。
+>    **The first index of a non-empty volume exits 5**; run `daybook.py baseline` once, then `index` is 0.
+> 2. **作者必填**：`daybook_append.py` 只接受 `卷 类 标题 作者 "正文"`；旧 3/4 参形态、显式
+>    `未标`/空值与 `--name=` 一律退 2；独立模式也拒机器 id。编排写入走同一落盘入口，
+>    作者位写显示名、id 作 `[id=ag-…]` 附注。
+>    **The author is mandatory**; orchestration writes go through the same landing entry.
+
 ## 卖点
 
 - **确定性** —— 编排器不贡献智能，只贡献方向：**定于查表，不定于推理**。
