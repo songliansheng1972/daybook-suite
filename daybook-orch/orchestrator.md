@@ -37,7 +37,7 @@
 
 | 原语 | 模块 | 职责 | 本件如何用 |
 |---|---|---|---|
-| 身份 | `agent_registry.py` | HMAC-SHA256·不可伪造·可吊销 | `join` 发号・`who` 在场 |
+| 身份 | `agent_registry.py` | 自述身份：仅登记发号，日志写裸 aid，**尚无签名校验** | `join` 发号・`who` 在场 |
 | 任务 | `task_volume.py` | 待办→进行中→完成→待审→已审（终态拒迁） | `open/claim/submit/review` |
 | 锁 | `agent_lock.py` | `fcntl.flock` + TTL 租约 | `claim` 用锁把「读-判-写」变原子 |
 | 在场 | `agent_heartbeat.py` | 心跳卷，缺 ≥3 周期判 dead | `alarm` 找失联 |

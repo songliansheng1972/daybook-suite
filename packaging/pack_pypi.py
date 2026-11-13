@@ -118,7 +118,7 @@ authors = [{ name = "手艺人老宋", email = "songliansheng@vip.sina.com" }]
 keywords = [@@KEYWORDS@@]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX",
     "Topic :: Office/Business",
 ]
 

@@ -41,11 +41,11 @@ table lookup** for "who should act, and up to which step"; truth stays in the vo
 
 | Primitive | Module | Office |
 |---|---|---|
-| Identity | `agent_registry.py` | HMAC-SHA256 · unforgeable · revocable · append-only registry |
+| Identity | `agent_registry.py` | Self-declared identity · registry only · **no signature verification yet** · append-only |
 | Task | `task_volume.py` | Five-state machine (below) · append-only · **never rewrites history** |
 | Lock | `agent_lock.py` | `fcntl.flock` + **TTL lease** (60 s default · renew / release / force-release · fenced token) |
 | Presence | `agent_heartbeat.py` | Heartbeat volume · dead if missing ≥3 cycles |
-| Message | `agent_message.py` | Unix socket (TCP loopback fallback) · `notify/request/response/broadcast` · append-only inbox volume |
+| Message | `agent_message.py` | Unix socket (POSIX only) · `notify/request/response/broadcast` · one append-only message volume |
 | Reference | `cross_ref.py` | `[volume#Lline-SHA8]` · **tamper-proof** · reverse-lookup |
 | **Routing** | **`orchestrator.py`** | **class → role → person (deterministic table lookup)** |
 

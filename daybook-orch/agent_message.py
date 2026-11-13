@@ -5,8 +5,8 @@
 """Agent 间消息协议（W-DB-023-G3·第 4 项）
 Inter-agent messaging protocol (W-DB-023-G3 · item 4)
 ================================================
-- 本地 Unix socket（Linux/macOS）或 TCP 回环（跨平台兜底）
-  Local Unix socket (Linux/macOS) or TCP loopback (cross-platform fallback)
+- 本地 Unix socket（POSIX：Linux/macOS）
+  Local Unix socket (POSIX: Linux/macOS)
 - 消息格式：[from] [to] [type] [content]
   Message format: [from] [to] [type] [content]
   - type：notify/request/response/broadcast
@@ -22,8 +22,8 @@ Design:
     One socket path per agent: /tmp/daybook_agent_<name>.sock
   - 消息以 '\n' 结尾·JSON 编码·单次 recv ≤ 65536
     Messages end with '\n' · JSON-encoded · a single recv ≤ 65536
-  - 服务端单线程接收·按 to 字段分发到 inbox 卷
-    The server receives single-threaded · dispatches to the inbox volume by the `to` field
+  - 服务端单线程接收·所有消息写入同一 inbox 卷（`to` 只作字段记录，不按收件人分卷）
+    The server receives single-threaded · all messages go to one inbox volume (`to` is recorded as a field only; no per-recipient volumes)
   - inbox 卷 append-only：[时间] [收] [from] [to] [type] content
     The inbox volume is append-only: [时间] [收] [from] [to] [type] content
 

@@ -16,8 +16,8 @@ This file is the third, and the one that **welds the first two into a runnable c
 
 不造调度器，只把 daybook 底座上已有的六件原语接上**一个入口**：
 No scheduler is built; this merely wires the six existing primitives of the daybook base to **one entry point**:
-    身份   agent_registry    HMAC-SHA256·不可伪造
-    identity  agent_registry    HMAC-SHA256 · unforgeable
+    身份   agent_registry    自述身份（仅登记发号·尚无签名校验）
+    identity  agent_registry    self-declared identity (registry only · no signature verification yet)
     任务   task_volume       待办→进行中→完成→待审→已审（终态拒迁）
     task      task_volume       todo → in-progress → done → pending-review → reviewed (terminal states reject transitions)
     锁     agent_lock        fcntl.flock + TTL 租约（认领并发互斥）
