@@ -8,11 +8,9 @@ Daybook · concurrent writer (multi-writer safe)
 Principle: O_APPEND + single write ≤ PIPE_BUF ⇒ POSIX guarantees atomicity ⇒ no lock needed.
 用法：
 Usage:
-  python3 daybook_append.py <卷文件> <类> <标题> <作者> "正文"   # 标准条目（作者必填）· standard entry (author required)
-  python3 daybook_append.py <卷文件> <类> <标题> <作者> "正文" --name=显示名
-                                                              # 作者位＝显示名·注册表 id 只作 [id=…] 附注
-                                                              # author slot = display name · registry id is only an [id=…] annotation
-  python3 daybook_append.py <卷文件> <类> <标题> "正文"           # 兼容（作者默认"未标"）· compatible (author defaults to "未标")
+  python3 daybook_append.py <卷文件> <类> <标题> <作者> "正文"   # 标准条目（作者必填·无默认占位）
+                                                              # standard entry (author mandatory, no placeholder default)
+  python3 daybook_append.py <卷文件> <类> <标题> <作者>          # 正文从 stdin 读 · body from stdin
   echo "正文" | python3 daybook_append.py <卷文件> [<类> <标题> <作者>]
 所有写者对同一卷并发调用都安全（每条必须 ≤ PIPE_BUF）。
 Concurrent calls by all writers to the same volume are safe (each entry must be ≤ PIPE_BUF).
@@ -290,28 +288,23 @@ def main():
         print(__doc__); return 1
     path = sys.argv[1]
     # --name=显示名：显式指定作者位的显示名（作者位本就写显示名，此参作覆盖）
-    # --name=: explicitly set the display name in the author slot (the slot is a display name anyway)
-    name = None
-    argv = []
-    for a in sys.argv[2:]:
-        if a.startswith('--name='):
-            name = a.split('=', 1)[1].strip() or None
-        else:
-            argv.append(a)
-    # 支持三种用法：· Three forms are supported:
-    #   卷 类 标题 作者 "正文"   # 5 参标准（作者必填）· 5-arg standard (author required)
-    #   卷 类 标题 "正文"        # 4 参（作者默认"未标"）· 4-arg (author defaults to "未标")
-    #   卷 "正文"                # 2 参旧格式（类=聊，标题=作者，作者=未标）· 2-arg legacy format (kind=聊, title=author, author=未标)
-    if len(argv) >= 4:
-        kind, title, author, msg = argv[0], argv[1], argv[2], argv[3]
-    elif len(argv) == 3:
-        kind, title, author, msg = argv[0], argv[1], '未标', argv[2]
-    elif len(argv) == 2:
-        # 旧格式：第二参为标题，类默认"聊"，作者"未标" · legacy format: second arg is the title, kind defaults to "聊", author "未标"
-        kind, title, author, msg = '聊', argv[0], '未标', argv[1]
-    else:
-        # 仅 path + 类：从 stdin 读正文 · path + kind only: read the body from stdin
-        kind, title, author, msg = argv[0], '', '未标', sys.stdin.read()
+    # 作者必填、无后门：· The author is mandatory and there is no back door:
+    #   卷 类 标题 作者 "正文"
+    # 三参/四参旧形态（作者默认「未标」）一律拒写：不给绕过作者口径的入口
+    # Legacy 3/4-arg forms (author defaulting to 未标) are refused: no path around the author check
+    argv = sys.argv[2:]
+    bad = [a for a in argv if a.startswith('--')]
+    if bad:
+        sys.stderr.write('不支持的选项：%s（作者位只接受显示名，不再有 --name= 后门）\n' % ' '.join(bad))
+        return 2
+    if len(argv) < 4:
+        sys.stderr.write('用法：daybook_append.py <卷文件> <类> <标题> <作者> "正文"\n'
+                         '（作者必填；没有默认「未标」，也没有 --name= 覆盖入口）\n')
+        return 2
+    kind, title, author, msg = argv[0], argv[1], argv[2], argv[3]
+    if (author or '').strip() in AUTHOR_PLACEHOLDERS:
+        sys.stderr.write('作者必填：不许用空值/「未标」占位绕过作者口径\n')
+        return 2
     if not msg.strip():
         sys.stderr.write('空消息，未写。\n'); return 1
     try:
@@ -319,8 +312,6 @@ def main():
     except ValueError as exc:
         sys.stderr.write('%s\n' % exc)
         return 2
-    if name:
-        author_slot, unregistered = name, False
     return append_one(path, kind, title, msg, author_slot,
                       author_id=author_id, unregistered=unregistered)
 

@@ -61,7 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '4.0.5'
+SUITE_VERSION = '4.0.6'
 
 # ── 开发者工具目录（不入包 payload）───────────────────────
 # bench/ 是并发与容量压测工具，位于仓根，不在 src/ 源清单内，也不属于任何包盒。

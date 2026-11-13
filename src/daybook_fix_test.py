@@ -196,6 +196,8 @@ def test_backup_empty_outdir(tmp):
     os.makedirs(root)
     _write(os.path.join(root, '账卷.txt'), '[2026-11-14 03:00:00] [聊] [一] [汤姆] 正文\n\n')
     _write(os.path.join(root, '旁件.txt'), '不该被备份的根目录文件\n')
+    _write(os.path.join(root, 'index_账.tsv'), 'volume\tline\n')
+    _write(os.path.join(root, '.cursor_账.json'), '{"fmt":2}\n')
     conf = {'volumes': {'账': '账卷.txt'}, 'entries': {}, 'rules': {},
             'index': {'out_dir': '', 'index_prefix': 'index_', 'manifest': 'volumes.md'},
             'trigger': {}, 'volumes_skipped': {}}
@@ -206,6 +208,8 @@ def test_backup_empty_outdir(tmp):
             names.add(os.path.relpath(os.path.join(d, f), bdir))
     _ok('⑥1 out_dir 为空：卷被备份', '账卷.txt' in names, str(names))
     _ok('⑥2 out_dir 为空：整根未被复制', '旁件.txt' not in names and n == 1, str(names))
+    _ok('⑥3 out_dir 为空：已知索引件一并备份',
+        'index_账.tsv' in names and '.cursor_账.json' in names, str(names))
 
 
 # ── ⑦ 无 --home 时不得隐式改 ~/.daybook ──────────────────────
@@ -278,6 +282,44 @@ def test_hook_parse(tmp):
     import re as _re
     old_re = _re.compile(r'^\[[^\]]+\]\s*\[([^\]]+)\]\s*\[([^\]]*)\](?:\s*\[([^\]]*)\])?\s*(对话原件/[^\s]+\.txt)')
     _ok('⑩3 变异：旧正则必不匹配（静默丢条可复现）', old_re.match(line) is None)
+
+
+# ── ⑪ 退出码口径写进 --help ──────────────────────────────────
+def test_help_exit_codes(tmp):
+    d = os.path.join(tmp, 'helpdoc')
+    os.makedirs(d)
+    _stage_cli(d)
+    r = subprocess.run([sys.executable, 'daybook.py', '--help'], cwd=d,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    text = (r.stdout or '') + (r.stderr or '')
+    _ok('⑪1 --help 写明退出码 0/2/3/4/5',
+        all(('\n  %s ' % c) in text or ('  %s ' % c) in text for c in ('0', '2', '3', '4', '5'))
+        and '退出码' in text, text[:80])
+    _ok('⑪2 --help 写明「取最严重」而非位掩码',
+        '严重度' in text and '违例' in text, '')
+
+
+# ── ⑫ CLI 后门收口：作者必填、无 --name= ─────────────────────
+def test_author_cli_backdoor(tmp):
+    d = os.path.join(tmp, 'backdoor')
+    os.makedirs(d)
+    vol = os.path.join(d, '卷.txt')
+    _write(vol, '')
+    cli = os.path.join(HERE, 'daybook_append.py')
+    r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '正文四参'],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('⑫1 4 参形态（默认未标）被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+    r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '未标', '正文'],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('⑫2 显式「未标」占位被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+    r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '汤姆', '正文', '--name=别人'],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('⑫3 --name= 后门被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+    _ok('⑫4 三次拒写都没落条目', io.open(vol, encoding='utf-8').read().strip() == '')
 
 
 # ── ④ 作者口径（作者位＝显示名·id 只作附注）────────────────────
@@ -395,6 +437,8 @@ def main():
         test_backup_surface(tmp)
         test_pack_residue(tmp)
         test_hook_parse(tmp)
+        test_help_exit_codes(tmp)
+        test_author_cli_backdoor(tmp)
         test_author_source(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

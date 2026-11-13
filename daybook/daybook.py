@@ -38,8 +38,19 @@ Zero dependencies: Python standard library only.
       零依赖，卷为唯一底座，与 index/mcp 同一二进制。
 客户可改 daybook.conf 定字段与卷。
 Customers may edit daybook.conf to define fields and volumes.
+
+退出码 / Exit codes（index）:
+  0 干净（含「未变」）· clean (including unchanged)
+  2 卷配置错 · volume configuration error
+  3 append-only 违例（账本被改写）· append-only violation (ledger rewritten)
+  4 作者口径（作者位出现机器 id 或两种形态混用）· author convention (machine id or mixing)
+  5 派生件证据缺失（索引/游标/封存丢失或不可解析·已重建）· derived evidence missing (rebuilt)
+  多类同现：屏幕每类都打印，退出码取语义严重度最高的一类
+  When several occur, every class is printed and the exit code is the most severe:
+  3 违例 > 4 作者 > 2 配置错 > 5 证据缺失（3 不会被 2 掩盖，也不会被 5 洗掉）
+  violation(3) > author(4) > config(2) > evidence(5).
 """
-import io, os, re, sys, time, hashlib, json, shutil
+import io, os, re, sys, time, hashlib, json, shutil, fnmatch
 
 ENC_REPORT = []
 VIOLATIONS = []      # 本轮 build 的 append-only 违例（卷, 说明）；CLI index 据此非零退出
@@ -54,16 +65,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ── 退出码（互不掩盖）────────────────────────────────────────
 # ── Exit codes (never mask each other). ──
 # 2 配置错 / 3 append-only 违例 / 4 作者口径 / 5 派生件证据缺失。
-# 同时出现多类时按严重度取最高：违例(3) > 作者(4) > 证据缺失(5) > 配置错(2)。
-# 屏幕各类都会打印，退出码必须反映最重那类——「检测到篡改」不能被 2 盖掉。
+# 同时出现多类时按语义严重度取最高：违例(3) > 作者(4) > 配置错(2) > 证据缺失(5)。
+# 屏幕各类都会打印，退出码反映最重那类——「检测到篡改」不能被 2 盖掉，也不能被 5 洗掉。
 # 2 config / 3 append-only violation / 4 author convention / 5 derived-evidence missing.
-# When several occur, the most severe wins: violation(3) > author(4) > evidence(5) > config(2).
-# Every class is printed; the status must reflect the heaviest one — tampering must not be masked by 2.
+# When several occur, the highest semantic severity wins: violation(3) > author(4) >
+# config(2) > evidence(5). Every class is printed; tampering is never masked by 2 and never
+# laundered into 5.
 EXIT_CONFIG = 2
 EXIT_VIOLATION = 3
 EXIT_AUTHOR = 4
 EXIT_EVIDENCE = 5
-_EXIT_SEVERITY = {EXIT_VIOLATION: 4, EXIT_AUTHOR: 3, EXIT_EVIDENCE: 2, EXIT_CONFIG: 1}
+_EXIT_SEVERITY = {EXIT_VIOLATION: 4, EXIT_AUTHOR: 3, EXIT_CONFIG: 2, EXIT_EVIDENCE: 1}
 
 
 def worst_exit(codes):
@@ -470,6 +482,7 @@ def build(conf, root='.'):
     # W-75 修②：索引写入全临界区（TSV/游标/清单·目录级锁）
     # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest, dir lock)
     from safeio import locked as _safe_locked
+    gated = False
     with _safe_locked(os.path.join(outdir, '.index.lock')):
 
         # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
@@ -478,6 +491,7 @@ def build(conf, root='.'):
             # 闸自己删了索引与游标：这是有意重建，不是证据缺失
             # The gate dropped index and cursor on purpose: a deliberate rebuild, not lost evidence
             seals = {}
+            gated = True
 
         for vol, path in vols.items():
             p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -521,13 +535,20 @@ def build(conf, root='.'):
             #    / content mismatch (violation). ──
             # 派生件被删不是「干净」，是「证据缺失」：不得与未变同码。
             # A deleted derived artifact is not "clean" but "evidence lost": never the unchanged code.
-            if incremental:
+            if incremental and not gated:
                 if index_present and not cpath:
                     _evidence('派生件丢失（索引在·游标丢失）·证据缺失·重建并报告')
                 elif cpath and not index_present:
                     _evidence('派生件丢失（游标在·索引丢失）·证据缺失·重建并报告')
                 elif not index_present and not cpath and seals.get(vol) is not None:
                     _evidence('派生件丢失（索引与游标同时丢失）·证据缺失·重建并报告')
+                elif not index_present and not cpath and seals.get(vol) is None and size > 0:
+                    # 三件派生件全无：没有任何外部锚能证明「未变」，一律重建并要求复跑确认。
+                    # 这就是本实现的诚实上限：不声称能识别「卷/游标/封存三者自洽改写」。
+                    # With all three derived artifacts gone there is no external anchor for
+                    # "unchanged": rebuild and demand a confirmation run. This is the honest
+                    # ceiling — a self-consistent rewrite of volume+cursor+seal is undetectable.
+                    _evidence('无任何封存证据（首次索引或证据被清除）·已重建·请复跑确认')
             if cpath:
                 try:
                     cur = json.load(io.open(cpath, encoding='utf-8'))
@@ -549,6 +570,21 @@ def build(conf, root='.'):
                 if seal.get('content_hash') != cur.get('content_hash') or seal.get('size') != cur.get('size'):
                     _violate('★ 派生件互相矛盾（游标与封存指纹不符）·游标可能被改写·全重扫')
                     cur = None
+
+            # ── 索引缺失但游标/封存还在：仍对当前卷算哈希，不符即违例（不得洗成证据缺失）──
+            # ── Index missing but cursor/seal still there: still hash the volume; a mismatch is
+            #    a violation, never laundered into "evidence missing". ──
+            if incremental and not index_present and (cur is not None or seals.get(vol) is not None):
+                ref = cur if cur is not None else seals[vol]
+                if ref.get('size') == size:
+                    content_hash, _ = _hash_vol(p)
+                    ref_hashes = [ref.get('content_hash')]
+                    if seals.get(vol) is not None and seals[vol] is not ref:
+                        ref_hashes.append(seals[vol].get('content_hash'))
+                    if content_hash not in ref_hashes:
+                        _violate('★ 索引缺失但全卷哈希与游标/封存不符·等长改写·append-only 违例·全重扫')
+                    else:
+                        report.append((vol, '索引缺失·游标/封存指纹一致·重建索引'))
 
             # ── 情形一：字节数与游标相同 ⇒ 必验全卷哈希（mtime 可被 os.utime 恢复，不作判据）──
             # ── Case 1: same size as the cursor ⇒ verify the whole-file hash (mtime is forgeable) ──
@@ -595,7 +631,7 @@ def build(conf, root='.'):
 
             # ── 情形二：只追加 ⇒ 已知前缀验哈希 ＋ 读尾部 ＋ 追加写索引 ──
             # ── Case 2: pure append ⇒ verify the known prefix hash + tail-read + append to the index ──
-            elif cur and size > cur.get('size'):
+            elif cur and index_present and size > cur.get('size'):
                 content_hash, pref_hash = _hash_vol(p, prefix_limit=cur['size'])
                 n_old_b = cur.get('resume_byte')
                 if pref_hash != cur.get('content_hash'):
@@ -796,11 +832,17 @@ def backup(conf, root='.'):
         if os.path.isfile(p):
             shutil.copy2(p, os.path.join(bdir, os.path.basename(p)))
             n += 1
-    # ★ 备份索引目录（TSV+TXT+清单+游标） / ★ Back up the index directory too
-    # ★ out_dir 为空时 os.path.join(root,'') 就是根目录本身：不能把整根复制进备份
-    # ★ An empty out_dir makes os.path.join(root,'') the root itself: never copy the whole root
+    # ★ 备份索引产出（TSV+TXT+清单+游标） / ★ Back up the index artifacts
+    # ★ out_dir 为空时索引件就在根目录：只备份已知索引件，绝不整根复制
+    # ★ An empty out_dir keeps the index artifacts at the root: copy only the known ones,
+    #   never the whole root.
     idx_dir = conf.get('index', {}).get('out_dir', '').strip()
+    known = ('index_*', 'volumes.md', '.head_stamp.json', '.cursor_*.json', '.游标_*.json')
     if not idx_dir:
+        for name in os.listdir(root):
+            src = os.path.join(root, name)
+            if os.path.isfile(src) and any(fnmatch.fnmatch(name, p) for p in known):
+                shutil.copy2(src, os.path.join(bdir, name))
         return bdir, n
     idx_full = idx_dir if os.path.isabs(idx_dir) else os.path.join(root, idx_dir)
     if os.path.isdir(idx_full) and os.path.abspath(idx_full) != os.path.abspath(root):
