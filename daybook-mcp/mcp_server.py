@@ -38,10 +38,31 @@ import mcp_tools as tools
 import mcp_prompts as prompts
 from mcp_subscribe import MANAGER as SUBS
 
+def _suite_version():
+    """套件版本：取 pack.py 的单一真相源 —— 先读同目录 version.txt（打包器写入），
+    再回退解析同目录 pack.py 的 SUITE_VERSION；都没有则 '0.0.0'。
+    Suite version: single source of truth in pack.py — read sibling version.txt (written by the packer) first,
+    then fall back to parsing SUITE_VERSION from a sibling pack.py; '0.0.0' if neither exists.
+    """
+    try:
+        with open(os.path.join(HERE, 'version.txt'), encoding='utf-8') as fh:
+            first = fh.readline()
+        return first.split('v', 1)[1].split()[0]
+    except (OSError, IndexError):
+        pass
+    try:
+        with open(os.path.join(HERE, 'pack.py'), encoding='utf-8') as fh:
+            for line in fh:
+                if line.strip().startswith('SUITE_VERSION'):
+                    return line.split('=', 1)[1].strip().strip('\'"')
+    except OSError:
+        pass
+    return '0.0.0'
+
+
 SERVER_INFO = {
     'name': 'daybook-mcp',
-    'version': '4.0.1',  # ＝套件语义版本（与 src/pack.py SUITE_VERSION 同源同发）
-                       # = suite semantic version (same source, released together with src/pack.py SUITE_VERSION)
+    'version': _suite_version(),  # 单一真相源：pack.py / version.txt（不再手改两处）
 }
 PROTOCOL_VERSION = '2024-11-05'  # MCP 协议版本 · MCP protocol version
 CAPABILITIES = {

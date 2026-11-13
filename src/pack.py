@@ -61,7 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '4.0.1'
+SUITE_VERSION = '4.0.2'
 
 # ── 样本卷（发布必备·供下载者即下即跑）──────────────────
 # Sample volumes (required for release · lets downloaders run immediately)
@@ -296,8 +296,9 @@ def foreign_files(dest, plan):
         return []
     allowed = set(dn.replace(os.sep, '/') for _sp, dn in plan)
     allowed.add('version.txt')          # 打包器自己写的版本凭据 / written by the packer itself
-    junk_files = ('.safeio_lock.*', 'volumes.md', 'index_*', '*.pyc')
-    junk_dirs = ('__pycache__', 'multilevel', '多级')
+    junk_files = ('.safeio_lock.*', '.cursor_*.json', '.head_stamp.json',
+                  'volumes.md', 'index_*', '*.pyc')
+    junk_dirs = ('__pycache__', 'multilevel', '多级', '索引')
     extra = []
     for dirpath, dirs, files in os.walk(dest):
         at_root = os.path.abspath(dirpath) == os.path.abspath(dest)
@@ -359,7 +360,8 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
     # daybook.py index produces volumes.md / index_* / multilevel/; safeio produces .safeio_lock.*
     # 这些是运行时产物·不应随发布包发出·每次打包都清一遍
     # These are runtime artifacts · should not ship with the release package · cleaned on every pack
-    for pat in ('.safeio_lock.*', 'volumes.md', 'index_*', '*.pyc'):
+    for pat in ('.safeio_lock.*', '.cursor_*.json', '.head_stamp.json',
+                'volumes.md', 'index_*', '*.pyc'):
         for pp in glob.glob(os.path.join(dest, pat)):
             try:
                 os.remove(pp)
@@ -368,8 +370,8 @@ def build_one(pkg_key, spec, src, out_root, dry=False):
     for pp in glob.glob(os.path.join(dest, '__pycache__')):
         shutil.rmtree(pp, ignore_errors=True)   # 承 #470 观察②·清缓存目录
                                                 # per #470 observation ② · remove the cache directory
-    for d in ('multilevel', '多级'):                          # v3.1·多级目录为运行时派生件·不随包发
-                                                              # v3.1 · multi-level directories are runtime-derived artifacts · not shipped
+    for d in ('multilevel', '多级', '索引'):                  # v3.1·多级目录为运行时派生件·不随包发（v4.0.2 起含索引目录）
+                                                              # v3.1 · multi-level directories are runtime-derived artifacts · not shipped (index dir too since v4.0.2)
         dp = os.path.join(dest, d)
         if os.path.isdir(dp):
             shutil.rmtree(dp, ignore_errors=True)
