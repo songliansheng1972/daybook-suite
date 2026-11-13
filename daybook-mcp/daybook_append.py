@@ -20,7 +20,7 @@ PIPE_BUF is probed dynamically via os.pathconf(path, 'PC_PIPE_BUF'):
 作者 ID 红线：每条必带作者，可审可验可追。
 Author ID iron rule: every entry must carry an author, auditable, verifiable and traceable.
 """
-import os, sys, time, io
+import os, sys, time
 
 FALLBACK_LIMIT = 4096          # POSIX PIPE_BUF 之保守值（探测失败兜底）· conservative POSIX PIPE_BUF value (fallback on probe failure)
 PROMPT_TEMPLATE = '★ 本条超 {limit} 字节：POSIX 只保证 ≤ PIPE_BUF 之单次 write 原子。请拆条或改用加锁写入。\n'

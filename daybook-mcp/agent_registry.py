@@ -44,7 +44,7 @@ Usage:
   ok   = reg.verify(agent_id, '某条正文', sig)  # 验签 · verify a signature
   reg.revoke(agent_id)                   # 吊销 · revoke
 """
-import os, time, hmac, hashlib, json, secrets
+import os, time, hmac, hashlib, secrets
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -67,13 +67,6 @@ class Agent:
         self.secret = secret
         self.created_at = created_at
         self.revoked = revoked
-
-    def to_authors(self):
-        """作者字段写入条目时的字符串形式：agent_id#前 8 位签名占位（实际签名另算）。
-        The string form written into the author field: agent_id#the first 8 chars as a signature placeholder (the real signature is computed separately).
-        旧条目格式 `[时间][类][标题][作者字符串]` 兼容——作者字段保持字符串，不破坏 600 并发零交错。
-        Legacy entry format `[时间][类][标题][作者字符串]` stays compatible — the author field stays a string, preserving the 600-concurrent zero-interleaving property."""
-        return 'agent:%s' % self.agent_id[:8]
 
     def __repr__(self):
         return '<Agent %s name=%s revoked=%s>' % (self.agent_id[:8], self.name, self.revoked)

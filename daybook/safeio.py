@@ -16,7 +16,7 @@ Fallback: on platforms without fcntl (Windows), fall back to a mkdir atomic lock
 锁粒度：每个目标文件一把锁（.safeio_lock.<basename>），不锁卷原文。
 Lock granularity: one lock per target file (.safeio_lock.<basename>), never locking the volume contents themselves.
 """
-import os, io, json, contextlib, threading
+import os, contextlib, threading
 
 try:
     import fcntl
@@ -207,21 +207,3 @@ def read_modify_write(path, fn):
         with open(tmp, 'wb') as f:
             f.write(new)
         os.replace(tmp, path)
-
-
-def read_json(path, default=None):
-    """持锁读 json。不存在返 default。
-    Locked json read. Returns default when the file is absent."""
-    with locked(path):
-        if not os.path.exists(path):
-            return default
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-
-def write_json(path, obj):
-    """持锁写 json（读-改-写语义）。
-    Locked json write (read-modify-write semantics)."""
-    def _replace(_):
-        return json.dumps(obj, ensure_ascii=False)
-    read_modify_write(path, _replace)
