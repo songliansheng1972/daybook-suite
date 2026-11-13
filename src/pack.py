@@ -177,15 +177,17 @@ PACKAGES = {
         'prog': ['orchestrator.py', 'agent_registry.py', 'agent_lock.py',
                  'agent_heartbeat.py', 'agent_message.py', 'task_volume.py',
                  'cross_ref.py', 'daybook_append.py', 'safeio.py', 'volume_paths.py'],
-        # 两个测试脚本随包发·不计入构建号
-        # The two test scripts ship with the package · not counted in the build number
-        'prog_aux': ['orch_fixes_test.py', 'orch_mutation_check.py'],
+        # 两个测试脚本 + 一个性能对照脚本随包发·不计入构建号
+        # Two test scripts plus one performance A/B script ship with the package · not counted in the build number
+        'prog_aux': ['orch_fixes_test.py', 'orch_mutation_check.py', 'orch_perf_bench.py'],
         'conf_rename': [
-            # 司南亦随一份样板 daybook.conf（卷表空·空跑不崩）：pip 发行版的运行目录初始化
+            # 司南随一份**司南专用**样板 daybook.conf（卷表空·空跑不崩）：pip 发行版的运行目录初始化
             # 以它为模板，缺此件则首跑即 FileNotFoundError（单装 daybook-orch 实测）。
-            # Sinan also ships a sample daybook.conf (empty volume table · runs without crashing):
+            # 抬头写 daybook-orch，不再照抄 mcp 样板。
+            # Sinan ships its own sample daybook.conf (empty volume table · runs without crashing):
             # the pip wrapper seeds the run directory from it; without it the first run dies with FileNotFoundError.
-            (['daybook.sample.conf'], 'daybook.conf'),
+            # Its header says daybook-orch, no longer copied from the mcp sample.
+            (['daybook.orch.conf', 'daybook.sample.conf'], 'daybook.conf'),
             (['orchestration_routing.conf', '编排_路由表.conf'], 'orchestration_routing.conf'),
             (['orchestration_roles.conf', '编排_角色.conf'], 'orchestration_roles.conf'),
         ],

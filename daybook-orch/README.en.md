@@ -41,9 +41,9 @@ table lookup** for "who should act, and up to which step"; truth stays in the vo
 
 | Primitive | Module | Office |
 |---|---|---|
-| Identity | `agent_registry.py` | Self-declared identity · registry only · **no signature verification yet** · append-only |
+| Identity | `agent_registry.py` | HMAC-SHA256 entry signatures (`[id=]`/`[sig=]`) · verified on read · key files 0600/0700 |
 | Task | `task_volume.py` | Five-state machine (below) · append-only · **never rewrites history** |
-| Lock | `agent_lock.py` | `fcntl.flock` + **TTL lease** (60 s default · renew / release / force-release · fenced token) |
+| Lock | `agent_lock.py` | `fcntl.flock` mutual exclusion · lease id for auditing (renew/sweep removed) |
 | Presence | `agent_heartbeat.py` | Heartbeat volume · dead if missing ≥3 cycles |
 | Message | `agent_message.py` | Unix socket (POSIX only) · `notify/request/response/broadcast` · one append-only message volume |
 | Reference | `cross_ref.py` | `[volume#Lline-SHA8]` · **tamper-proof** · reverse-lookup |
@@ -110,6 +110,21 @@ python3 orchestrator.py alarm            # health check
 - `@non-author` needs **≥2 candidates**; a single candidate falls to "pending" — **no guessing**.
 - `flock` is **process-level** mutual exclusion; cross-host requires a shared filesystem or higher-level coordination (consistent with daybook's "one ledger per person" stance).
 - The socket push in `agent_message.py` is **optional/attachable** (not hard-bound here, to avoid pulling in a service).
+
+## Batch 2 (unreleased)
+
+- `digest --limit`: `0` = all (explicit); positive = latest N; **negative is an error** (rc=2).
+- Empty volume table → `src=no-volumes` plus warnings on output **and** stderr; volume read failures and
+  cross-reference failures are explicit — **failures are never disguised as "nothing"**.
+- `alarm` judges by structural fields only (heartbeat timestamp + threshold, registry membership,
+  state-machine position); ghost owners are hard warnings.
+  **Exit codes:** 0 clean | 1 hard warning | 2 argument/file error | **3 execution error**.
+- `cross_ref.verify()` now **requires a baseline SHA8**; missing baseline raises instead of self-comparing.
+- `sock_path()` sanitizes agent names (no nested paths, rejects `.`/`..`/empty/over-long).
+- Dead code removed: `Agent.to_authors`, `safeio.read_json/write_json`, `AgentLock.renew/force_release/sweep`,
+  unused imports.
+- Performance: `digest` reads each volume once (indexed); `dead_agents` scans the heartbeat volume once.
+  See the performance table in the Chinese README (same numbers, script `orch_perf_bench.py`).
 
 ## Relation to the other two
 

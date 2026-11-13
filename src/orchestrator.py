@@ -70,16 +70,18 @@ Usage:
     python3 orchestrator.py alarm
     python3 orchestrator.py digest [--vol 卷] [--cls 类] [--push 收件人]   # v3.1 读多级目录·分发摘要
     python3 orchestrator.py selftest
-退出码：0 正常；1 alarm 有硬警；2 参数/文件错。
-Exit codes: 0 normal; 1 alarm has a hard warning; 2 argument/file error.
+退出码：0 正常；1 alarm 有硬警；2 参数/文件错；3 alarm 执行异常（读卷/解析失败）。
+Exit codes: 0 normal; 1 alarm has a hard warning; 2 argument/file error; 3 alarm execution error (volume read/parse failure).
 """
 import argparse
+import hashlib
 import io
 import os
 import re
 import secrets
 import sys
 import time
+from collections import namedtuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -138,6 +140,10 @@ SPLIT_TO = re.compile(r'[,，/]')
 ENTRY_FIELD_PREFIX = ('致=', 'id=', 're=', 'sig=', 'thread=')
 SIG_SCHEME = 'daybook-orch-entry-v1'
 
+# 体检结论：code=结构判据名；hard=是否硬警；msg=人读说明。
+# Health-check finding: code = structural criterion name; hard = whether it is a hard warning; msg = human-readable text.
+Alarm = namedtuple('Alarm', 'code hard msg')
+
 
 def entry_payload(now, kind, title, author, to, eid, re_ref, body):
     """条目签名的规范载荷（验签时从条头+正文同样重建）。
@@ -162,27 +168,109 @@ def entry_body(e):
     return full.rstrip('\n')
 
 
-def make_entry_ref(root, vol, lineno):
-    """生成互见引用 [卷#L行-SHA8]（v3.1）。复用 cross_ref 哈希算法·卷路径按 conf 卷表解析。失败返 ''。
-    Generate a cross-reference [volume#Lline-SHA8] (v3.1). Reuses the cross_ref hashing algorithm · the volume path is resolved via the conf volume table. Returns '' on failure."""
+class VolumeIndex:
+    """单次 digest 内的整卷索引：每卷只读一次，按行号取条目块并算 SHA8。
+    Per-digest whole-volume index: each volume is read once; entry blocks are sliced by line number for SHA8.
+
+    修前 digest 每出一条摘要就整卷重读一次（20 条＝20 次盘读＋20 次 conf 解析）；
+    本索引把「整卷读」与「逐条哈希」拆开：盘读 O(卷数)，条目哈希只算被展示的那几条。
+    Before: every digest line re-read the whole volume (20 lines = 20 disk reads + 20 conf parses).
+    This index separates "read the volume" from "hash one entry": disk reads = O(volumes),
+    and only the entries actually shown are hashed.
+    行号口径与 cross_ref._entry_at 完全一致：非条目头则向前找最近条目头；块止于下一条目头。
+    Line semantics match cross_ref._entry_at exactly: walk back to the nearest head when needed;
+    the block ends at the next head.
+    """
+    def __init__(self):
+        self._vols = {}
+        self._sha = {}
+        self.reads = 0
+
+    def _load(self, path):
+        it = self._vols.get(path)
+        if it is not None:
+            return it
+        from safeio import read_vol
+        text, enc, why = read_vol(path)
+        self.reads += 1
+        it = {'text': text, 'lines': text.split('\n'),
+              'enc': enc, 'why': why}
+        self._vols[path] = it
+        return it
+
+    def volume_text(self, path):
+        """整卷文本（同一次 digest 内只读一次）。
+        Whole-volume text (read once per digest)."""
+        return self._load(path)['text']
+
+    def entry_sha8(self, path, lineno, head_re):
+        """条目块 SHA-256 前 8 位（与 cross_ref._entry_hash 同口径）。无条目返 None。
+        First 8 hex of the entry block's SHA-256 (same rule as cross_ref._entry_hash). None when absent.
+
+        只对「被展示的那几条」做块边界搜索（O(块长)），不预建百万行条目头表。
+        Only the shown rows get a block-boundary search (O(block length)); no million-line head table is prebuilt.
+        行号口径：非条目头则向前找最近条目头；块止于下一条目头。
+        Line semantics: walk back to the nearest head when the line is not one; the block ends at the next head."""
+        lineno = int(lineno)
+        key = (path, lineno, head_re.pattern)
+        if key in self._sha:
+            return self._sha[key]
+        lines = self._load(path)['lines']
+        if lineno < 1 or lineno > len(lines):
+            return None
+        if not head_re.match(lines[lineno - 1]):
+            start = lineno
+            while start > 1 and not head_re.match(lines[start - 2]):
+                start -= 1
+            if not head_re.match(lines[start - 1]):
+                return None
+        else:
+            start = lineno
+        end = start
+        while end < len(lines) and not head_re.match(lines[end]):
+            end += 1
+        block = '\n'.join(lines[start - 1:end])
+        h = hashlib.sha256(block.encode('utf-8')).hexdigest()[:8]
+        self._sha[key] = h
+        return h
+
+
+def make_entry_ref(root, vol, lineno, vols=None, index=None):
+    """生成互见引用 [卷#L行-SHA8]（v3.1）。返回 (引用, 错误原因)；成功时错误为 ''。
+    Build a cross-reference [volume#Lline-SHA8] (v3.1). Returns (ref, error_reason); error is '' on success.
+
+    修前失败一律 `except Exception: return ''`，与「本来就没有引用」无法区分；
+    现在把失败原因显式交给调用方，另写 stderr 留痕。
+    Before, every failure was `except Exception: return ''`, indistinguishable from "no reference at all";
+    now the reason is returned explicitly and also written to stderr."""
     try:
         from cross_ref import CrossRef
-    except Exception:
-        return ''
-    vols = _load_volumes(root)
+    except Exception as exc:  # 导入失败也要看得见 · import failures must be visible too
+        err = 'cross_ref 导入失败：%s: %s' % (type(exc).__name__, exc)
+        sys.stderr.write('⚠ 互见引用失败（卷=%s 行=%s）：%s\n' % (vol, lineno, err))
+        return '', err
+    if vols is None:
+        vols = _load_volumes(root)
+    rel = vols.get(vol)
+    if not rel:
+        err = '卷 %s 不在 conf 卷表' % vol
+        sys.stderr.write('⚠ 互见引用失败（卷=%s 行=%s）：%s\n' % (vol, lineno, err))
+        return '', err
+    path = rel if os.path.isabs(rel) else os.path.join(root, rel)
 
-    def _vp(v, _vols=vols, _root=root):
-        rel = _vols.get(v)
-        if not rel:
+    def _vp(v, _path=path, _vol=vol):
+        if v != _vol:
             raise KeyError('volume %s not in conf volume table' % v)
-        return rel if os.path.isabs(rel) else os.path.join(_root, rel)
+        return _path
 
     try:
         cr = CrossRef(root=root)
         cr._vol_path = _vp
-        return cr.make_ref(vol, int(lineno))
-    except Exception:
-        return ''
+        return cr.make_ref(vol, int(lineno), index=index), ''
+    except Exception as exc:
+        err = '%s: %s' % (type(exc).__name__, exc)
+        sys.stderr.write('⚠ 互见引用失败（卷=%s 行=%s）：%s\n' % (vol, lineno, err))
+        return '', err
 
 
 # ── 路由：类[：关键词] → 角色；角色 → 人 ──────────────────────────────
@@ -228,13 +316,18 @@ def _load_volumes(root):
     return _vp.content_volumes(root)
 
 
-def read_multidx_rows(root):
+def read_multidx_rows(root, index=None):
     """读 <root>/multilevel/*_catalog.tsv（daybook_multidx 之产出；旧名 *_目录.tsv 亦认）。
-    返回 (rows, 来源)。来源 ∈ {'catalog','volume-fallback'}。
+    返回 (rows, 来源, 错误清单)。来源 ∈ {'catalog','volume-fallback','no-volumes'}。
     Read <root>/multilevel/*_catalog.tsv (the output of daybook_multidx; legacy *_目录.tsv also accepted).
-    Returns (rows, source). source ∈ {'catalog','volume-fallback'}."""
+    Returns (rows, source, errors). source ∈ {'catalog','volume-fallback','no-volumes'}.
+
+    修前：读目录失败静默 continue、卷表为空直接返回 0 条，二者都看着像「没有新条」；
+    现在把失败与空卷表都记入 errors，由 digest 显式标注。
+    Before: directory read failures were silently skipped and an empty volume table returned 0 rows —
+    both looked like "nothing new"; now both are recorded in errors and surfaced by digest."""
     d = os.path.join(root, 'multilevel')
-    rows = []
+    rows, errors = [], []
     if os.path.isdir(d):
         for fn in sorted(os.listdir(d)):
             if not (fn.endswith('_catalog.tsv') or fn.endswith('_目录.tsv')):
@@ -242,7 +335,8 @@ def read_multidx_rows(root):
             try:
                 lines = [l.rstrip('\n') for l in io.open(os.path.join(d, fn), encoding='utf-8')
                          if l.strip()]
-            except OSError:
+            except OSError as exc:
+                errors.append('目录件 %s 读取失败：%s' % (fn, exc))
                 continue
             if not lines:
                 continue
@@ -253,26 +347,40 @@ def read_multidx_rows(root):
                     cells = cells + [''] * (len(hdr) - len(cells))
                 rows.append(dict(zip(hdr, cells)))
     if rows:
-        return rows, 'catalog'
+        return rows, 'catalog', errors
     # 兜底：直读在册卷原文·自建 部(卷)/类(kind)/属(条目)（orch 单包自持可跑）
     # Fallback: read the registered volumes' raw text directly and build 部(volume)/类(kind)/属(entry) ourselves (so the orch package runs standalone)
-    for name, rel in _load_volumes(root).items():
+    vols = _load_volumes(root)
+    if not vols:
+        errors.append('卷表为空：%s 的 [volumes] 未登记任何内容卷' % os.path.join(root, 'daybook.conf'))
+        return [], 'no-volumes', errors
+    for name, rel in vols.items():
         path = rel if os.path.isabs(rel) else os.path.join(root, rel)
         if not os.path.exists(path):
+            errors.append('卷 %s 不存在：%s' % (name, path))
             continue
-        _, entries = _scan_vol_rows(path)
+        try:
+            _, entries = _scan_vol_rows(path, index=index)
+        except OSError as exc:
+            errors.append('卷 %s 读取失败：%s' % (name, exc))
+            continue
         for e in entries:
             rows.append({'volume': name, 'level2': e['kind'], 'line': str(e['lineno']),
                          'time': e['time'], 'category': e['kind'],
                          'author': e['author'], 'title': e['title']})
-    return rows, 'volume-fallback'
+    return rows, 'volume-fallback', errors
 
 
-def _scan_vol_rows(path):
+def _scan_vol_rows(path, index=None):
     """轻量扫卷：逐行找条目头·记录行号与条头字段。返回 (text, entries)。
-    Lightweight volume scan: find entry headers line by line · record line numbers and header fields. Returns (text, entries)."""
-    from safeio import read_vol
-    text, _enc, _why = read_vol(path)
+    Lightweight volume scan: find entry headers line by line · record line numbers and header fields. Returns (text, entries).
+    index 提供时复用整卷文本（同一次 digest 内不再重读）。
+    When index is given, reuse the whole-volume text (no re-read within the same digest)."""
+    if index is not None:
+        text = index.volume_text(path)
+    else:
+        from safeio import read_vol
+        text, _enc, _why = read_vol(path)
     entries, cur = [], None
     for i, line in enumerate(text.splitlines(), 1):
         m = HEAD.match(line.rstrip('\n'))
@@ -514,7 +622,7 @@ class Hub:
         """认领：加锁 → 校验当前态 → 迁移进行中 → 解锁。锁使「读-判-写」原子。
         Claim: lock → verify current state → transition to in-progress → unlock. The lock makes read-check-write atomic."""
         aid = self._actor(aid)
-        lease = self.lock.acquire('task:%s' % tid, aid, ttl=60)
+        lease = self.lock.acquire('task:%s' % tid, aid)
         if lease is None:
             return False, '并发争用：锁未获，请重试'
         try:
@@ -618,10 +726,18 @@ class Hub:
     # —— Distribution hooked to the directory (v3.1 · derived view · deletable and rebuildable) ——
     def digest(self, vol=None, cls=None, limit=20):
         """变动摘要：读多级目录（部→类→属）·给出「新条已挂进层级·带提要」的分发摘要。
-        返回 (lines, rows, src)。src ∈ {'catalog','volume-fallback'}。
+        返回 (lines, rows, src)。src ∈ {'catalog','volume-fallback','no-volumes'}。
+        limit：0=全部；正数=最近 N 条；负数=参数错（ValueError）。
         Change digest: read the multi-level directory (部→类→属) · produce a distribution digest of "new entries already attached to the hierarchy, with summaries".
-        Returns (lines, rows, src). src ∈ {'catalog','volume-fallback'}."""
-        rows, src = read_multidx_rows(self.root)
+        Returns (lines, rows, src). src ∈ {'catalog','volume-fallback','no-volumes'}.
+        limit: 0 = all; positive = the most recent N; negative = argument error (ValueError)."""
+        if limit is None:
+            limit = 0
+        if limit < 0:
+            raise ValueError('limit 必须 ≥ 0（0=全部，正数=最近 N 条）')
+        index = VolumeIndex()
+        rows, src, errors = read_multidx_rows(self.root, index=index)
+        vols = _load_volumes(self.root)
         if vol:
             rows = [r for r in rows if r.get('volume') == vol]
         if cls:
@@ -633,19 +749,33 @@ class Hub:
             except ValueError:
                 return 0
         rows = sorted(rows, key=lambda r: (r.get('time', ''), _ln(r)))
-        shown = rows[-limit:] if limit and len(rows) > limit else rows  # 取最近（尾部）
-                                                                         # take the most recent (tail)
+        shown = rows if limit == 0 else (rows[-limit:] if len(rows) > limit else rows)  # 取最近（尾部）
+                                                                                        # take the most recent (tail)
 
         head = '变动摘要（%s·%d 条%s）' % (
             src, len(rows), '' if not vol else '·volume=%s' % vol)
         lines = [head]
+        if src == 'no-volumes':
+            lines.append('  ⚠ 卷表为空：0 条不代表「没有新条」，是没登记卷（见 %s）'
+                         % os.path.join(self.root, 'daybook.conf'))
+        for e in errors:
+            sys.stderr.write('⚠ digest：%s\n' % e)
+            lines.append('  ⚠ %s' % e)
+        ref_errors = 0
         for r in shown:
-            ref = make_entry_ref(self.root, r.get('volume', ''), r.get('line', '0'))  # 互见层来源
-                                                                                      # source of the cross-reference layer
+            ref, err = make_entry_ref(self.root, r.get('volume', ''), r.get('line', '0'),
+                                      vols=vols, index=index)  # 互见层来源
+                                                               # source of the cross-reference layer
+            if err:
+                ref_errors += 1
+                ref_txt = '  ↪[互见失败:%s]' % err[:60]
+            else:
+                ref_txt = ('  ↪%s' % ref) if ref else ''
             lines.append('  部.%s ▸ 类.%s ▸ 属.%s  [%s#L%s]%s' % (
                 r.get('volume', ''), r.get('level2', '') or r.get('category', ''),
-                r.get('title', ''), r.get('volume', ''), r.get('line', '0'),
-                ('  ↪%s' % ref) if ref else ''))
+                r.get('title', ''), r.get('volume', ''), r.get('line', '0'), ref_txt))
+        if ref_errors:
+            lines.append('  ⚠ %d 条互见引用失败（原因见 stderr；不当作「没有引用」）' % ref_errors)
         return lines, rows, src
 
     def push_digest(self, to, vol=None, cls=None, limit=20):
@@ -666,22 +796,31 @@ class Hub:
     # —— 体检 ——
     # —— Health check ——
     def alarm(self):
-        issues = []
+        """体检：返回 [Alarm(code, hard, msg)]。判据只按结构字段（心跳时间戳+阈值、注册表成员、状态机位置），
+        不比对任何自产的中文字串——修前 `'失联' in msg` 这类判据会让幽灵负责人也判「干净」。
+        Health check: returns [Alarm(code, hard, msg)]. Criteria use structural fields only
+        (heartbeat timestamp + threshold, registry membership, state-machine position), never
+        self-produced Chinese substrings — before, `'失联' in msg` let ghost owners pass as "clean"."""
+        out = []
         dead = self.hb.dead_agents()
+        dead_set = set(dead)
         if dead:
-            issues.append('失联 agent：%s' % '、'.join(dead))
-        for tid, st, ag, ct, _hist in self.tv.list():
-            if st in ('进行中', '待审') and ag in dead:
-                issues.append('孤儿任务：%s [%s] 由失联 %s 持有' % (tid, st, ag))
-            if st == '完成':
-                issues.append('滞留：%s 停在[完成]、未推进[待审]' % tid)
-        # 任务卷里出现、注册卷里没有的负责人（幽灵）
-        # Owners that appear in the task volume but not in the registry (ghosts)
+            out.append(Alarm('dead_agents', True, '失联 agent：%s' % '、'.join(dead)))
+        tasks = self.tv.list()
         reg_ids = {a.agent_id for a in self.reg.list()}
-        for tid, st, ag, ct, _hist in self.tv.list():
+        for tid, st, ag, ct, _hist in tasks:
+            if st in ('进行中', '待审') and ag in dead_set:
+                out.append(Alarm('orphan_task', True,
+                                 '孤儿任务：%s [%s] 由失联 %s 持有' % (tid, st, ag)))
+            if st == '完成':
+                out.append(Alarm('stalled_done', False,
+                                 '滞留：%s 停在[完成]、未推进[待审]' % tid))
+            # 任务卷里出现、注册卷里没有的负责人（幽灵）——硬警，修前只会判「干净」
+            # Owners that appear in the task volume but not in the registry (ghosts) — a hard warning; before, they passed as "clean"
             if ag and ag not in reg_ids:
-                issues.append('幽灵负责人：%s 的 %s 未在注册卷' % (tid, ag))
-        return issues
+                out.append(Alarm('ghost_owner', True,
+                                 '幽灵负责人：%s 的 %s 未在注册卷' % (tid, ag)))
+        return out
 
 
 # ── CLI ──────────────────────────────────────────────────────────────
@@ -756,18 +895,29 @@ def main(argv=None):
                                             # v3.1: read the multi-level directory · distribution digest
     p.add_argument('--vol', default='')
     p.add_argument('--cls', default='')
-    p.add_argument('--limit', type=int, default=20)
+    p.add_argument('--limit', type=int, default=20,
+                   help='只取最近 N 条；0=全部；负数非法（默认 20）')
     p.add_argument('--push', default='', help='推送给收件人（逗号分隔·走 agent_message·不在线不阻断）')
     sub.add_parser('selftest')
 
     args = ap.parse_args(argv)
+    if args.cmd == 'digest' and args.limit < 0:
+        ap.error('--limit 必须 ≥ 0（0=全部，正数=最近 N 条）')
     if args.cmd == 'selftest':
         return _selftest()
     if not args.cmd:
         ap.print_help()
         return 2
 
-    hub = Hub(root=args.root, rule=args.rule, roles=args.roles)
+    try:
+        hub = Hub(root=args.root, rule=args.rule, roles=args.roles)
+    except Exception as exc:  # 初始化失败也不许与「有硬警」共用 rc=1 · init failures must not share rc=1 with hard warnings
+        sys.stderr.write('⚠ 初始化失败：%s: %s\n' % (type(exc).__name__, exc))
+        if args.cmd == 'alarm':
+            print('== 编排体检 ==')
+            print('判：执行异常（rc=3）')
+            return 3
+        return 2
 
     if args.cmd == 'join':
         aid, secret = hub.join(args.name)
@@ -807,11 +957,17 @@ def main(argv=None):
     elif args.cmd == 'board':
         _print_board(hub)
     elif args.cmd == 'alarm':
-        issues = hub.alarm()
+        try:
+            issues = hub.alarm()
+        except Exception as exc:  # 执行异常与「有硬警」必须分开退出码 · execution errors vs hard warnings need distinct exit codes
+            sys.stderr.write('⚠ 体检执行失败：%s: %s\n' % (type(exc).__name__, exc))
+            print('== 编排体检 ==')
+            print('判：执行异常（rc=3）')
+            return 3
         print('== 编排体检 ==')
         for it in issues:
-            print('  · ' + it)
-        hard = any('失联' in it or '孤儿' in it for it in issues)
+            print('  · [%s]%s %s' % (it.code, '★' if it.hard else '·', it.msg))
+        hard = any(it.hard for it in issues)
         print('判：%s' % ('★ 有硬警' if hard else '干净'))
         return 1 if hard else 0
     return 0
@@ -831,6 +987,20 @@ def _selftest():
         ok = ok and bool(cond)
 
     try:
+        # 造一个自洽根：目录件引用的卷必须在 conf 卷表里，否则互见引用会显式报失败。
+        # Build a self-consistent root: volumes referenced by the catalogue must be registered
+        # in conf, otherwise cross-references explicitly report failure.
+        with io.open(os.path.join(root, 'daybook.conf'), 'w', encoding='utf-8') as f:
+            f.write('[volumes]\n协作=协作卷.txt\n')
+        vol_lines = []
+        for i in range(1, 26):
+            if i in (12, 20):
+                vol_lines.append('[2026-10-15 09:00] [报] [交活 T%03d] [汤姆]' % i)
+            else:
+                vol_lines.append('')
+        with io.open(os.path.join(root, '协作卷.txt'), 'w', encoding='utf-8') as f:
+            f.write('\n'.join(vol_lines) + '\n')
+
         hub = Hub(root=root)          # 规则取默认两份 conf（orchestration_routing.conf / orchestration_roles.conf）
                                       # rules come from the two default confs (orchestration_routing.conf / orchestration_roles.conf)
 
@@ -881,6 +1051,7 @@ def _selftest():
         dl, drows, dsrc = hub.digest(vol='协作')
         chk(dsrc == 'catalog' and len(drows) == 2 and any('部.协作' in x for x in dl),
             'digest：读多级目录（英文名/表头）→ 部▸类▸属 摘要（来源=%s）' % dsrc)
+        chk(not any('互见失败' in x for x in dl), 'digest：互见引用生成成功（无静默失败）')
         _dl2, drows2, _s2 = hub.digest(cls='核')
         chk(len(drows2) == 1, 'digest：按类过滤命中 1 条')
         # ② 旧中文名/旧中文表头（compat 别名）/ legacy Chinese name + header (compat alias)
@@ -894,7 +1065,7 @@ def _selftest():
             'digest：读多级目录（旧中文名/表头兼容）→ 摘要（来源=%s）' % dsrc3)
 
         issues = hub.alarm()
-        print('  体检：' + '；'.join(issues))
+        print('  体检：' + '；'.join(i.msg for i in issues))
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

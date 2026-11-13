@@ -22,10 +22,10 @@ Usage:
   cr = CrossRef(root='.')
   ref = cr.make_ref('协作卷', 1392)            # 生成引用字符串 · build the reference string
   entry = cr.resolve('协作卷', 1392)          # 读条目原文 · read the entry text
-  ok  = cr.verify('协作卷', 1392)             # 校验 hash · verify the hash
+  ok  = cr.verify('协作卷', 1392, 'a1b2c3d4') # 校验 hash（必须给基准）· verify the hash (baseline required)
   backs = cr.find_backrefs('协作卷', 1392)    # 反向引用 · back-references
 """
-import os, re, hashlib
+import os, re, sys, hashlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -137,19 +137,22 @@ class CrossRef:
         return _entry_at(text, lineno)
 
     def verify(self, vol, lineno, sha_prefix=None):
-        """校验 hash·不指定 sha_prefix 则自算自比（条目存在即通过）。
-        Verify the hash · if sha_prefix is not given, compute and compare against itself (passes as long as the entry exists).
-        指定 sha_prefix 则 hash 不匹配报 False（条目被篡改）。
-        If sha_prefix is given, a hash mismatch returns False (the entry has been tampered with).
-        """
+        """校验 hash。**必须给基准**：缺基准直接报错，绝不自算自比。
+        Verify the hash. **A baseline is mandatory**: missing baseline raises, never self-compares.
+        修前不传基准即「条目存在就通过」，对外宣称可校验是硬伤。
+        Before, omitting the baseline meant "passes as long as the entry exists" — a hard flaw for a verifier.
+        sha_prefix 须为 8 位小写 hex；不匹配返回 False（条目被篡改或基准错）。
+        sha_prefix must be 8 lowercase hex chars; a mismatch returns False (entry tampered with, or wrong baseline)."""
+        if not sha_prefix:
+            raise ValueError('verify 需要基准 SHA8（[卷#L行-SHA8] 的后 8 位）；拒绝无基准自比')
+        if not re.match(r'^[0-9a-f]{8}$', sha_prefix):
+            raise ValueError('基准 SHA8 格式非法（须 8 位小写 hex）：%r' % (sha_prefix,))
         path = self._vol_path(vol)
         text = _read_text(path)
         cur = self._entry_hash(text, lineno)
         if cur is None:
             return False
-        if sha_prefix and cur != sha_prefix:
-            return False
-        return True
+        return cur == sha_prefix
 
     def parse(self, ref_str):
         """解析引用字符串·返回 (卷名, 行号, sha前8位)。
@@ -207,7 +210,6 @@ class CrossRef:
 
 
 def main():
-    import sys
     if len(sys.argv) < 2:
         print(__doc__); return 1
     cr = CrossRef()
@@ -223,8 +225,15 @@ def main():
         else:
             print('（无条目）')
     elif cmd == 'verify' and len(sys.argv) >= 4:
-        sha = sys.argv[4] if len(sys.argv) >= 5 else None
-        print('verify: %s' % ('PASS' if cr.verify(sys.argv[2], int(sys.argv[3]), sha) else 'FAIL'))
+        if len(sys.argv) < 5:
+            sys.stderr.write('verify 需要基准 SHA8：cross_ref.py verify <卷> <行号> <sha8>\n')
+            return 2
+        try:
+            ok = cr.verify(sys.argv[2], int(sys.argv[3]), sys.argv[4])
+        except ValueError as exc:
+            sys.stderr.write('%s\n' % exc)
+            return 2
+        print('verify: %s' % ('PASS' if ok else 'FAIL'))
     elif cmd == 'parse' and len(sys.argv) >= 3:
         print(cr.parse(sys.argv[2]))
     elif cmd == 'backrefs' and len(sys.argv) >= 4:

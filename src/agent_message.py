@@ -34,7 +34,7 @@ Usage:
   # 客户端发消息 · client sends a message
   python3 agent_message.py send 汤姆 史泰龙 notify "MCP resources/list 已实现"
 """
-import os, sys, time, json, socket, socketserver, threading
+import os, sys, time, json, socket, socketserver
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -58,8 +58,29 @@ def _now():
     return time.strftime('%Y-%m-%d %H:%M:%S')
 
 
+def _safe_agent_token(agent_name):
+    """agent 名 → socket 文件名 token：去路径分隔符与控制字符，保留 Unicode（中文名照用）。
+    拒绝空、'.'、'..'（防止路径穿越与落到父目录）。
+    Agent name → socket filename token: strip path separators and control chars, keep Unicode
+    (Chinese names still work). Reject empty, '.', '..' (prevents traversal and parent-dir escapes)."""
+    s = str(agent_name or '').replace('\x00', '').strip()
+    for sep in ('/', '\\', os.sep, os.altsep):
+        if sep:
+            s = s.replace(sep, '_')
+    if s in ('', '.', '..'):
+        raise ValueError('非法 agent 名（不能为空、. 或 ..）：%r' % (agent_name,))
+    return s
+
+
 def sock_path(agent_name):
-    return os.path.join(SOCK_DIR, 'daybook_agent_%s.sock' % agent_name)
+    """agent 名的 socket 路径。名字先净化，且不得超过 sockaddr_un 的路径上限。
+    Socket path for an agent name. The name is sanitized first and the path must fit sockaddr_un."""
+    path = os.path.join(SOCK_DIR, 'daybook_agent_%s.sock' % _safe_agent_token(agent_name))
+    # Linux/macOS 的 sockaddr_un.sun_path 通常 104/108 字节（含结尾 NUL）；超出即无法 bind/connect。
+    # Linux/macOS sockaddr_un.sun_path is typically 104/108 bytes including the trailing NUL; longer cannot bind/connect.
+    if len(os.fsencode(path)) >= 104:
+        raise ValueError('socket 路径过长（%d 字节 ≥104）：%s' % (len(os.fsencode(path)), path))
+    return path
 
 
 def encode(msg):
@@ -152,7 +173,10 @@ def send(from_name, to_name, mtype, content, root=None):
     """客户端发送·返回 (ok, reply_or_error)。
     Client send · returns (ok, reply_or_error)."""
     msg = {'from': from_name, 'to': to_name, 'type': mtype, 'content': content}
-    path = sock_path(to_name)
+    try:
+        path = sock_path(to_name)
+    except ValueError as exc:
+        return False, str(exc)
     if not os.path.exists(path):
         return False, 'Agent %s 不在线（socket 不存在）' % to_name
     try:
@@ -193,7 +217,11 @@ def main():
     cmd = argv[0]
     if cmd == 'serve' and len(argv) >= 2:
         name = argv[1]
-        srv = AgentServer(name, root=root)
+        try:
+            srv = AgentServer(name, root=root)
+        except ValueError as exc:
+            sys.stderr.write('%s\n' % exc)
+            return 2
         print('Agent %s 监听 %s' % (name, srv.sock_path))
         print('消息卷 %s' % inbox_path(root))
         try:

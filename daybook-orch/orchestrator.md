@@ -39,7 +39,7 @@
 |---|---|---|---|
 | 身份 | `agent_registry.py` | 密钥文件（0600/0700）+ HMAC-SHA256：条目头带 `[id=]`/`[re=]`/`[sig=]`，读取验签 | `join` 发号・`who` 在场 |
 | 任务 | `task_volume.py` | 待办→进行中→完成→待审→已审（终态拒迁） | `open/claim/submit/review` |
-| 锁 | `agent_lock.py` | `fcntl.flock` + TTL 租约 | `claim` 用锁把「读-判-写」变原子 |
+| 锁 | `agent_lock.py` | `fcntl.flock`（进程级互斥；lease id 仅作审计） | `claim` 用锁把「读-判-写」变原子 |
 | 在场 | `agent_heartbeat.py` | 心跳卷，缺 ≥3 周期判 dead | `alarm` 找失联 |
 | 消息 | `agent_message.py` | Unix socket + `[致=]` 寻址 | 与路由同址，可接推送 |
 | 引用 | `cross_ref.py` | `[卷#L行-SHA8]` 防篡改 | 交活可带证据引用 |
@@ -72,10 +72,14 @@ python3 daybook.py 编排 submit T001 ag-xxxx --to 皮特 --note "已交"
 python3 daybook.py 编排 pull 皮特            # 取件（路由投影）
 python3 daybook.py 编排 review T001 ag-yyyy 通过
 python3 daybook.py 编排 board               # 看板（按状态）
-python3 daybook.py 编排 alarm               # 体检（失联/孤儿/滞留）
+python3 daybook.py 编排 alarm               # 体检（硬警/软警按结构字段判；见下退出码）
+python3 daybook.py 编排 digest --limit 5    # 变动摘要（0=全部；负数非法）
 python3 daybook.py 编排 selftest            # 端到端自检
 ```
 `--root DIR` 指定卷根（默认本包自身）；`--rule/--roles` 换路由表/角色表。
+
+退出码（`alarm`）：0 干净｜1 有硬警｜2 参数/文件错｜3 体检执行异常（读卷/解析失败）。
+`digest`：卷表为空报 `no-volumes`，卷读失败与互见引用失败均显式标注（输出 + stderr），不伪装成「没有」。
 
 两张表（纯文本·人可读可改，不藏在码里）：
 - `orchestration_routing.conf`：`类[：关键词] = 角色`（如 `报=review`、`报:驳回=rework`）
@@ -130,6 +134,9 @@ python3 daybook.py 编排 selftest            # 端到端自检
 - 路由只对**已知类**确定性；未命中类的条落「广播」，不猜。
 - `@non-author` 只在**两个以上**候选时可算唯一/多手；一名候选时退「待定」，不猜。
 - 锁 `flock` 是进程级互斥，跨主机并发须靠共享文件系统或上层协调（与 daybook「一人一账本」定位一致）。
+- `cross_ref.verify()` **必须传基准 SHA8**；缺基准直接报错，不做「自算自比」。
+- 心跳判死只看**时间戳 + 阈值**；体检硬警看**结构字段**，不比对自产中文字串。
+- `sock_path()` 净化 agent 名（拒绝空/`.`/`..`/超长），不生成嵌套路径。
 - 与 `agent_message.py` 的 socket 推送是**可接**关系（本件未强绑，避免引服务）。
 
 ---

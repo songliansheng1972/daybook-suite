@@ -50,29 +50,39 @@ class Heartbeat:
         atomic_append(self.path, rec)
         return True
 
-    def _last_beat(self, agent_id):
-        """单遍扫描心跳卷·返回 agent 最后心跳时间戳。
-        Single-pass scan of the heartbeat volume · return the agent's last heartbeat timestamp."""
-        import re as _re
-        _aid_pat = _re.compile(r'^\[[^\]]+\] \[心跳\] \[%s\] ' % _re.escape(agent_id))
-        last_str = None
+    def _last_beats(self):
+        """单遍扫心跳卷 → {agent_id: 最后心跳 epoch}。整卷只读一次。
+        Single pass over the heartbeat volume → {agent_id: last heartbeat epoch}. One volume read only.
+        修前 dead_agents 对每个 agent 各调一次 is_alive，每个 agent 都把整卷重读一遍；
+        现在一次扫描拿到全部最后时间戳，再按阈值比较。
+        Before, dead_agents called is_alive per agent, re-reading the whole volume for each;
+        now one scan collects every last timestamp, then compares against the threshold."""
+        last = {}
         from safeio import read_vol
         text, _enc, _why = read_vol(self.path)
         for line in text.splitlines():
             # [时间] [心跳] [agent_id] alive
             # Entry format: [time] [heartbeat] [agent_id] alive
-            if _aid_pat.match(line) and 'alive' in line:
-                try:
-                    ts_str = line.split(']')[0].lstrip(' [').strip()
-                    last_str = ts_str
-                except Exception:
-                    continue
-        if not last_str:
-            return None
-        try:
-            return time.mktime(time.strptime(last_str, '%Y-%m-%d %H:%M:%S'))
-        except ValueError:
-            return None
+            if '[心跳]' not in line or 'alive' not in line:
+                continue
+            parts = [p.strip(' []') for p in line.split(']') if p.strip()]
+            if len(parts) < 3:
+                continue
+            agent_id = parts[2]
+            if not agent_id or agent_id in ('心跳', 'alive'):
+                continue
+            try:
+                ts = time.mktime(time.strptime(parts[0], '%Y-%m-%d %H:%M:%S'))
+            except ValueError:
+                continue
+            if agent_id not in last or ts > last[agent_id]:
+                last[agent_id] = ts
+        return last
+
+    def _last_beat(self, agent_id):
+        """单 agent 最后心跳时间戳（单遍扫描）。
+        Last heartbeat timestamp for one agent (single pass)."""
+        return self._last_beats().get(agent_id)
 
     def is_alive(self, agent_id):
         """缺心跳 > dead_after 周期 → False。
@@ -83,22 +93,11 @@ class Heartbeat:
         return (_now_ts() - last) < (self.period * self.dead_after)
 
     def dead_agents(self):
-        """扫所有出现过的 agent_id·返回 dead 列表。
-        Scan all agent_ids ever seen · return the dead list."""
-        agents = set()
-        from safeio import read_vol
-        text, _enc, _why = read_vol(self.path)
-        for line in text.splitlines():
-            if '[心跳]' not in line or 'alive' not in line:
-                continue
-            # [时间] [心跳] [agent_id] alive → parts[2] 是 agent_id · parts[2] is the agent_id
-            parts = [p.strip(' []') for p in line.split(']') if p.strip()]
-            if len(parts) < 3:
-                continue
-            agent_id = parts[2]
-            if agent_id and agent_id not in ('心跳', 'alive'):
-                agents.add(agent_id)
-        return [a for a in agents if not self.is_alive(a)]
+        """扫所有出现过的 agent_id·返回 dead 列表（单遍扫描 + 时间戳阈值，不按字串判断）。
+        Scan all agent_ids ever seen · return the dead list (one scan + timestamp threshold, never substring matching)."""
+        now = _now_ts()
+        limit = self.period * self.dead_after
+        return [a for a, ts in self._last_beats().items() if (now - ts) >= limit]
 
     def recover(self, agent_id):
         """恢复：写一条 alive 条目·reset 计时。

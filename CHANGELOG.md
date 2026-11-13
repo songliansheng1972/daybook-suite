@@ -7,6 +7,68 @@
 
 ---
 
+## 未发布 · 2026-11-14
+
+**内容**：`daybook-orch`（司南）第二批完善——行为缺陷 5 项、性能 2 项、测试覆盖与文档。
+版本号未改、未打包、未上传、未 push；只动 `daybook-orch/` 并同步 `src/` 副本。
+
+### 修复（改前 → 改后）
+
+1. **`digest` 兜底恒 0 / 跨卷引用静默返回空 → 失败可见**
+   - 改前：`make_entry_ref` 一律 `except Exception: return ''`；卷表为空或读失败时安静返回 0 条，看着像「没有新条」。
+   - 改后：引用失败返回原因并在**输出**标 `↪[互见失败:…]`、**stderr** 留痕；卷表为空报 `src=no-volumes` 并双告警；卷不存在/读失败逐条列出；摘要末尾汇总失败条数。`make_entry_ref` 现返回 `(ref, err)`。
+
+2. **`alarm` 自产中文字串当判据 → 结构字段判据 + 退出码拆分**
+   - 改前：`any('失联' in it …)` 判硬警，幽灵负责人也判「干净」。
+   - 改后：`alarm()` 返回 `Alarm(code, hard, msg)`。硬警只看结构字段：心跳**时间戳+阈值**（`dead_agents`）、**注册表成员**（`ghost_owner`）、**状态机位置**（`orphan_task`）；`stalled_done` 为软警。
+   - 退出码：0 干净｜1 有硬警｜2 参数/文件错｜**3 体检执行异常**（读卷/解析失败）。异常不再与硬警共用 1。
+
+3. **`cross_ref.verify()` 无前缀自比自过 → 必须给基准**
+   - 改前：不传 `sha_prefix` 时「条目存在即通过」，对外宣称可校验是硬伤。
+   - 改后：缺基准抛 `ValueError`；基准须 8 位小写 hex；CLI 缺基准 rc=2。顺带修掉 `cross_ref.py` CLI 顶层缺 `import sys` 导致的 `NameError`（此前 CLI 实际跑不通）。
+
+4. **`--limit 0` 全量 / `--limit -1` 少一条 → 统一语义**
+   - 改前：`limit` 为假值即全量，负数走 `rows[1:]`。
+   - 改后：`0`=全部（显式）；正数=最近 N 条；**负数非法**（`ValueError` / CLI rc=2）。帮助文本写明「0=全部；负数非法」。
+
+5. **`sock_path` 未净化 / conf 抬头照抄 mcp / 死开关死代码**
+   - `sock_path()` 先净化 agent 名：去路径分隔符与控制字符（中文名照用），拒绝空/`.`/`..`/超长（≥104 字节）；`send` 捕获并返回失败原因，`serve` 非法名 rc=2。
+   - `daybook.conf` 改为**司南专用样板**，抬头不再写「daybook-mcp 包内置样板」；新增 `src/daybook.orch.conf` 并在 `pack.py` 的 `conf_rename` 中优先取用。
+   - 删除（点名）：`Agent.to_authors`、`safeio.read_json` / `write_json`、`AgentLock.renew` / `force_release` / `sweep`（连同 TTL/`expires` 与 CLI `renew`/`sweep`）、未用导入 `agent_registry.json`、`agent_message.threading`、`agent_lock.json`、`safeio.io`、`daybook_append.io`。
+   - **误报保留**：工作单称 `import time` 未用；实测 `orchestrator.py` 的 `_log` 使用 `time.strftime`，未删。
+
+### 性能（同一批数据·修前 → 修后）
+
+脚本 `daybook-orch/orch_perf_bench.py`；HEAD `d9c4225`；起跑 `2026-11-14 01:05:29`（百万行 `01:05:31`）。
+
+| 场景 | 数据 | 修前 | 修后 |
+|---|---|---|---|
+| `digest`（20 行） | 1 卷 / 24 条 / 22,800 B | 卷读 21 次 / 478,800 B / 6.20 ms | 卷读 1 次 / 22,800 B / 0.75 ms |
+| `dead_agents` | 200 agent × 5 心跳 / 46,000 B | 卷读 201 次 / 9,246,000 B / 1495.19 ms | 卷读 1 次 / 46,000 B / 10.00 ms |
+| `digest` 百万行 | 1 卷 / 1,000,000 条 / 73,888,900 B | 卷读 21 次 / 1,551,666,900 B / 9493.11 ms | 卷读 1 次 / 73,888,900 B / 6704.80 ms |
+
+- 修法（算法级，非调常数）：`digest` 新增 `VolumeIndex`，**整卷读一次**、条目块按行号懒搜索（`O(块长)`）；不再「每条摘要整卷重读 + 每次重解析 conf」。`dead_agents` 改**单遍**收集最后心跳，再按阈值比较，不再每个 agent 重扫全卷。
+- 百万量级：盘读从 **1.55 GB → 73.9 MB（21×）**。剩余耗时来自兜底直扫 + 全量排序（修前修后同样存在，不属本次回归）；有 `multilevel` 目录件时走目录，不直扫原卷。页缓存会掩盖重复读的 I/O 成本，故以**盘读字节**为硬指标。
+
+### 测试
+
+- `orch_fixes_test.py` 新增 5-12：`route` 确定性查表、`digest` 可见性/`--limit`、`alarm` 结构与退出码（含仅幽灵负责人场景）、CLI `--limit`、**真跨进程锁**（6 进程同刻抢锁恰好 1 个成功）、`verify` 缺基准、`sock_path`/死代码、单遍读性能。
+- `orch_mutation_check.py` 新增 7 条变异（6-12）：静默 0 条、字串硬警、旧 `limit`、不 `flock`、自比自过、不净化、逐条重读 + 逐 agent 重扫。
+- 结果：**11/11 红→绿**（批次一 4 + 批次二 7），两遍读数均留。
+
+### 压测脚本（如实）
+
+- 仓内可查：`src/test/benchmark_365k.py`（36.5 万条全量读/索引）、`src/daybook_test.py`（600 并发追加、逐条完整且仅一次）；历史 CHANGELOG v1.7 E-06 记有 100 万条（107 MB，写入 69 s / 索引 8.4 s）等读数。
+- **「100 万条记录 + 1000 并发」单一压测脚本/日志：待补**（仓内未找到，不编造读数）。找到后须同时写明零错判据：总行数对账 + 逐条内容校验。
+
+### 文件
+
+- 新增：`daybook-orch/orch_perf_bench.py`、`src/daybook.orch.conf`（均登记 `pack.py`）。
+- 同步：`daybook-orch/*` → `src/`（md5 全同）。
+- `daybook/`、`daybook-mcp/` 本轮不动；共享件（`safeio.py` 等）待发布步统一对齐。
+
+---
+
 ## v4.0.3 · 2026-11-14
 
 **内容**：司南消息总线四条缺陷修复（源码提交 `99b858b`），新增 `volume_paths.py` 与两条回归脚本。
