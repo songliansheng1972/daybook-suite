@@ -32,7 +32,7 @@ import os, sys, re, time, io
 
 # 复用 daybook_append 的原子写 · reuse daybook_append's atomic write
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from daybook_append import append_one, get_pipe_buf
+from daybook_append import append_one, get_pipe_buf, _head_tokens
 
 
 def load_keywords(kw_path):
@@ -94,7 +94,7 @@ def parse_dialog(dialog_path, root='.'):
         return []
     from safeio import read_vol
     txt, _enc, _why = read_vol(dialog_path)
-    head_re = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\]')
+    head_re = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]')
     # 对话卷条目格式：[时间] [类] [标题] [作者] 对话原件/xxx.txt\nSHA256: ...
     # Dialog entry format: [time] [kind] [title] [author] original-path.txt \n SHA256: ...
     blocks = []
@@ -111,11 +111,15 @@ def parse_dialog(dialog_path, root='.'):
             cur_line = line
             cur_start = ln
             cur_text = line
-            # 解析 [时间][类][标题][作者] 对话原件/xxx.txt · parse [time][kind][title][author] original-path.txt
-            tag_re = re.compile(r'^\[[^\]]+\]\s*\[([^\]]+)\]\s*\[([^\]]*)\](?:\s*\[([^\]]*)\])?\s*(对话原件/[^\s]+\.txt)')
-            m = tag_re.match(line)
-            if m:
-                cur_meta = (m.group(1), m.group(2), m.group(3) or '未标', m.group(4))
+            # 解析条头走 _head_tokens（唯一实现）：[名=…]/[id=…]/[未注册] 等附注段
+            # 不会把标题/作者错位，也不会让整条静默跳过。
+            # Head parsing goes through _head_tokens (single implementation): annotation tokens
+            # such as [名=…]/[id=…]/[未注册] no longer shift title/author or silently drop the entry.
+            toks = _head_tokens(line)
+            pm = re.search(r'(对话原件/[^\s]+\.txt)', line)
+            if pm and len(toks) >= 3:
+                cur_meta = (toks[1], toks[2],
+                            toks[3] if len(toks) > 3 else '未标', pm.group(1))
             else:
                 cur_meta = None
         elif cur_line is not None:

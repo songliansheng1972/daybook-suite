@@ -38,7 +38,7 @@ AID = 'ag-0123456789abcdef'
 
 CONF = r"""[volumes]
 协作=协作卷.txt
-task=任务卷.txt
+task=我的任务.txt
 locks=.locks
 audit=.audit
 registry=注册卷.txt
@@ -94,20 +94,23 @@ def test_volume_whitelist(tmp):
     # Real layout: content volumes are real files (even keyed task/registry); locks/audit are dirs
     root = os.path.join(tmp, 'confroot')
     os.makedirs(root)
-    for name in ('协作卷.txt', '任务卷.txt', '注册卷.txt'):
+    for name in ('协作卷.txt', '我的任务.txt', '注册卷.txt'):
         _write(os.path.join(root, name), '')
     os.makedirs(os.path.join(root, '.locks'))
     os.makedirs(os.path.join(root, '.audit'))
     conf_path = os.path.join(root, 'daybook.conf')
     _write(conf_path, CONF)
     conf = daybook.load_conf(conf_path)
-    _ok('③1 合法内容卷不因键名被吞（task/registry 都在）',
-        set(conf['volumes']) == {'协作', 'task', 'registry'}, str(conf['volumes']))
-    _ok('③2 目录型非卷键（locks/audit）显式跳过并留痕',
-        set(conf.get('volumes_skipped', {})) == {'locks', 'audit'},
+    _ok('③1 合法内容卷不因键名被吞（task 指向用户自己的文件）',
+        set(conf['volumes']) == {'协作', 'task'}, str(conf['volumes']))
+    _ok('③2 内部卷/目录型非卷键不进索引面，且留痕',
+        set(conf.get('volumes_skipped', {})) == {'locks', 'audit', 'registry'},
         str(conf.get('volumes_skipped', {})))
-    _ok('③2b 跳过理由写明「目录」',
-        all('目录' in v.get('reason', '') for v in conf['volumes_skipped'].values()))
+    _ok('③2b 跳过理由写明「内部卷」或「目录」',
+        all(('内部卷' in v.get('reason', '')) or ('目录' in v.get('reason', ''))
+            for v in conf['volumes_skipped'].values()))
+    _ok('③2c 内部卷仍在 _files 备份面',
+        set(conf.get('_files', {})) == {'协作', 'task', 'registry'}, str(conf.get('_files')))
 
     # 变异：退回「只按键名」的旧白名单 ⇒ 合法卷 task 被吞（旧行为必红）
     # Mutation: restore name-only skipping ⇒ the legitimate `task` volume is swallowed
@@ -147,7 +150,7 @@ def test_directory_volume(tmp):
     _stage_cli(cli)
     _write(os.path.join(cli, 'daybook.conf'),
            CONF.replace('协作=协作卷.txt', '坏卷=.locks')
-               .replace('task=任务卷.txt\n', '')
+               .replace('task=我的任务.txt\n', '')
                .replace('registry=注册卷.txt\n', ''))
     r = subprocess.run([sys.executable, 'daybook.py', 'index'], cwd=cli,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -221,6 +224,60 @@ def test_no_implicit_home(tmp):
     _ok('⑦1 无 --home/无 DAYBOOK_HOME ⇒ rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
     _ok('⑦2 明确要求显式指定，不静默落 ~/.daybook',
         '--home' in text and '~/.daybook' in text, text.strip()[:120])
+
+
+# ── ⑧ 索引面 vs 备份面：内部卷只备份不索引 ─────────────────────
+def test_backup_surface(tmp):
+    root = os.path.join(tmp, 'surface')
+    os.makedirs(root)
+    for name in ('协作卷.txt', '注册卷.txt', '编排卷.txt'):
+        _write(os.path.join(root, name), '')
+    _write(os.path.join(root, 'daybook.conf'),
+           '[volumes]\n协作=协作卷.txt\nregistry=注册卷.txt\nledger=编排卷.txt\n')
+    conf = daybook.load_conf(os.path.join(root, 'daybook.conf'))
+    _ok('⑧1 索引面只认内容卷', set(conf['volumes']) == {'协作'}, str(conf['volumes']))
+    _ok('⑧2 备份面含内部卷', set(conf['_files']) == {'协作', 'registry', 'ledger'},
+        str(conf['_files']))
+    bdir, n = daybook.backup(conf, root)
+    got = sorted(os.listdir(bdir))
+    _ok('⑧3 backup 实备 3 卷', n == 3 and got == ['协作卷.txt', '注册卷.txt', '编排卷.txt'], str(got))
+
+
+# ── ⑨ pack：运行时残留/系统垃圾不进扫描面，陌生文件仍硬拒 ────────
+def test_pack_residue(tmp):
+    import pack as _pack
+    dest = os.path.join(tmp, 'box')
+    os.makedirs(os.path.join(dest, 'sub'))
+    for name in ('任务卷.txt', '心跳卷.txt', '.DS_Store'):
+        _write(os.path.join(dest, name), '')
+    _write(os.path.join(dest, 'sub', '.DS_Store'), '')
+    _write(os.path.join(dest, '陌生.txt'), '不该被放过\n')
+    extra = _pack.foreign_files(dest, [(os.path.join(HERE, 'pack.py'), 'pack.py')])
+    _ok('⑨1 运行时残留/系统垃圾不进扫描面', '任务卷.txt' not in extra and '.DS_Store' not in extra,
+        str(extra))
+    _ok('⑨2 陌生文件仍硬拒', extra == ['陌生.txt'], str(extra))
+
+
+# ── ⑩ hook：条头附注段不得让整条静默跳过 ───────────────────────
+def test_hook_parse(tmp):
+    import daybook_hook
+    d = os.path.join(tmp, 'hook')
+    os.makedirs(d)
+    dialog = os.path.join(d, '对话卷.txt')
+    line = ('[2026-11-14 05:00:00] [对话] [标题甲] [汤姆] [id=%s] [未注册] '
+            '对话原件/x.txt\nSHA256: abc\n' % AID)
+    _write(dialog, line)
+    blocks = daybook_hook.parse_dialog(dialog, d)
+    _ok('⑩1 带 [id=…] 附注的条目仍被解析', len(blocks) == 1 and blocks[0][2] is not None,
+        str(blocks[0][2] if blocks else None))
+    meta = blocks[0][2] if blocks else ('', '', '', '')
+    _ok('⑩2 类/标题/作者/原件路径均不错位',
+        meta[0] == '对话' and meta[1] == '标题甲' and meta[2] == '汤姆' and meta[3] == '对话原件/x.txt',
+        str(meta))
+    # 变异：旧正则（作者后只能紧跟原件路径）在同一行必不匹配 —— 证明旧实现会静默丢条
+    import re as _re
+    old_re = _re.compile(r'^\[[^\]]+\]\s*\[([^\]]+)\]\s*\[([^\]]*)\](?:\s*\[([^\]]*)\])?\s*(对话原件/[^\s]+\.txt)')
+    _ok('⑩3 变异：旧正则必不匹配（静默丢条可复现）', old_re.match(line) is None)
 
 
 # ── ④ 作者口径（作者位＝显示名·id 只作附注）────────────────────
@@ -335,6 +392,9 @@ def main():
         test_help_without_conf(tmp)
         test_backup_empty_outdir(tmp)
         test_no_implicit_home(tmp)
+        test_backup_surface(tmp)
+        test_pack_residue(tmp)
+        test_hook_parse(tmp)
         test_author_source(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

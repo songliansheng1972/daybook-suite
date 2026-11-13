@@ -331,9 +331,18 @@ def foreign_files(dest, plan):
         return []
     allowed = set(dn.replace(os.sep, '/') for _sp, dn in plan)
     allowed.add('version.txt')          # 打包器自己写的版本凭据 / written by the packer itself
+    # 定论：未知文件一律硬拒（rc=4）；只有「运行时残留」与「系统垃圾」从扫描面排除。
+    # 残留＝在盒内跑过产品/自测后生成的运行时卷（0 字节也会出现），它不属于发行件；
+    # 系统垃圾＝Finder/Windows 生成的 .DS_Store / Thumbs.db。二者都不是「清单漏列」。
+    # Verdict: unknown files are hard-rejected (rc=4); only runtime residue and OS junk are
+    # excluded from the scan. Residue = runtime volumes created by running the shipped product
+    # or its selftests inside the box (even as 0-byte files); they are not release artifacts.
+    # OS junk = .DS_Store / Thumbs.db. Neither means "the manifest forgot a file".
     junk_files = ('.safeio_lock.*', '.cursor_*.json', '.head_stamp.json',
-                  'volumes.md', 'index_*', '*.pyc')
-    junk_dirs = ('__pycache__', 'multilevel', '多级', '索引')
+                  'volumes.md', 'index_*', '*.pyc', '.DS_Store', 'Thumbs.db',
+                  '任务卷.txt', '心跳卷.txt', '租约卷.txt', '编排卷.txt',
+                  '消息卷.txt', '注册卷.txt', '审计卷.txt')
+    junk_dirs = ('__pycache__', 'multilevel', '多级', '索引', '锁目录', '.locks', '.daybook_keys')
     extra = []
     for dirpath, dirs, files in os.walk(dest):
         at_root = os.path.abspath(dirpath) == os.path.abspath(dest)
@@ -345,6 +354,8 @@ def foreign_files(dest, plan):
             if rel in allowed:
                 continue
             if at_root and any(fnmatch.fnmatch(f, p) for p in junk_files):
+                continue
+            if f in ('.DS_Store', 'Thumbs.db'):      # 系统垃圾在任何层级都不算发行件
                 continue
             extra.append(rel)
     return sorted(extra)

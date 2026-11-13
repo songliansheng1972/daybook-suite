@@ -167,23 +167,34 @@ NON_VOLUME_VALUES = frozenset((
     '.locks', 'locks', '.lock', '.audit', 'audit', '.daybook_keys',
     '锁目录', '审计卷', '.审计',
 ))
+# 编排内部卷的固定文件名：同名值即便存在也归内部卷（索引不认、备份照备）。
+# 判据仍是「键名 + 键值」双条件：只有键名像内部键、值又正是这些内部卷文件时才排除，
+# 用户把内容卷命名为 task 且指向自己的文件时不会被吞。
+# Fixed file names of orchestration-internal volumes: a same-named value stays internal
+# (not indexed, still backed up). The criterion remains key+value: only a role-like key
+# pointing at one of these internal files is excluded, so a content volume keyed `task`
+# but pointing at the user's own file is never swallowed.
+INTERNAL_FILES = frozenset((
+    '注册卷.txt', '任务卷.txt', '心跳卷.txt', '租约卷.txt',
+    '编排卷.txt', '消息卷.txt', '审计卷.txt', '锁目录',
+))
 
 
 def _skip_non_volume(key, value, base):
-    """键值双条件：是否把该 [volumes] 条目当「非卷配置」跳过。
-    Key+value double criterion: should this [volumes] entry be skipped as non-volume config?
-    返回 None=是内容卷；否则返回跳过理由。Returns None for a content volume, else a reason."""
+    """键值双条件：是否把该 [volumes] 条目当「非卷配置」排除出索引面。
+    Key+value double criterion: should this [volumes] entry be excluded from the index surface?
+    返回 None=是内容卷；否则返回排除理由。Returns None for a content volume, else a reason."""
     if key not in NON_VOLUME_KEYS:
         return None
     v = (value or '').strip()
     p = v if os.path.isabs(v) else os.path.join(base, v)
-    if os.path.isfile(p):
-        return None                      # 值是真卷文件 ⇒ 合法内容卷，不丢
+    if os.path.basename(v.rstrip('/\\')) in INTERNAL_FILES:
+        return '已知内部卷（%s）·索引不认·备份照备' % v
     if os.path.isdir(p):
         return '值指向目录（%s）·非卷' % v
     if os.path.basename(v.rstrip('/\\')) in NON_VOLUME_VALUES or v in NON_VOLUME_VALUES:
         return '已知非卷配置（%s）' % v
-    return None                          # 文件暂缺但非已知非卷默认 ⇒ 仍当内容卷
+    return None                          # 键名像内部键但值是用户自己的文件 ⇒ 内容卷
 
 
 def canon_sec(name):
@@ -226,7 +237,7 @@ def load_conf(path=None):
     path = path or os.path.join(HERE, 'daybook.conf')
     base = os.path.dirname(os.path.abspath(path))
     conf = {'volumes': {}, 'entries': {}, 'index': {}, 'trigger': {},
-            'volumes_skipped': {}}
+            'volumes_skipped': {}, '_files': {}}
     sec = None
     for line in io.open(path, encoding='utf-8'):
         line = line.rstrip('\n')
@@ -236,18 +247,25 @@ def load_conf(path=None):
         if sec and '=' in line:
             k, v = line.split('=', 1)
             k = canon_key(k.strip())
-            # ★ 卷表键值双条件：只有「键名在内 + 值不是真卷」才算非卷配置，跳过并留痕
-            # ★ Twofold criterion: only when the key looks non-volume AND the value is not a
-            #   real volume do we skip it — and we always leave a trace.
+            v = v.strip()
             if sec == 'volumes':
+                # 真实文件全集：backup/watch 用（内部卷也要备份），索引仍只认 volumes
+                # All real files: used by backup/watch (internal volumes must be backed up too);
+                # the index still sees only `volumes`.
+                p = v if os.path.isabs(v) else os.path.join(base, v)
+                if os.path.isfile(p):
+                    conf['_files'][k] = v
+                # ★ 卷表键值双条件：只有「键名在内 + 值不是真卷」才算非卷配置，跳过并留痕
+                # ★ Twofold criterion: only when the key looks non-volume AND the value is not a
+                #   real volume do we skip it — and we always leave a trace.
                 why = _skip_non_volume(k, v, base)
                 if why:
-                    conf['volumes_skipped'][k] = {'value': v.strip(), 'reason': why}
+                    conf['volumes_skipped'][k] = {'value': v, 'reason': why}
                     continue
             if k == 'fields':
                 # 字段表里每个名字也归一。Field list members are canonicalised too.
                 v = ','.join(canon_field(x) for x in v.split(','))
-            conf.setdefault(sec, {})[k] = v.strip()
+            conf.setdefault(sec, {})[k] = v
     return conf
 
 
@@ -764,7 +782,10 @@ def backup(conf, root='.'):
     old copies are never deleted or modified.
     ★ 老宋定：索引目录（TSV+TXT+清单）也一起备份——索引可重算，但备份能救命。
     ★ Song: back up the index directory as well (TSV+TXT+manifest)."""
-    vols = conf.get('volumes', {})
+    # 备份面＝所有真实卷文件（含注册卷/编排卷等内部卷）；索引面仍只认 conf['volumes']
+    # Backup surface = every real volume file (internal volumes included); the index surface
+    # remains conf['volumes'] only.
+    vols = conf.get('_files') or conf.get('volumes', {})
     bdir = os.path.join(root, 'backup', time.strftime('%Y-%m-%d_%H%M%S'))
     os.makedirs(bdir, exist_ok=True)
     n = 0
@@ -1041,7 +1062,11 @@ def main():
         root = root_cfg
     else:
         root = os.path.join(HERE, root_cfg)
-    vols = [v if os.path.isabs(v) else os.path.join(root, v) for v in conf.get('volumes', {}).values()]
+    # watch 监视面＝所有真实卷文件（内部卷变动也要触发）；索引面仍只认 conf['volumes']
+    # The watch surface = every real volume file (internal changes must trigger too);
+    # the index surface remains conf['volumes'].
+    vols = [v if os.path.isabs(v) else os.path.join(root, v)
+            for v in (conf.get('_files') or conf.get('volumes', {})).values()]
     # 被跳过的非卷键：打到 stderr（不静默）
     # Skipped non-volume keys go to stderr (never silent)
     for k, v in (conf.get('volumes_skipped') or {}).items():
