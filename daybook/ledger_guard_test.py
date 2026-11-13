@@ -81,11 +81,14 @@ def _make_volume(path, n=120, body=480):
 
 
 def _prepare(tmp):
-    """把被测 daybook.py 与 safeio.py 拷进隔离目录，写 conf 与账卷。
-    Copy the daybook.py under test plus safeio.py into an isolated directory with conf and volume."""
-    shutil.copy2(SRC_BIN, os.path.join(tmp, 'daybook.py'))
-    shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
-                 os.path.join(tmp, 'safeio.py'))
+    """把被测 daybook.py、safeio.py、daybook_append.py 拷进隔离目录，写 conf 与账卷。
+    Copy the daybook.py under test plus safeio.py / daybook_append.py into an isolated directory
+    with conf and volume.
+    （index 的作者口径机检走 daybook_append.check_author_consistency，故须随拷。）
+    (The index author-convention gate calls daybook_append.check_author_consistency, so it must be staged too.)"""
+    here = os.path.dirname(SRC_BIN)
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+        shutil.copy2(os.path.join(here, name), os.path.join(tmp, name))
     with io.open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
     _make_volume(os.path.join(tmp, '账卷.txt'))

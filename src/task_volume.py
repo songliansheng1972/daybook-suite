@@ -34,7 +34,7 @@ Usage:
   tv.transition(tid, '进行中', 'agent_id_xxx', '开始实现')
   tasks = tv.list(state='进行中')
 """
-import os, time
+import os, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -148,7 +148,6 @@ class TaskVolume:
 
 
 def main():
-    import sys
     if len(sys.argv) < 2:
         print(__doc__); return 1
     tv = TaskVolume()

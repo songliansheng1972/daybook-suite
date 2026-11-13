@@ -19,7 +19,7 @@ Usage:
   alive = hb.is_alive('agent_xxx')  # 查活/死 · check alive/dead
   dead = hb.dead_agents()           # 列出所有 dead · list all dead agents
 """
-import os, time
+import os, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -106,7 +106,6 @@ class Heartbeat:
 
 
 def main():
-    import sys
     if len(sys.argv) < 2:
         print(__doc__); return 1
     hb = Heartbeat()

@@ -28,6 +28,8 @@ Zero dependencies: Python standard library only.
                                   start the MCP server
       暴露 daybook 卷为 resources · 暴露 query/append/cross_ref 为 tools · 4 个 prompt 模板
       零依赖，不联网，与 index/watch 同一二进制。
+  python3 daybook.py checkauthors 作者口径机检：同一卷 author 必须同一口径，混用报红
+                                  author-convention check: one convention per volume
   python3 daybook.py orchestrate <子命令>  智能体编排中心「司南」（第三产品线）
                                   the agent orchestration hub (product line 3)
       别名 / alias: 编排 · 司南
@@ -41,6 +43,7 @@ import io, os, re, sys, time, hashlib, json, shutil
 
 ENC_REPORT = []
 VIOLATIONS = []      # 本轮 build 的 append-only 违例（卷, 说明）；CLI index 据此非零退出
+CONFIG_ERRORS = []   # 卷配置错误（目录型条目等）；解析层不崩溃，CLI 明确报错非零退出
 RULE_WARN = []       # 字段规则告警（tag:N 无法解析等），每轮去重后上报·不再静默
 CURSOR_FMT = 2       # 游标代次：1=size+mtime+头尾探针（旧·可伪造⇒判过期）；2=全卷 sha256
 INDEX_FMT = 2        # 索引代次：写进 .head_stamp.json 与卷首清单，旧代一律视为过期
@@ -119,6 +122,23 @@ FIELD_ALIAS = {
     '类': 'category', '标题': 'title', '作者': 'author',
 }
 
+# ── [volumes] 段的非卷键（白名单过滤）─────────────────────────
+# ── Non-volume keys in the [volumes] section (whitelist filtering). ──
+# orch 与账本共用一份 daybook.conf 时，[volumes] 段同时挂着编排内部角色键：
+# registry/tasks/heartbeat/leases/ledger/inbox/locks，外加审计键 audit。
+# 这些不是内容卷——若当卷读，locks=.locks 会以目录身份进 build ⇒ IsADirectoryError。
+# 解析层显式跳过，并在 conf['volumes_skipped'] 里留痕（不静默）。
+# When orch and the ledger share one daybook.conf, the [volumes] section also holds
+# orchestration-internal role keys (registry/tasks/heartbeat/leases/ledger/inbox/locks)
+# plus the audit key. They are not content volumes: reading locks=.locks as a volume
+# makes build() hit a directory ⇒ IsADirectoryError. Skip them at parse time and keep
+# a trace in conf['volumes_skipped'] (never silent).
+NON_VOLUME_KEYS = frozenset((
+    'registry', 'tasks', 'heartbeat', 'leases', 'ledger', 'inbox', 'locks',
+    'audit', 'task', 'lease', 'lock',
+    '注册卷', '任务卷', '心跳卷', '租约卷', '编排卷', '消息卷', '锁目录', '审计卷',
+))
+
 
 def canon_sec(name):
     """节名归一。Canonical section name."""
@@ -158,7 +178,8 @@ def load_conf(path=None):
     载入配置为「节 → 键」两参字典；此处即中→英别名归一的唯一入口。
     Canonicalisation of Chinese legacy names happens here and nowhere else."""
     path = path or os.path.join(HERE, 'daybook.conf')
-    conf = {'volumes': {}, 'entries': {}, 'index': {}, 'trigger': {}}
+    conf = {'volumes': {}, 'entries': {}, 'index': {}, 'trigger': {},
+            'volumes_skipped': {}}
     sec = None
     for line in io.open(path, encoding='utf-8'):
         line = line.rstrip('\n')
@@ -168,6 +189,12 @@ def load_conf(path=None):
         if sec and '=' in line:
             k, v = line.split('=', 1)
             k = canon_key(k.strip())
+            # ★ 卷表白名单：编排内部角色键/审计键不是内容卷，显式跳过并留痕
+            # ★ Volume-table whitelist: orchestration role keys / audit keys are not
+            #   content volumes; skip them explicitly and leave a trace.
+            if sec == 'volumes' and k in NON_VOLUME_KEYS:
+                conf['volumes_skipped'][k] = v.strip()
+                continue
             if k == 'fields':
                 # 字段表里每个名字也归一。Field list members are canonicalised too.
                 v = ','.join(canon_field(x) for x in v.split(','))
@@ -341,6 +368,7 @@ def build(conf, root='.'):
     ENC_REPORT.clear()  # ★ 每轮 build 清空编码报告，防 watch 多轮累积
                         # ★ Clear the encoding report each build so watch does not accumulate
     VIOLATIONS.clear()
+    CONFIG_ERRORS.clear()
     RULE_WARN.clear()
     _RULE_WARN_SEEN.clear()
     vols = conf.get('volumes', {})
@@ -376,6 +404,16 @@ def build(conf, root='.'):
             cp = _cursor_path(outdir, vol)
             cp_legacy = _legacy_cursor_path(outdir, vol)
             if not os.path.exists(p): per[vol] = 0; continue
+            # ★ 目录型条目：配置写成了目录（如 locks=.locks 漏过滤）⇒ 明确报错，不崩溃
+            # ★ Directory entry: a config value points at a directory (e.g. an unfiltered
+            #   locks=.locks) ⇒ report it explicitly instead of crashing with IsADirectoryError.
+            if os.path.isdir(p):
+                msg = ('★ 卷配置指向目录（%s）·不是卷文件·已跳过'
+                       % (path if not os.path.isabs(path) else p))
+                report.append((vol, msg))
+                CONFIG_ERRORS.append((vol, msg))
+                per[vol] = 0
+                continue
             size, mt = os.path.getsize(p), os.path.getmtime(p)
 
             cur = None
@@ -789,6 +827,42 @@ def query(conf, root, args):
     return '\n'.join(out)
 
 
+def check_authors(conf, root='.'):
+    """机检：同一卷内 author 字段必须同一口径（注册表 id / 显示名 / 未标）。
+    Machine check: within one volume the author field must use a single convention
+    (registry id / display name / unmarked).
+    返回 [(卷, 路径, ok, detail)]；ok=False 即「两种口径混用」⇒ 报红。
+    Returns [(volume, path, ok, detail)]; ok=False means two conventions are mixed ⇒ red."""
+    from daybook_append import check_author_consistency
+    rows = []
+    for vol, path in conf.get('volumes', {}).items():
+        p = path if os.path.isabs(path) else os.path.join(root, path)
+        if not os.path.isfile(p):
+            continue
+        ok, detail = check_author_consistency(p)
+        rows.append((vol, p, ok, detail))
+    return rows
+
+
+def _report_authors(conf, root, quiet_green=False):
+    """打印作者口径机检结果；返 True=有卷报红。
+    Print the author-convention check; returns True when any volume is red."""
+    red = False
+    for vol, p, ok, detail in check_authors(conf, root):
+        if ok:
+            if not quiet_green:
+                print('  作者口径 %s: 一致（%s）' % (vol, detail.get('summary', '')), flush=True)
+            continue
+        red = True
+        sys.stderr.write('★ 作者口径报红：卷 %s 混用 %s（%s）\n'
+                         % (vol, '＋'.join(detail.get('kinds', [])), p))
+        for ln, author, cls in detail.get('samples', [])[:20]:
+            sys.stderr.write('    L%d [%s] %s\n' % (ln, author, cls))
+        if len(detail.get('samples', [])) > 20:
+            sys.stderr.write('    …（仅列前 20 处，共 %d 处）\n' % len(detail['samples']))
+    return red
+
+
 def main():
     """Dispatch the selected command using the adjacent DAYBOOK configuration.
     按所选子命令分派；配置取同目录 daybook.conf。"""
@@ -811,12 +885,29 @@ def main():
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
         print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
+        rc = 0
+        if CONFIG_ERRORS:
+            sys.stderr.write('★ 卷配置错误 %d 处（不是 append-only 违例·是 conf 写错）：\n'
+                             % len(CONFIG_ERRORS))
+            for v, w in CONFIG_ERRORS:
+                sys.stderr.write('  %s: %s\n' % (v, w))
+            rc = 2
         if VIOLATIONS:
             sys.stderr.write('★ append-only 违例 %d 处（索引已按违例全量重扫，但账本本身已被改写）：\n'
                              % len(VIOLATIONS))
             for v, w in VIOLATIONS:
                 sys.stderr.write('  %s: %s\n' % (v, w))
-            sys.exit(3)
+            rc = rc or 3
+        # ★ 作者口径机检：同一卷 author 必须同一口径，混用直接报红
+        # ★ Author-convention gate: one convention per volume; mixed conventions go red
+        if _report_authors(conf, root, quiet_green=True):
+            rc = rc or 4
+        if rc:
+            sys.exit(rc)
+    elif cmd in ('checkauthors', '查作者口径'):
+        # 只跑作者口径机检：绿返 0，红返 1
+        # Author-convention check only: 0 green, 1 red
+        sys.exit(1 if _report_authors(conf, root) else 0)
     elif cmd in ('multiindex', '多级索引'):
         # 四库式多级目录（部/类/属·跨卷总目）·派生件·零依赖·与 index 同源同入口
         # Four-branch multilevel catalogue (derived data; same entry point as index)
