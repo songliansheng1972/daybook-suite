@@ -455,7 +455,7 @@ def _run_ops(ops, report=None):
     Non-append artifacts use safeio.atomic_write (temp + os.replace); append-type artifacts
     (index TSV/TXT) are appended in place under the ledger-root lock, with any crash tail
     truncated first (O(1); the whole file is never rewritten)."""
-    from safeio import atomic_write as _atomic_write, repair_partial_tail
+    from safeio import atomic_write as _atomic_write, append_inplace
     for op in ops:
         kind = op[0]
         if kind == 'purge':
@@ -488,18 +488,14 @@ def _run_ops(ops, report=None):
             _atomic_write(itxt, ''.join(buf))
         elif kind == 'append':
             _idf, rows, itxt, vol = op[1], op[2], op[3], op[4]
-            _dropped = repair_partial_tail(_idf)
+            data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
+            _dropped = append_inplace(_idf, data)
             if _dropped and report is not None:
                 report.append((vol, '★ 索引尾部半行（崩溃残留）已截断 %d 字节·续写（不进判据、不退 3）'
                                % _dropped))
-            data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
-            with open(_idf, 'ab') as f:
-                f.write(data.encode('utf-8'))
-            _tdropped = repair_partial_tail(itxt)
+            _tdropped = append_inplace(itxt, ''.join(_txt_lines(rows)))
             if _tdropped and report is not None:
                 report.append((vol, '★ 索引 TXT 尾部半行已截断 %d 字节·续写' % _tdropped))
-            with open(itxt, 'ab') as f:
-                f.write(''.join(_txt_lines(rows)).encode('utf-8'))
         elif kind == 'rewrite':
             _idf, fields, rows, itxt, vol = op[1], op[2], op[3], op[4], op[5]
             data = '\t'.join(fields) + '\n' + ''.join(
@@ -1399,7 +1395,10 @@ def main():
     Usage and unknown subcommands are handled before load_conf(): a missing conf gets a clear
     message instead of a traceback."""
     from ledger_root import take_home
-    _args, _home = take_home(sys.argv[1:])
+    _args, _home, _herr = take_home(sys.argv[1:])
+    if _herr:
+        sys.stderr.write('★ %s\n' % _herr)
+        return 2
     cmd = _args[0] if _args else 'index'
     known = ('index', 'baseline', '认基线', 'checkauthors', '查作者口径',
              'multiindex', '多级索引',

@@ -70,74 +70,240 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The daybook.py under test: same directory by default; DAYBOOK_SRC points at a mutant copy.
 SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(HERE, 'daybook.py')
 
-# 写路径登记表（单一常量）：(文件, 所在函数, 写什么, 锁落点, 对应判据)
-# Write-path registry (single constant): (file, enclosing function, what, lock root, criterion)
-# 判据两端都红：登记了但代码里找不到 ⇒ 红；代码里有写调用但没登记 ⇒ 红（AH）。
-# Both directions fail: registered but absent in code, or a write call in code that is not
-# registered (AH).
+# 写路径登记表（单一常量）：(文件, 所在函数, 桶, 理由)
+# Write-path registry (single constant): (file, enclosing function, bucket, reason)
+# 桶：ledger=写账本（只许 safeio 原子写/追加，扫到直接写即红）；impl=safeio 自身实现；
+#     other=不写账本（必须写明理由）。
+# Buckets: ledger = writes the ledger (safeio atomic write/append only; any direct write fails);
+#          impl = safeio's own implementation; other = does not write the ledger (reason required).
 WRITE_PATHS = (
-    ('safeio.py', 'read_modify_write', '派生件读改写落盘', '调用方给的账本根', '通用写入口'),
-    ('daybook_append.py', 'append_one', '内容卷追加', '账本根', 'AE2 cli/hook'),
-    ('daybook_record.py', 'record', '记录卷', '显式 root', '复签'),
-    ('daybook_session_hook.py', 'atomic_json', '会话标记', '显式 root', '复签'),
-    ('agent_registry.py', 'register', '注册卷', '账本根', '复签'),
-    ('agent_registry.py', 'revoke', '注册卷', '账本根', '复签'),
-    ('agent_heartbeat.py', 'beat', '心跳卷', '账本根', '复签'),
-    ('agent_lock.py', '_log', '租约日志', '账本根', '复签'),
-    ('agent_message.py', '_append_inbox', '消息卷', '账本根（resolve_root）', 'AE2 inbox'),
-    ('mcp_resources.py', '_audit', '审计卷', '账本根', '复签'),
-    ('mcp_tools.py', '_audit', '审计卷', '账本根', '复签'),
-    ('mcp_tools.py', '_record_signature', '签名卷', '账本根', '复签'),
-    ('mcp_tools.py', '_write_cursor', '游标', '账本根', '复签'),
+    ('agent_heartbeat.py', '__init__', 'ledger', '账本内容/派生件'),
+    ('agent_heartbeat.py', 'beat', 'ledger', '账本内容/派生件'),
+    ('agent_lock.py', '__init__', 'other', 'agent 租约锁文件（非账本卷）'),
+    ('agent_lock.py', '_log', 'ledger', '账本内容/派生件'),
+    ('agent_lock.py', 'acquire', 'other', 'agent 租约锁文件（非账本卷）'),
+    ('agent_lock.py', 'held_by', 'other', 'agent 租约锁文件（非账本卷）'),
+    ('agent_message.py', '_append_inbox', 'ledger', '账本内容/派生件'),
+    ('agent_registry.py', '_write_secret', 'other', '注册密钥文件（0600·非账本卷）'),
+    ('agent_registry.py', 'register', 'ledger', '账本内容/派生件'),
+    ('agent_registry.py', 'revoke', 'ledger', '账本内容/派生件'),
+    ('daybook.py', '_write_cursor', 'ledger', '账本内容/派生件'),
+    ('daybook.py', '_run_ops', 'ledger', '账本内容/派生件'),
+    ('daybook.py', 'build', 'ledger', '账本内容/派生件'),
+    ('daybook.py', '_backup_locked', 'other', '备份副本（只增不改·非账本卷）'),
+    ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
+    ('daybook_hook.py', 'mark_processed', 'ledger', '账本内容/派生件'),
+    ('daybook_multidx.py', '_build_locked', 'ledger', '账本内容/派生件'),
+    ('daybook_record.py', 'record', 'ledger', '账本内容/派生件'),
+    ('daybook_session_hook.py', 'atomic_json', 'ledger', '账本内容/派生件'),
+    ('entry_smoke_test.py', 'mutation_check', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', '_setup', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', 'test_cross_ref_numbered', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', 'test_root_from_conf', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', '_copy_server', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', 'test_zero_bytecode', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', 'test_empty_volumes_warns', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_p0_regression.py', 'mk', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_resources.py', '_audit', 'ledger', '账本内容/派生件'),
+    ('mcp_test.py', '_setup_tmp_root', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_test.py', 'test_daybook_index', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_test.py', 'test_subscribe_push', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_tools.py', '_audit', 'ledger', '账本内容/派生件'),
+    ('mcp_tools.py', '_record_signature', 'ledger', '账本内容/派生件'),
+    ('mcp_tools.py', '_write_cursor', 'ledger', '账本内容/派生件'),
+    ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', '_make_volume', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_identity_signature', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_root_resolution', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', 'test_single_pass_reads', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_mutation_check.py', 'make_mutant', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_perf_bench.py', 'build_dataset', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_perf_bench.py', 'main', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orchestrator.py', '_selftest', 'other', '自检临时目录'),
+    ('path_leak_check.py', 'mutation_check', 'other', '随包测试/基准脚本：只写临时件'),
+    ('safeio.py', 'atomic_write', 'impl', 'safeio 实现本身'),
+    ('safeio.py', 'repair_partial_tail', 'impl', 'safeio 实现本身'),
+    ('safeio.py', 'atomic_append', 'impl', 'safeio 实现本身'),
+    ('safeio.py', 'append_inplace', 'impl', 'safeio 实现本身'),
+    ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
+    ('task_volume.py', 'create', 'ledger', '账本内容/派生件'),
+    ('task_volume.py', 'transition', 'ledger', '账本内容/派生件'),
+    ('safeio.py', 'read_modify_write', 'impl', 'safeio 实现本身'),
 )
 
-_WRITE_HELPERS = ('atomic_write', 'atomic_append', 'atomic_replace')
+_WRITE_SAFE = frozenset(('safeio.atomic_write', 'safeio.atomic_append',
+                         'safeio.atomic_replace', 'safeio.read_modify_write',
+                         'safeio.append_inplace',
+                         # safeio 内部的自调用（同模块裸名）
+                         # self-calls inside safeio (bare names in the same module)
+                         'atomic_write', 'atomic_append', 'atomic_replace',
+                         'read_modify_write', 'append_inplace'))
+_WRITE_SKIP = ('pack.py', 'ledger_guard_test.py')
+_WRITE_TEMP = ('tempfile.mkstemp', 'tempfile.NamedTemporaryFile',
+               'tempfile.mkdtemp', 'tempfile.TemporaryFile')
+
+
+def _write_aliases(tree):
+    """收集 import / import ... as / from ... import ... as 的本地名 → 原名。
+    Collect local names → original names for import / import-as / from-import-as."""
+    m = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                m[a.asname or a.name.split('.')[0]] = ('mod', a.name)
+        elif isinstance(n, ast.ImportFrom):
+            for a in n.names:
+                m[a.asname or a.name] = ('from', (n.module or '') + '.' + a.name)
+    return m
+
+
+def _resolve_callee(func, aliases):
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name):
+            o = aliases.get(func.value.id)
+            if o and o[0] == 'mod':
+                return o[1] + '.' + func.attr
+        return func.attr
+    if isinstance(func, ast.Name):
+        o = aliases.get(func.id)
+        if o and o[0] == 'from':
+            return o[1]
+        return func.id
+    return ''
+
+
+def _open_mode_writes(node):
+    v = node.args[1] if len(node.args) > 1 else None
+    for kw in node.keywords:
+        if kw.arg == 'mode':
+            v = kw.value
+    return (isinstance(v, ast.Constant) and isinstance(v.value, str)
+            and any(c in v.value for c in 'wax+'))
+
+
+def _osopen_writes(node):
+    v = node.args[1] if len(node.args) > 1 else None
+
+    def ev(n):
+        if isinstance(n, ast.Constant) and isinstance(n.value, int):
+            return n.value
+        if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) \
+                and n.value.id == 'os':
+            return getattr(os, n.attr, 0)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, ast.BitOr):
+            return ev(n.left) | ev(n.right)
+        return 0
+
+    f = ev(v) if v is not None else 0
+    return bool(f & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
 
 
 def _scan_write_sites(d):
-    """静态扫出 (文件, 函数) 级别的写调用点；测试件与打包器不算产品写路径。
-    Statically list (file, function) write call sites; test files and the packer are not product
-    write paths."""
-    files, sites = [], set()
-    for fn in sorted(os.listdir(d)):
-        if not fn.endswith('.py') or fn.endswith('_test.py') or fn in ('pack.py',):
-            continue
+    """按包装清单扫产品件与随包脚本，返回 (扫过的件, {(文件,函数): 写种类集合})。
+    Scan the shipped product/aux files from the pack manifest; return (files, sites).
+    别名会还原成原名；覆盖 open 写模式、os.open 写标志、os.replace/rename、
+    shutil.copy*、Path.write_text/bytes、tempfile、subprocess 重定向。
+    Aliases are resolved; covers open write modes, os.open write flags, os.replace/rename,
+    shutil.copy*, Path.write_text/bytes, tempfile and subprocess redirection."""
+    try:
+        if d not in sys.path:
+            sys.path.insert(0, d)
+        from pack import PACKAGES
+        names = set()
+        for spec in PACKAGES.values():
+            names.update(spec.get('prog', []))
+            names.update(spec.get('prog_aux', []))
+        scan = [n for n in sorted(names)
+                if n.endswith('.py') and n not in _WRITE_SKIP
+                and os.path.exists(os.path.join(d, n))]
+    except Exception:
+        scan = [n for n in sorted(os.listdir(d))
+                if n.endswith('.py') and n not in _WRITE_SKIP
+                and not n.endswith('_test.py')]
+    files, sites = [], {}
+    for fn in scan:
         try:
             tree = ast.parse(io.open(os.path.join(d, fn), encoding='utf-8').read())
         except SyntaxError:
             continue
         files.append(fn)
+        al = _write_aliases(tree)
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for sub in ast.walk(node):
-                    if isinstance(sub, ast.Call):
-                        f = sub.func
-                        nm = getattr(f, 'id', None) or getattr(f, 'attr', None)
-                        if nm in _WRITE_HELPERS:
-                            sites.add((fn, node.name))
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            kinds = set()
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call):
+                    continue
+                t = _resolve_callee(sub.func, al)
+                if t in _WRITE_SAFE:
+                    kinds.add('safe')
+                elif t in ('os.replace', 'os.rename'):
+                    kinds.add('replace')
+                elif t in ('shutil.copy', 'shutil.copy2', 'shutil.copyfile',
+                           'shutil.copytree'):
+                    kinds.add('copy')
+                elif t in ('open', 'io.open') and _open_mode_writes(sub):
+                    kinds.add('open')
+                elif t == 'os.open' and _osopen_writes(sub):
+                    kinds.add('osopen')
+                elif t in _WRITE_TEMP:
+                    kinds.add('temp')
+                elif isinstance(sub.func, ast.Attribute) \
+                        and sub.func.attr in ('write_text', 'write_bytes'):
+                    kinds.add('open')
+                elif t.split('.')[-1] in ('run', 'Popen', 'call', 'check_call',
+                                          'check_output'):
+                    for kw in sub.keywords:
+                        if kw.arg in ('stdout', 'stderr'):
+                            v = kw.value
+                            if isinstance(v, ast.Constant):
+                                continue
+                            if isinstance(v, ast.Attribute) \
+                                    and isinstance(v.value, ast.Name) \
+                                    and v.value.id == 'subprocess':
+                                continue
+                            kinds.add('subproc')
+            if kinds:
+                sites[(fn, node.name)] = kinds
     return files, sites
 
 
 def _case_write_paths(tmp):
-    """AH 写路径登记表判据：两端都红，新增写路径不登记就复签不过。
-    AH write-path registry criterion: both directions fail, so an unregistered new write path
-    cannot pass a re-sign review."""
-    print('  -- AH 写路径登记表（两端都红） --')
+    """AH 写路径登记表判据：登记未实现、实现未登记、账本桶直写，三者都红。
+    AH write-path registry: registered-but-absent, present-but-unregistered, and any direct
+    write inside a ledger bucket all fail."""
+    print('  -- AH 写路径登记表（三向都红） --')
     d = os.path.dirname(os.path.abspath(SRC_BIN))
     files, sites = _scan_write_sites(d)
-    reg = {(f, fn) for f, fn, _w, _l, _c in WRITE_PATHS}
-    is_src = os.path.exists(os.path.join(d, 'pack.py'))
-    if is_src:
-        want = {f for f, _fn, _w, _l, _c in WRITE_PATHS}
+    reg = {(f, fn): (b, r) for f, fn, b, r in WRITE_PATHS}
+    present = {k: v for k, v in reg.items() if k[0] in files}
+    if os.path.exists(os.path.join(d, 'pack.py')):
+        want = {f for f, _fn, _b, _r in WRITE_PATHS}
         _ok('AH 源树：登记表涉及的件全部在场', want <= set(files),
             '缺=%s' % sorted(want - set(files)))
-    absent = sorted((f, fn) for f, fn, _w, _l, _c in WRITE_PATHS
-                    if f in files and (f, fn) not in sites)
+    absent = sorted(k for k in present if k not in sites)
+    unreg = sorted(k for k in sites if k not in reg)
+    direct = sorted((k, sorted(v - {'safe'})) for k, v in sites.items()
+                    if reg.get(k, ('', ''))[0] == 'ledger' and (v - {'safe'}))
     _ok('AH 登记了但代码里找不到 ⇒ 红', not absent, '找不到=%s' % absent)
-    unreg = sorted(sites - reg)
     _ok('AH 代码里有写调用但没登记 ⇒ 红', not unreg, '未登记=%s' % unreg)
-    print('    [数据] AH 登记 %d 条，实扫 %d 条，冲突 %d 处'
-          % (len(reg & sites), len(sites), len(absent) + len(unreg)))
+    _ok('AH 账本桶只许 safeio（直接写 ⇒ 红）', not direct, '直写=%s' % direct)
+    print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
+          % (len(present), len(sites), len(unreg), len(absent), len(direct)))
+    buckets = {}
+    for _k, (_b, _r) in present.items():
+        buckets[_b] = buckets.get(_b, 0) + 1
+    print('    [数据] AH 在场分桶：账本 %d 条／safeio 实现 %d 条／非账本 %d 条（扫过 %d 件）'
+          % (buckets.get('ledger', 0), buckets.get('impl', 0),
+             buckets.get('other', 0), len(files)))
+
 
 CONF = """[volumes]
 账=账卷.txt
@@ -1171,6 +1337,7 @@ def _case_root_matrix(tmp):
     entries land on one root and contend on one lock. Failing cells: all exit 2 with one
     identical message."""
     print('  -- AF 根解析矩阵（env × conf root × 启动方式） --')
+    py = sys.executable
     base = os.path.join(tmp, 'af')
     os.makedirs(base)
     code = os.path.join(base, 'code')
@@ -1255,6 +1422,29 @@ def _case_root_matrix(tmp):
                     print('    [数据] %s 根: %s' % (label, ' '.join(
                         '%s=%s' % (k, got[k]) for k in kinds)))
                     _matrix_lock(label, code, ledger, env, cwd, confd)
+                    # [index] root 非空（相对/绝对）时，orch 的三条主路径必须 rc=0：
+                    # 二次解析会把账本根当 conf 目录，卷表变空、全部 rc=2。
+                    # With a non-empty [index] root, three orch entry paths must exit 0; a
+                    # second resolution would treat the ledger root as the conf dir, leaving
+                    # the volume table empty and failing.
+                    if os.path.exists(os.path.join(exedir, 'orchestrator.py')):
+                        orch = os.path.join(exedir, 'orchestrator.py')
+                        for sub, needle in (('alarm', ''),
+                                            ('digest --limit 0', '部.账'),
+                                            ('digest --limit 0 --push 甲', '')):
+                            r = subprocess.run([py, '-B', orch] + sub.split(), cwd=cwd,
+                                               env=env, stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE,
+                                               universal_newlines=True)
+                            blob = (r.stdout or '') + (r.stderr or '')
+                            _ok('%s orch %s rc=0' % (label, sub), r.returncode == 0,
+                                'rc=%d %s' % (r.returncode, (r.stderr or '')[-80:]))
+                            if needle:
+                                _ok('%s orch %s 读到卷表（%s）' % (label, sub, needle),
+                                    needle in (r.stdout or ''), (r.stdout or '')[-100:])
+                            if '--push' in sub:
+                                _ok('%s orch %s 未把账本根当 conf（无「未找到」）' % (label, sub),
+                                    '未找到 daybook.conf' not in blob, blob[-120:])
                 else:
                     n_fail += 1
                     rcs, msgs = {}, {}
@@ -1349,7 +1539,94 @@ def _case_home_flag(tmp):
         _ok('AI %s 静态接受 --home' % fn, needle in io.open(p, encoding='utf-8').read(), needle)
     shim = os.path.join(os.path.dirname(d), 'packaging', 'cli_shim.py')
     if os.path.exists(shim):
-        _ok('AI cli_shim 接受 --home', '--home' in io.open(shim, encoding='utf-8').read(), '')
+        stext = io.open(shim, encoding='utf-8').read()
+        _ok('AI cli_shim 接受 --home', '--home' in stext, '')
+        _ok('AI cli_shim 的 --home 无值即报错（不静默回落）',
+            '需要一个目录参数' in stext, '')
+        _ok('AI cli_shim 与产品共用 ENV_VARS 常量',
+            'from ledger_root import ENV_VARS' in stext, '')
+    # --home 无值 ⇒ 各入口 rc=2（吞掉当没给是禁止的）
+    for fn in ('daybook.py', 'daybook_append.py', 'daybook_hook.py', 'mcp_server.py'):
+        p = os.path.join(d, fn)
+        if not os.path.exists(p):
+            continue
+        r = run([py, '-B', p, '--home'])
+        _ok('AI %s 的 --home 无值 ⇒ rc=2' % fn, r.returncode == 2,
+            'rc=%d %s' % (r.returncode, (r.stderr or '')[:80]))
+    # --help rc=0 · mcp 未知参数 rc=2
+    for fn in ('daybook_append.py', 'daybook_hook.py', 'mcp_server.py'):
+        p = os.path.join(d, fn)
+        if not os.path.exists(p):
+            continue
+        r = run([py, '-B', p, '--help'])
+        _ok('AI %s --help rc=0' % fn, r.returncode == 0,
+            'rc=%d %s' % (r.returncode, (r.stderr or '')[:60]))
+    if os.path.exists(os.path.join(d, 'mcp_server.py')):
+        r = run([py, '-B', os.path.join(d, 'mcp_server.py'), '--bogus'])
+        _ok('AI mcp 未知参数 ⇒ rc=2（不许照常启动）', r.returncode == 2,
+            'rc=%d %s' % (r.returncode, (r.stderr or '')[:60]))
+    if os.path.exists(os.path.join(d, 'orchestrator.py')):
+        # orch 的 --home 只支持放在子命令前（保留），但 help 必须写明位置
+        # --home only works before the subcommand (kept), but the help must say where it goes
+        r = run([py, '-B', os.path.join(d, 'orchestrator.py'), '--help'])
+        _ok('AI orch --help rc=0 且写明 --home 须在子命令前',
+            r.returncode == 0 and '子命令之前' in (r.stdout or ''),
+            'rc=%d %s' % (r.returncode, (r.stdout or '')[-60:]))
+    # 两个环境变量都设 ⇒ HOME 胜（与 shim 同一条线）
+    a = os.path.join(base, 'envA')
+    b = os.path.join(base, 'envB')
+    for dd, led_name in ((a, 'ledA'), (b, 'ledB')):
+        os.makedirs(dd)
+        io.open(os.path.join(dd, 'daybook.conf'), 'w', encoding='utf-8').write(
+            '[index]\nroot=%s\n' % led_name)
+        os.makedirs(os.path.join(dd, led_name))
+    env2 = dict(env)
+    env2['DAYBOOK_HOME'] = a
+    env2['DAYBOOK_ROOT'] = b
+    got = {}
+    for kind in ('daybook', 'cli', 'hook', 'mcp', 'orch'):
+        if kind == 'mcp' and not os.path.exists(os.path.join(d, 'mcp_server.py')):
+            continue
+        if kind == 'orch' and not os.path.exists(os.path.join(d, 'orchestrator.py')):
+            continue
+        r = subprocess.run([py, '-B', '-c', _CHILD_ROOT, d, kind], cwd=outside,
+                           env=env2, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+        got[kind] = (r.stdout.strip().splitlines() or [''])[-1]
+    want_a = os.path.realpath(os.path.join(a, 'ledA'))
+    _ok('AI 两 env 同设 ⇒ 六入口都取 DAYBOOK_HOME', got and all(v == want_a for v in got.values()),
+        ' | '.join('%s=%s' % (k, v) for k, v in got.items()))
+    # [index] root 相对/绝对两种非空格：orch 三条主路径（体检／卷列表／推送主路径）必须 rc=0。
+    # 账本根被当 conf 再解析时，卷表为空、alarm 与 digest 都会 rc≠0。
+    # Cells with a non-empty relative/absolute [index] root: three orch paths (alarm, volume
+    # list, push main path) must exit 0. Re-parsing the ledger root as conf empties the table.
+    if not os.path.exists(os.path.join(d, 'orchestrator.py')):
+        return
+    for mode in ('relative', 'absolute'):
+        cdir = os.path.join(base, 'root_' + mode)
+        os.makedirs(cdir)
+        if mode == 'relative':
+            rval, led = 'ledger', os.path.join(cdir, 'ledger')
+        else:
+            rval, led = os.path.join(cdir, 'absled'), os.path.join(cdir, 'absled')
+        os.makedirs(led)
+        io.open(os.path.join(cdir, 'daybook.conf'), 'w', encoding='utf-8').write(
+            '[volumes]\n账=账卷.txt\n\n[index]\nroot=%s\nout_dir=索引\n' % rval)
+        io.open(os.path.join(led, '账卷.txt'), 'w', encoding='utf-8').write(
+            '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+        for sub, needle in (('alarm', ''),
+                            ('digest --limit 0', '部.账'),
+                            ('digest --limit 0 --push 甲', '')):
+            r = run([py, '-B', os.path.join(d, 'orchestrator.py'), '--home=' + cdir] + sub.split())
+            blob = (r.stdout or '') + (r.stderr or '')
+            _ok('AI root=%s orch %s rc=0' % (mode, sub), r.returncode == 0,
+                'rc=%d %s' % (r.returncode, (r.stderr or '')[-80:]))
+            if needle:
+                _ok('AI root=%s orch %s 读到卷表（%s）' % (mode, sub, needle),
+                    needle in (r.stdout or ''), (r.stdout or '')[-100:])
+            if '--push' in sub:
+                _ok('AI root=%s orch %s 未把账本根当 conf' % (mode, sub),
+                    '未找到 daybook.conf' not in blob, blob[-120:])
 
 
 def _case_pad_notice(tmp):

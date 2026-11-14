@@ -140,11 +140,11 @@ def load_processed(record_path):
         return set(int(x.strip()) for x in f if x.strip())
 
 
-def mark_processed(record_path, line_no):
-    """标记行号已处理。append-only。
-    Mark a line number as processed. append-only."""
-    with io.open(record_path, 'a', encoding='utf-8') as f:
-        f.write('%d\n' % line_no)
+def mark_processed(record_path, line_no, root=None):
+    """标记行号已处理。append-only；经 safeio 原子追加，锁账本根。
+    Mark a line number as processed. append-only, via safeio atomic append on the ledger root."""
+    from safeio import atomic_append
+    atomic_append(record_path, '%d\n' % line_no, root=root or os.path.dirname(os.path.abspath(record_path)))
 
 
 def run(dialog_path, kw_path, root='.'):
@@ -174,19 +174,19 @@ def run(dialog_path, kw_path, root='.'):
     n_hit = 0
     for ln, _dialog_text, meta in new_blocks:
         if not meta:
-            mark_processed(record_path, ln)
+            mark_processed(record_path, ln, root)
             continue
         kind, title, author, orig_path, author_id, unregistered = meta
         full_orig = os.path.join(root, orig_path)
         if not os.path.exists(full_orig):
             print('  ★ 原件不存在：%s' % orig_path)
-            mark_processed(record_path, ln)
+            mark_processed(record_path, ln, root)
             continue
         with io.open(full_orig, encoding='utf-8') as f:
             orig_text = f.read()
         hits = scan_block(orig_text, rules)
         if not hits:
-            mark_processed(record_path, ln)
+            mark_processed(record_path, ln, root)
             continue
         target_vol, target_kind, kw = hits[0]
         target_path = os.path.join(root, '%s卷.txt' % target_vol)
@@ -196,7 +196,7 @@ def run(dialog_path, kw_path, root='.'):
                         author=author, author_id=author_id,
                         unregistered=unregistered, root=root)
         if rc == 0:
-            mark_processed(record_path, ln)
+            mark_processed(record_path, ln, root)
             n_hit += 1
             print('  追更 → %s卷 [category=%s author=%s keywords=%s]' % (target_vol, target_kind, author, kw))  # 卷名沿用数据件命名（协作卷.txt）· volume name follows the data-file naming (协作卷.txt)
         else:
@@ -221,7 +221,13 @@ def ledger_home(override=None):
 
 def main():
     from ledger_root import take_home
-    args, home = take_home(sys.argv[1:])
+    args, home, herr = take_home(sys.argv[1:])
+    if herr:
+        sys.stderr.write('★ %s\n' % herr)
+        return 2
+    if args and args[0] in ('-h', '--help'):
+        print(__doc__ or '用法：daybook_hook.py [--home DIR] [对话卷 [关键词表]]')
+        return 0
     try:
         root = ledger_home(home)
     except ValueError as exc:

@@ -23,31 +23,37 @@ LedgerRoot · the single ledger-root resolver (shared by daybook / MCP / append 
 import os
 
 CONF_NAME = 'daybook.conf'
-# 显式指定的环境变量（优先级从高到低）· explicit env vars (highest first)
-ENV_VARS = ('DAYBOOK_ROOT', 'DAYBOOK_HOME')
+# 显式指定的环境变量（优先级从高到低）：HOME 优先，ROOT 仅兼容别名。
+# Explicit env vars (highest first): HOME wins; ROOT is a compatibility alias with the lowest
+# priority. The shim reads this same constant (no second copy of the rule).
+ENV_VARS = ('DAYBOOK_HOME', 'DAYBOOK_ROOT')
 
 
 def take_home(argv):
     """从参数表里剥出 `--home DIR` / `--home=DIR`（统一旗标，所有入口共用）。
     Strip `--home DIR` / `--home=DIR` from an argv list (the one flag every entry accepts).
-    返回 (剩余参数, home|None)。"""
+    返回 (剩余参数, home|None, 错误文案)。`--home` 没带值 ⇒ 错误文案非空（调用方 rc=2），
+    绝不静默回落。
+    Returns (rest, home|None, error). A valueless `--home` yields an error (the caller exits 2)
+    and is never silently ignored."""
     rest, home, i = [], None, 0
     while i < len(argv):
         a = argv[i]
         if a == '--home':
-            if i + 1 < len(argv):
-                home = argv[i + 1]
-                i += 2
-                continue
-            i += 1
+            if i + 1 >= len(argv):
+                return rest, None, '--home 需要一个目录参数（conf 所在目录）'
+            home = argv[i + 1]
+            i += 2
             continue
         if a.startswith('--home='):
             home = a.split('=', 1)[1]
+            if not home.strip():
+                return rest, None, '--home 需要一个目录参数（conf 所在目录）'
             i += 1
             continue
         rest.append(a)
         i += 1
-    return rest, home
+    return rest, home, ''
 
 
 def not_found_message(conf_dir):

@@ -250,7 +250,17 @@ def main():
     """启动自检后进主循环。根无效 → stderr 报错并退出（不静默空跑）。
     Run the startup self-check, then enter the main loop. An invalid root → stderr error and exit (never silently serve an empty ledger)."""
     from ledger_root import take_home
-    _args, home = take_home(sys.argv[1:])
+    _args, home, herr = take_home(sys.argv[1:])
+    if herr:
+        sys.stderr.write('★ %s\n' % herr)
+        raise SystemExit(2)
+    if _args:
+        if _args[0] in ('-h', '--help'):
+            print(__doc__ or '用法：mcp_server.py [--home DIR]')
+            raise SystemExit(0)
+        sys.stderr.write('★ 未知参数：%s（stdio 服务端只接受 --home DIR / --help）\n'
+                         % ' '.join(_args))
+        raise SystemExit(2)
     res.HOME_OVERRIDE = home          # --home 只用来定位 conf
     try:
         root, nvol = res.self_check()

@@ -256,6 +256,23 @@ def read_vol(path):
     return sniff_bytes(raw)
 
 
+def append_inplace(path, data):
+    """锁内原位追加（先截断崩溃半行）：索引等追加型派生件的唯一写入口。
+    In-place append under the caller's lock (truncating a crashed half-line first): the single
+    write entry for append-type artifacts such as indexes.
+    返回被截断的字节数。调用方必须已持账本根锁。
+    Returns bytes dropped. The caller must already hold the ledger-root lock."""
+    dropped = repair_partial_tail(path)
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, data)
+    finally:
+        os.close(fd)
+    return dropped
+
+
 def read_modify_write(path, fn, root=None):
     """持账本根锁读-改-写。fn(old_bytes) -> new_bytes。写入走 atomic_write。
     Locked (ledger root) read-modify-write. fn(old_bytes) -> new_bytes; the write is atomic.

@@ -31,6 +31,25 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 **诚实边界**：仅在「只删索引、游标与封存未动」时能判 3；同时改写两份派生件、或卷+游标+封存
 三者自洽改写，本实现不承诺识别（缺外部锚：封存仍在账本目录内、无签名）。外部锚另开一单。
 
+### 返工补齐（2026-11-15）
+
+1. **写入口收口 + 写路径登记表可机检**：产品件里所有写账本的路径一律走 `safeio`
+   （`atomic_write` / `atomic_append` / 新增 `append_inplace`），`daybook_multidx` 增量 TSV、
+   hook 已处理状态、任务卷/心跳建卷、追加 CLI 的原地追加都不再有裸 `open(...,'ab'/'w')`。
+   `ledger_guard_test.py` 的 `WRITE_PATHS` 单一常量登记每条写路径（账本/safeio 实现/非账本，
+   非账本必须写理由），扫描器按包装清单还原 `import ... as` 别名，覆盖 `open` 写模式、
+   `os.open` 写标志、`os.replace/rename`、`shutil.copy*`、`Path.write_text/bytes`、
+   `tempfile`、`subprocess` 重定向；登记未实现、实现未登记、账本桶直写三向都红。
+2. **编排二阶解析修复**：`Hub.__init__` 传给 `resolve_volumes()` 的是 **conf 目录**（不是已解析的
+   账本根），`[index] root` 非空（相对/绝对）时 orch 命令不再 rc=2；`digest` 读卷表、
+   `push_digest` 推送、`read_multidx_rows`/`make_entry_ref` 的 conf 来源同样改为 conf 目录。
+3. **环境变量优先级全仓一条线**：`--home` > `DAYBOOK_HOME` > `DAYBOOK_ROOT`（ROOT 仅兼容别名，
+   最低）；`cli_shim` 与产品共用 `ledger_root.ENV_VARS`，不再各写一套。
+4. **入口严格化**：`--home` 无值 rc=2（不再静默按 cwd 回落）；`mcp_server` 未知参数 rc=2
+   （stdio 服务端不许带错旗标照常启动）并补 `--help`；追加 CLI 与 hook 的 `--help` 改为 rc=0。
+5. **判据自己报数**：登记/实扫/未登记/找不到/直写与 AF/AI 格数、源/盒项数一律由判据打印，
+   报告只抄判据输出。
+
 ## v4.0.5 · 2026-11-14
 
 **内容**：压测工具 `bench/` 入仓（开发者工具，不入发行件）。

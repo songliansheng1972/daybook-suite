@@ -63,7 +63,8 @@ class TaskVolume:
         # The ledger root is always explicit (realpath-normalised); no fallback to the volume dir.
         self.root = os.path.realpath(root or HERE)
         if not os.path.exists(self.path):
-            open(self.path, 'a', encoding='utf-8').close()
+            from safeio import atomic_write
+            atomic_write(self.path, b'')
 
     def _read_all(self):
         """单遍扫描任务卷·构建 (tid -> list of (时间, 状态, agent, 内容))。
@@ -102,12 +103,10 @@ class TaskVolume:
     def create(self, agent_id, content):
         """创建任务·状态=待办。返回 task_id。
         Create a task · state=待办. Returns task_id."""
-        from safeio import locked
-        with locked(self.root):
-            tid = self._next_tid()
-            rec = '[%s] [任务] [%s] [待办] [%s] %s\n' % (_now(), tid, agent_id, content.rstrip('\n'))
-            with open(self.path, 'a', encoding='utf-8') as f:
-                f.write(rec)
+        from safeio import atomic_append
+        tid = self._next_tid()
+        rec = '[%s] [任务] [%s] [待办] [%s] %s\n' % (_now(), tid, agent_id, content.rstrip('\n'))
+        atomic_append(self.path, rec, root=self.root)
         return tid
 
     def transition(self, tid, new_state, agent_id, note=''):
@@ -115,7 +114,7 @@ class TaskVolume:
         State transition. Raises on violation."""
         if new_state not in ALL_STATES:
             raise ValueError('非法状态：%s' % new_state)
-        from safeio import locked
+        from safeio import atomic_append, locked
         with locked(self.root):
             tasks = self._read_all()
             hist = tasks.get(tid)
@@ -130,8 +129,7 @@ class TaskVolume:
                     cur_state, new_state, ' '.join(legal_next) or '无'))
             rec = '[%s] [任务] [%s] [%s] [%s] %s\n' % (
                 _now(), tid, new_state, agent_id, note.rstrip('\n'))
-            with open(self.path, 'a', encoding='utf-8') as f:
-                f.write(rec)
+            atomic_append(self.path, rec, root=self.root)
         return True
 
     def list(self, state=None):

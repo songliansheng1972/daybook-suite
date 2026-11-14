@@ -65,6 +65,25 @@ def sibling_payloads():
     return out
 
 
+def _env_order():
+    """从产品件的 ledger_root 读 ENV_VARS（单一常量）；读不到才退回同名默认。
+    Read ENV_VARS from the product's ledger_root (the single constant); fall back to the same
+    ordered defaults only when it cannot be imported."""
+    for p in sibling_payloads():
+        sys.path.insert(0, p)
+        try:
+            from ledger_root import ENV_VARS
+            return ENV_VARS
+        except Exception:
+            pass
+        finally:
+            try:
+                sys.path.remove(p)
+            except ValueError:
+                pass
+    return ("DAYBOOK_HOME", "DAYBOOK_ROOT")
+
+
 def resolve_home(argv):
     """挑运行目录，并把 `--home` 从参数里摘掉。
 
@@ -81,20 +100,31 @@ def resolve_home(argv):
     while i < len(argv):
         a = argv[i]
         if a == "--home":
-            i += 1
-            if i < len(argv):
-                home = argv[i]
-        elif a.startswith("--home="):
+            if i + 1 >= len(argv):
+                sys.stderr.write("★ --home 需要一个目录参数（conf 所在目录）\n")
+                raise SystemExit(2)
+            home = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--home="):
             home = a.split("=", 1)[1]
-        else:
-            rest.append(a)
+            if not home.strip():
+                sys.stderr.write("★ --home 需要一个目录参数（conf 所在目录）\n")
+                raise SystemExit(2)
+            i += 1
+            continue
+        rest.append(a)
         i += 1
     if home:
         return os.path.abspath(os.path.expanduser(home)), rest
-    # 显式指定：DAYBOOK_HOME 优先，其次 DAYBOOK_ROOT（两者都只指向 conf 所在目录）。
-    # Explicit: DAYBOOK_HOME first, then DAYBOOK_ROOT (both point at the conf directory only).
-    env = (os.environ.get("DAYBOOK_HOME", "").strip()
-           or os.environ.get("DAYBOOK_ROOT", "").strip())
+    # 环境变量优先级从产品侧同一常量读取（HOME 优先，ROOT 仅兼容别名）。
+    # Env precedence comes from the product's own constant (HOME first, ROOT only an alias).
+    env = ""
+    for name in _env_order():
+        v = os.environ.get(name, "").strip()
+        if v:
+            env = v
+            break
     if env:
         return os.path.abspath(os.path.expanduser(env)), rest
     if os.path.isfile(os.path.join(os.getcwd(), _CONF)):

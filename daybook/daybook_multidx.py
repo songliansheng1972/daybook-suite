@@ -335,11 +335,9 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
         prev = state.get(vol) if isinstance(state, dict) else None
         k = prev.get('rows') if isinstance(prev, dict) else None
         if isinstance(k, int) and 0 <= k <= len(rows) and os.path.exists(tpath):
-            from safeio import repair_partial_tail
-            repair_partial_tail(tpath)
+            from safeio import append_inplace
             if len(rows) > k:
-                with open(tpath, 'ab') as f:
-                    f.write(('\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n').encode('utf-8'))
+                append_inplace(tpath, '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n')
         else:
             _atomic_write(tpath, build_vol_tsv(vol, rows, l2name))
         state[vol] = {'rows': len(rows)}

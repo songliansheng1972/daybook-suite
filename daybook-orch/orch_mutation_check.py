@@ -92,11 +92,12 @@ MUTATIONS = [
     )]),
     (6, 'digest 改回静默 0 条 / 互见失败改回空串', [
         ('orchestrator.py',
-         """    vols = _load_volumes(root)
+         """    vols = _load_volumes(conf_dir or root, conf_path=conf_path)
     if not vols:
-        errors.append('卷表为空：%s 的 [volumes] 未登记任何内容卷' % os.path.join(root, 'daybook.conf'))
+        conf_basis = conf_path or os.path.join(conf_dir or root, 'daybook.conf')
+        errors.append('卷表为空：%s 的 [volumes] 未登记任何内容卷' % conf_basis)
         return [], 'no-volumes', errors""",
-         """    vols = _load_volumes(root)
+         """    vols = _load_volumes(conf_dir or root, conf_path=conf_path)
     if not vols:
         return [], 'volume-fallback', errors"""),
         ('orchestrator.py',

@@ -485,7 +485,12 @@ def _cli_root(override=None):
 
 def main():
     from ledger_root import take_home
-    _args, _home = take_home(sys.argv[1:])
+    _args, _home, _herr = take_home(sys.argv[1:])
+    if _herr:
+        sys.stderr.write('★ %s\n' % _herr)
+        return 2
+    if _args and _args[0] in ('-h', '--help'):
+        print(__doc__); return 0
     if _args and _args[0] in ('--check', '-c'):
         path = _args[1] if len(_args) >= 2 else os.curdir
         return check_pipe_buf(path)

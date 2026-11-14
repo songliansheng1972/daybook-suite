@@ -239,9 +239,12 @@ class VolumeIndex:
         return h
 
 
-def make_entry_ref(root, vol, lineno, vols=None, index=None):
+def make_entry_ref(root, vol, lineno, vols=None, index=None, conf_dir=None, conf_path=None):
     """生成互见引用 [卷#L行-SHA8]（v3.1）。返回 (引用, 错误原因)；成功时错误为 ''。
+    `root` 是账本根；未给 vols 时必须另给 **conf 目录** conf_dir/conf_path 才能读卷表。
     Build a cross-reference [volume#Lline-SHA8] (v3.1). Returns (ref, error_reason); error is '' on success.
+    `root` is the ledger root; when vols is absent, the **conf directory** conf_dir/conf_path
+    must be supplied to read the volume table.
 
     修前失败一律 `except Exception: return ''`，与「本来就没有引用」无法区分；
     现在把失败原因显式交给调用方，另写 stderr 留痕。
@@ -254,7 +257,7 @@ def make_entry_ref(root, vol, lineno, vols=None, index=None):
         sys.stderr.write('⚠ 互见引用失败（卷=%s 行=%s）：%s\n' % (vol, lineno, err))
         return '', err
     if vols is None:
-        vols = _load_volumes(root)
+        vols = _load_volumes(conf_dir or root, conf_path=conf_path)
     rel = vols.get(vol)
     if not rel:
         err = '卷 %s 不在 conf 卷表' % vol
@@ -312,22 +315,29 @@ def load_roles(path):
 
 # ── v3.1 四库式多级目录：分发接上目录（读派生件·缺则原文兜底）──────────
 # v3.1 four-library-style multi-level directory: distribution hooked to the directory (reads derived artifacts · falls back to raw text if absent)
-def _load_volumes(root, conf_path=None):
+def _load_volumes(conf_dir, conf_path=None):
     """读 conf [volumes] 表 → {卷名: 相对/绝对路径}。缺则 {}。
+    第一个参数必须是 **conf 目录**（不是账本根）：传账本根会把根再当 conf 解析，
+    [index] root 非空时卷表直接变空。
     conf_path 给出时直接读那一份（conf 目录可与账本根不同）。
     orch 内部卷的保留键（registry/tasks/…）不算内容卷，此处过滤。
     Read the conf [volumes] table → {volume name: relative/absolute path}. {} if absent.
+    The first argument must be the **conf directory**, never the ledger root: passing the root
+    re-parses it as a conf dir, so a non-empty [index] root leaves the table empty.
     An explicit conf_path is read as-is (the conf dir may differ from the ledger root).
     Reserved orch-internal keys (registry/tasks/…) are not content volumes and are filtered out here."""
-    return _vp.content_volumes(root) if not conf_path \
-        else _vp.content_volumes_from(conf_path, root=root)
+    return _vp.content_volumes(conf_dir) if not conf_path \
+        else _vp.content_volumes_from(conf_path, root=conf_dir)
 
 
-def read_multidx_rows(root, index=None):
+def read_multidx_rows(root, index=None, conf_dir=None, conf_path=None):
     """读 <root>/multilevel/*_catalog.tsv（daybook_multidx 之产出；旧名 *_目录.tsv 亦认）。
     返回 (rows, 来源, 错误清单)。来源 ∈ {'catalog','volume-fallback','no-volumes'}。
+    `root` 是账本根（派生件就在根下）；读 conf 必须另给 **conf 目录** conf_dir/conf_path。
     Read <root>/multilevel/*_catalog.tsv (the output of daybook_multidx; legacy *_目录.tsv also accepted).
     Returns (rows, source, errors). source ∈ {'catalog','volume-fallback','no-volumes'}.
+    `root` is the ledger root (derived files live there); reading the conf needs the **conf
+    directory** via conf_dir/conf_path.
 
     修前：读目录失败静默 continue、卷表为空直接返回 0 条，二者都看着像「没有新条」；
     现在把失败与空卷表都记入 errors，由 digest 显式标注。
@@ -357,9 +367,10 @@ def read_multidx_rows(root, index=None):
         return rows, 'catalog', errors
     # 兜底：直读在册卷原文·自建 部(卷)/类(kind)/属(条目)（orch 单包自持可跑）
     # Fallback: read the registered volumes' raw text directly and build 部(volume)/类(kind)/属(entry) ourselves (so the orch package runs standalone)
-    vols = _load_volumes(root)
+    vols = _load_volumes(conf_dir or root, conf_path=conf_path)
     if not vols:
-        errors.append('卷表为空：%s 的 [volumes] 未登记任何内容卷' % os.path.join(root, 'daybook.conf'))
+        conf_basis = conf_path or os.path.join(conf_dir or root, 'daybook.conf')
+        errors.append('卷表为空：%s 的 [volumes] 未登记任何内容卷' % conf_basis)
         return [], 'no-volumes', errors
     for name, rel in vols.items():
         path = rel if os.path.isabs(rel) else os.path.join(root, rel)
@@ -523,9 +534,14 @@ class Hub:
         # Both the ledger root and the conf location come from ledger_root (shared with
         # index/MCP/the append CLI/the hook); root/--root only locates conf, [index] root decides.
         from ledger_root import locate as _locate_conf
-        self.conf_path = _locate_conf(override=root)[1]
+        self.conf_dir, self.conf_path = _locate_conf(override=root)
         self.root = _vp.resolve_root(root)
-        self.vols = _vp.resolve_volumes(self.root, conf_path=self.conf_path)
+        # 传 conf 目录，不传已解析的账本根：否则 resolve_volumes 会把根再当 conf 解析一遍，
+        # [index] root 非空时全部命令 rc=2。
+        # Pass the conf directory, not the resolved ledger root: otherwise resolve_volumes
+        # re-parses the root as a conf directory and every command exits 2 whenever
+        # [index] root is non-empty.
+        self.vols = _vp.resolve_volumes(self.conf_dir, conf_path=self.conf_path)
         # conf 指向自定义子目录时先建父目录（卷本身仍由各件按需创建）。
         # Create parent directories first when conf points at custom subdirectories
         # (the volume files themselves are still created on demand by each primitive).
@@ -771,8 +787,13 @@ class Hub:
         if limit < 0:
             raise ValueError('limit 必须 ≥ 0（0=全部，正数=最近 N 条）')
         index = VolumeIndex()
-        rows, src, errors = read_multidx_rows(self.root, index=index)
-        vols = _load_volumes(self.root, conf_path=self.conf_path)
+        # 账本根只用于读派生件；卷表必须从 **conf 目录** 读（不许把账本根当 conf 再解析一次）。
+        # The ledger root is only for derived files; the volume table must be read from the
+        # **conf directory** (never re-parse the ledger root as a conf dir).
+        rows, src, errors = read_multidx_rows(self.root, index=index,
+                                              conf_dir=self.conf_dir,
+                                              conf_path=self.conf_path)
+        vols = _load_volumes(self.conf_dir, conf_path=self.conf_path)
         if vol:
             rows = [r for r in rows if r.get('volume') == vol]
         if cls:
@@ -792,7 +813,7 @@ class Hub:
         lines = [head]
         if src == 'no-volumes':
             lines.append('  ⚠ 卷表为空：0 条不代表「没有新条」，是没登记卷（见 %s）'
-                         % os.path.join(self.root, 'daybook.conf'))
+                         % (self.conf_path or os.path.join(self.conf_dir, 'daybook.conf')))
         for e in errors:
             sys.stderr.write('⚠ digest：%s\n' % e)
             lines.append('  ⚠ %s' % e)
@@ -822,7 +843,7 @@ class Hub:
         for t in [x for x in SPLIT_TO.split(to or '') if x.strip()]:
             try:
                 import agent_message as _am
-                ok, info = _am.send('司南', t, 'notify', summary, root=self.root)
+                ok, info = _am.send('司南', t, 'notify', summary, root=self.conf_dir)
             except Exception as e:
                 ok, info = False, '%s: %s' % (type(e).__name__, e)
             print('  推送 → %s：%s %s' % (t, 'OK' if ok else 'FAIL', info if not ok else ''))
@@ -905,7 +926,8 @@ def _print_pull(hub, who):
 def main(argv=None):
     ap = argparse.ArgumentParser(description='daybook 智能体编排中心')
     ap.add_argument('--home', dest='root', default=None,
-                    help='conf 所在目录（默认当前工作目录；显式指定但无 conf 即 rc=2）')
+                    help='conf 所在目录（默认当前工作目录；显式指定但无 conf 即 rc=2；'
+                         '须放在子命令之前，如 --home DIR alarm）')
     # --root 保留为同义别名：语义已变（旧=账本根，新=conf 所在目录）。
     # --root is kept as an alias; its meaning changed (old = ledger root, new = conf directory).
     ap.add_argument('--root', dest='root', help='同 --home（语义已变更：旧=账本根）')
