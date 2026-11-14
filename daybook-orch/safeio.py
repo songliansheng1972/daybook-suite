@@ -175,20 +175,35 @@ def repair_partial_tail(path):
 
 
 
-def atomic_append(path, data, root=None):
+def atomic_append(path, data, root=None, ensure_newline=False):
     """持账本根锁追加。O_APPEND + 单次 write。
-    Append while holding the ledger-root lock. O_APPEND + single write.
+    Append while holding the ledger-root lock. O_APPEND + a single write.
     root 给出账本根（子目录卷也争同一把锁）；缺省退到目标所在目录。
     `root` names the ledger root (sub-directory volumes contend on the same lock);
-    without it the target's own directory is used."""
+    without it the target's own directory is used.
+    ensure_newline=True：锁内看末字节，不是 \\n 就先补一个（既有字节不动），
+    返回 True 表示补过；避免新条目粘在合法但无换行的末行行尾。
+    ensure_newline=True: under the lock, check the last byte and prepend one \\n when it is
+    missing (existing bytes untouched); True means it padded. This stops a new entry from
+    being glued onto a legal last line that simply lacked a newline."""
     if isinstance(data, str):
         data = data.encode('utf-8')
+    padded = False
     with locked(root if root else path):
+        if ensure_newline and os.path.exists(path):
+            with open(path, 'rb') as f:
+                f.seek(0, os.SEEK_END)
+                if f.tell() > 0:
+                    f.seek(-1, os.SEEK_END)
+                    if f.read(1) != b'\n' and data:
+                        data = b'\n' + data
+                        padded = True
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             os.write(fd, data)
         finally:
             os.close(fd)
+    return padded
 
 
 def sniff_bytes(raw):

@@ -14,8 +14,8 @@ Cases
   E 同一手法但不恢复 mtime                      ⇒ rc=3
   F 旧格式索引（fmt<2）                         ⇒ rc=0，报过期并全量重建
   G 删索引后等长替换                            ⇒ rc=3（索引缺失仍验哈希·不得洗成 5）
-  H 删游标后等长替换                            ⇒ rc=5（证据缺失·不写回）
-  I 游标写成 {}                                 ⇒ rc=5（不可信·不自动修好）
+  H 删游标后等长替换                            ⇒ rc=3（封存仍在即判违例·不是 5）
+  I 游标写成 {}                                 ⇒ rc=5（封存缺失/不可判定·不自动修好）
   J 替换后自己重写游标的 hash/size/mtime         ⇒ rc=3（与封存指纹不符·游标被改写）
   K 删索引加删游标                              ⇒ rc=5（证据缺失·不重建）
   L 正常追加后删索引                            ⇒ rc=5 且无 traceback（旧实现 FileNotFoundError rc=1）
@@ -25,13 +25,16 @@ Cases
   R ≥8 进程并发 index                           ⇒ 零误报、零丢更新、复跑全 0（封存快照锁内只读一次）
   S 配置错（卷指向目录）                        ⇒ rc=2 且派生件递归哈希零变化（不可信即零落盘）
   T rc=3 违例                                   ⇒ 清单/封存时戳零变化（不可信即零落盘）
-  V5 rc=5 证据缺失                              ⇒ 同样零变化（不可信即零落盘）
+  V5 删游标+等长改写                            ⇒ rc=3（缺一名证人、另一名仍在 ⇒ 仍判违例），零落盘
   U rc=4 作者口径红                             ⇒ 照写且文案「已写回·只报不拦」（不是不可信）
   R2 两进程 20ms 错峰并发 index                 ⇒ 两侧 rc=0（一「只追加」一「未变」）
   V safeio 原子替换/无锁读者                    ⇒ atomic_write 走 os.replace，read_vol 不取锁
   W 子目录卷 + 长条目 append                    ⇒ 与 index 争同一把账本根锁（不被子目录锁旁路）
   P 同一账本·两个不同 TMPDIR 并发持锁读改写     ⇒ 临界区不重叠、不丢更新（锁绑目录 inode）
   Q 持锁期间删除任何外部件                      ⇒ 仍互斥（账本内本无锁件可删）
+  AA 卷末无换行（有换行/合法无换行/半行残渣）    ⇒ 追加后增量条数 == 全量重建条数，行号无幻影
+  AB conf 根 ≠ 脚本目录·账本外调用 CLI           ⇒ 锁落账本根；8 并发长条目全存活
+  AC 作者缓存绑定内容哈希                        ⇒ 等长改写后喂旧缓存必须红（不许按 size 复用）
 
 变异验证 / mutation check
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
@@ -115,19 +118,19 @@ def _prepare(tmp):
     （index 的作者口径机检走 daybook_append.check_author_consistency，故须随拷。）
     (The index author-convention gate calls daybook_append.check_author_consistency, so it must be staged too.)"""
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(tmp, name))
     with io.open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
     _make_volume(os.path.join(tmp, '账卷.txt'))
 
 
-def _run(tmp):
+def _run(tmp, cmd='index'):
     # -B：被测脚本被拷进隔离目录运行（真实部署里它在包目录、不在账本里），
     # 关掉字节码缓存，免得 __pycache__ 冒充「账本被写」。
     # -B: the script is staged inside the isolated ledger here (in real deployment it lives in
     # the package dir), so suppress bytecode caching to keep __pycache__ out of the criterion.
-    return subprocess.run([sys.executable, '-B', 'daybook.py', 'index'],
+    return subprocess.run([sys.executable, '-B', 'daybook.py', cmd],
                           cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           universal_newlines=True)
 
@@ -390,7 +393,7 @@ def _case_stagger(tmp):
     d = os.path.join(tmp, 'stagger')
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -529,7 +532,7 @@ def _case_partial_commit(tmp):
     d = os.path.join(tmp, 'partial')
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -593,7 +596,7 @@ def _case_append(tmp):
     d = os.path.join(tmp, 'append')
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -653,6 +656,230 @@ def _case_tail(tmp):
     _ok('Z2 崩溃半行：截断后原位续写并报告',
         r.returncode == 0 and r.stdout.strip() == 'OK',
         (r.stdout.strip() or r.stderr.strip())[:200])
+
+
+def _stage(d):
+    """把被测件拷进隔离目录（含 ledger_root：根解析已三处同源）。
+    Stage the artifacts under test (including ledger_root: one shared root resolver)."""
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+        shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), name), os.path.join(d, name))
+
+
+def _tsv_rows(idf):
+    """读索引数据行（cols 列表，丢掉表头与空行）。Read index rows (drop header/blank)."""
+    rows = []
+    for line in io.open(idf, encoding='utf-8').read().splitlines()[1:]:
+        if line.strip():
+            rows.append(line.split('\t'))
+    return rows
+
+
+def _case_no_newline_tail(tmp):
+    """AA 卷末无换行（三种形态）：追加后增量条数 == 全量重建条数，行号无幻影。
+    AA volume ending without a newline (three shapes): after appending, the incremental row
+    count must equal a full rebuild's, with no phantom line numbers."""
+    print('  -- AA 卷末无换行三种形态 --')
+    seeds = {
+        '有换行': '[2026-11-13 10:00:00] [测试] [甲] [皮特] 一\n'
+                  '[2026-11-13 10:01:00] [测试] [乙] [皮特] 二\n',
+        '无换行合法': '[2026-11-13 10:00:00] [测试] [甲] [皮特] 一\n'
+                      '[2026-11-13 10:01:00] [测试] [乙] [皮特] 二',   # 合法条目，仅缺末换行
+        '半行残渣': '[2026-11-13 10:00:00] [测试] [甲] [皮特] 一\n'
+                    '[2026-11-13 10:01:00] [测试] [乙] [皮特] 二\n'
+                    '[2026-11-13 10:02:00] [测试',                    # 崩溃残渣（无换行）
+    }
+    for label, seed in seeds.items():
+        inc = os.path.join(tmp, 'aa_' + str(abs(hash(label)) % 9999))
+        full = inc + '_full'
+        for d in (inc, full):
+            os.makedirs(d)
+            _stage(d)
+            io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(CONF)
+            io.open(os.path.join(d, '账卷.txt'), 'w', encoding='utf-8').write(seed)
+        subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=inc,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        r = subprocess.run([sys.executable, '-B', 'daybook_append.py', '账卷.txt',
+                            '测试', '追加条目', '皮特', '新正文'],
+                           cwd=inc, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+        _ok('AA[%s] 追加 rc=0' % label, r.returncode == 0, (r.stderr or r.stdout)[-160:])
+        r = subprocess.run([sys.executable, '-B', 'daybook.py', 'index'], cwd=inc,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+        _ok('AA[%s] 增量索引 rc=0（非违例）' % label, r.returncode == 0,
+            'rc=%d %s' % (r.returncode, (r.stderr or '')[-160:]))
+        shutil.copy2(os.path.join(inc, '账卷.txt'), os.path.join(full, '账卷.txt'))
+        subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=full,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        ri = _tsv_rows(os.path.join(inc, '索引', 'index_账.tsv'))
+        rf = _tsv_rows(os.path.join(full, '索引', 'index_账.tsv'))
+        _ok('AA[%s] 增量条数 == 全量重建条数（%d/%d）' % (label, len(ri), len(rf)),
+            len(ri) == len(rf), 'incremental=%d full=%d' % (len(ri), len(rf)))
+        _ok('AA[%s] 行号逐个一致（无幻影）' % label,
+            [r[1] for r in ri] == [r[1] for r in rf],
+            'inc=%s full=%s' % ([r[1] for r in ri], [r[1] for r in rf]))
+        _ok('AA[%s] 追加条目独立成行（标题=追加条目，未粘在旧行尾）' % label,
+            any(len(r) > 4 and r[4] == '追加条目' for r in ri),
+            'titles=%s' % [r[4] if len(r) > 4 else '?' for r in ri])
+        lines_in_vol = io.open(os.path.join(inc, '账卷.txt'), encoding='utf-8').read().count('\n') + 1
+        _ok('AA[%s] 行号不超过卷内实际行数' % label,
+            all(int(r[1]) <= lines_in_vol for r in ri),
+            'max=%s lines=%d' % (max(int(r[1]) for r in ri) if ri else 0, lines_in_vol))
+
+
+def _case_cli_root(tmp):
+    """AB 根解析：conf 根 ≠ 脚本目录、从账本外调用 CLI —— 锁必须落在账本根，
+    并发长条目 8/8 全存活。锁若按脚本目录/VOL 目录分裂，这里必红。
+    AB root resolution: conf root ≠ script dir, CLI invoked from outside the ledger — the lock
+    must land on the ledger root, and 8 concurrent long entries must all survive."""
+    print('  -- AB CLI 账本根（conf 根 ≠ 脚本目录） --')
+    led = os.path.join(tmp, 'ab_ledger')
+    tool = os.path.join(led, '工具')
+    os.makedirs(tool)
+    _stage(tool)
+    # conf 在工具/ 下，[index] root=.. ⇒ 账本根是 led（≠ 脚本目录 tool）
+    io.open(os.path.join(tool, 'daybook.conf'), 'w', encoding='utf-8').write(
+        '[volumes]\n子=子/子卷.txt\n\n[index]\nroot=..\nout_dir=索引\n')
+    os.makedirs(os.path.join(led, '子'))
+    volp = os.path.join(led, '子', '子卷.txt')
+    io.open(volp, 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [起始] [皮特] 正文\n')
+    cli = [sys.executable, '-B', os.path.join(tool, 'daybook_append.py'), volp,
+           '测试', '长条目', '皮特', '长' * 3000]
+    env = dict(os.environ)
+    env.pop('DAYBOOK_ROOT', None)          # 未设 DAYBOOK_ROOT：只能靠 conf 的 [index] root
+    holder = subprocess.Popen(
+        [sys.executable, '-B', '-c', _CHILD_HOLD_AB, tool, led],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    held = os.path.join(led, 'held.flag')
+    for _ in range(200):
+        if os.path.exists(held):
+            break
+        time.sleep(0.02)
+    if os.path.exists(held):
+        t0 = time.time()
+        app = subprocess.Popen(cli, cwd=tempfile.gettempdir(), env=env,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True)
+        time.sleep(0.6)
+        still = app.poll() is None
+        io.open(os.path.join(led, 'release.flag'), 'w').write('1')
+        out, err = app.communicate()
+        elapsed = time.time() - t0
+        holder.communicate()
+        _ok('AB1 从账本外调用 CLI 被账本根锁挡住（未提前进临界区）',
+            still and elapsed >= 0.5, 'still=%s elapsed=%.2fs' % (still, elapsed))
+        _ok('AB1b CLI rc=0', app.returncode == 0, 'rc=%s %s' % (app.returncode, err[-120:]))
+    else:
+        holder.kill()
+        _ok('AB1 持锁进程进入临界区', False, 'held.flag 未出现')
+    try:
+        os.remove(os.path.join(led, 'release.flag'))
+    except OSError:
+        pass
+    # 一半带 DAYBOOK_ROOT、一半不带：旧实现下两者解析到不同目录 ⇒ 分裂锁 ⇒ 丢更新
+    # Half run with DAYBOOK_ROOT, half without: the old resolver split them into different
+    # roots ⇒ split locks ⇒ lost updates.
+    env_b = dict(env)
+    env_b['DAYBOOK_ROOT'] = led
+    procs = [subprocess.Popen(cli, cwd=tempfile.gettempdir(),
+                              env=(env if i % 2 == 0 else env_b),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True) for i in range(8)]
+    rcs = [p.wait() for p in procs]
+    _ok('AB2 8 进程并发长条目全 rc=0（同根不分裂锁）', all(rc == 0 for rc in rcs), 'rcs=%s' % rcs)
+    entries = io.open(volp, encoding='utf-8').read().count('[测试] [长条目]')
+    _ok('AB3 并发 8 条长条目全存活（无丢更新）', entries == 9,
+        'entries=%d（1 条持锁测试 + 8 条并发）' % entries)
+    _ok('AB4 账本根锁件不落账本（无 .lock）',
+        not [n for n in os.listdir(led) if n.endswith('.lock')], '')
+    _ok('AB5 账本根解析与 daybook 同源（tools 有 ledger_root.py）',
+        os.path.isfile(os.path.join(tool, 'ledger_root.py')), '')
+
+
+def _case_cache_hash(tmp):
+    """AC 作者缓存绑定内容哈希：等长改写后喂旧缓存必须红（不许按 size 复用）。
+    AC The author cache is bound to the content hash: an old cache fed in after an
+    equal-length rewrite must go red (a size-only hit is not allowed)."""
+    print('  -- AC 作者缓存绑定内容哈希 --')
+    d = os.path.join(tmp, 'ac')
+    os.makedirs(d)
+    _stage(d)
+    io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(CONF)
+    vp = os.path.join(d, '账卷.txt')
+    seed = '[2026-11-13 10:00:00] [测试] [甲] [皮特] ' + 'x' * 40 + '\n'
+    io.open(vp, 'w', encoding='utf-8').write(seed)
+    subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=d,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stamp = json.load(io.open(os.path.join(d, '索引', '.head_stamp.json'), encoding='utf-8'))
+    old_cache = stamp.get('author_scan') or {}
+    old_hash = (old_cache.get('账') or {}).get('hash')
+    r = subprocess.run([sys.executable, '-B', '-c', _CHILD_CACHE_CHECK, d,
+                        json.dumps(old_cache)], cwd=d, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    _ok('AC0 未改写时旧缓存（有已验哈希）判绿', r.stdout.strip() == 'GREEN',
+        (r.stdout.strip() or r.stderr.strip())[-160:])
+    # 等长改写：作者位换成合法的机器 id（20 字符），并从正文尾部删掉同样多的字节
+    raw = io.open(vp, encoding='utf-8').read()
+    new = raw.replace('[皮特]', '[ag-0123456789abcdef]')
+    delta = len(new.encode('utf-8')) - len(raw.encode('utf-8'))
+    assert delta > 0
+    new = new.replace('x' * delta, '', 1)          # 从正文尾部抵消长度差（保持字节数不变）
+    io.open(vp, 'w', encoding='utf-8').write(new)
+    _ok('AC1 等长改写后字节数不变',
+        len(io.open(vp, 'rb').read()) == len(raw.encode('utf-8')), '')
+    r = subprocess.run([sys.executable, '-B', '-c', _CHILD_CACHE_CHECK, d,
+                        json.dumps(old_cache)], cwd=d, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True)
+    _ok('AC2 旧缓存（哈希不符）必须判红', r.stdout.strip() == 'RED',
+        (r.stdout.strip() or r.stderr.strip())[-160:])
+
+
+def _case_msg_consistency(tmp):
+    """AD rc=3 时文案不得说「已写回」：违例/证据缺失是零落盘，作者红只能报「未写回」。
+    AD with rc=3 the text must not claim a write-back: violation / lost evidence writes nothing,
+    so an author-convention red can only be reported as "not written"."""
+    print('  -- AD 违例态文案（已写回 vs 未写回） --')
+    d = os.path.join(tmp, 'ad')
+    os.makedirs(d)
+    _stage(d)
+    io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(CONF)
+    vp = os.path.join(d, '账卷.txt')
+    io.open(vp, 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [甲] [ag-0123456789abcdef] ' + 'x' * 6000 + '\n'
+        + '[2026-11-13 10:01:00] [测试] [乙] [ag-0123456789abcdef] ' + 'x' * 6000 + '\n')
+    r = subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=d,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('AD0 作者红认基线 ⇒ rc=0 且照认照写', r.returncode == 0, 'rc=%d' % r.returncode)
+    _tamper_mid(vp, 0.5)
+    r = _run(d)
+    txt = r.stdout + r.stderr
+    _ok('AD1 违例 + 作者红 ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
+    _ok('AD2 文案明确「未写回」', '未写回' in txt, txt[-160:])
+    _ok('AD3 不得谎称「已写回」', '已写回' not in txt, txt[-160:])
+
+
+_CHILD_HOLD_AB = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import safeio
+root = sys.argv[2]
+with safeio.locked(root):
+    open(os.path.join(root, 'held.flag'), 'w').write('1')
+    while not os.path.exists(os.path.join(root, 'release.flag')):
+        time.sleep(0.02)
+'''
+
+_CHILD_CACHE_CHECK = r'''
+import io, json, os, sys
+sys.path.insert(0, os.getcwd())
+import daybook as db
+conf = db.load_conf(os.path.join(os.getcwd(), 'daybook.conf'))
+cache = json.loads(sys.argv[2])
+rows = db.check_authors(conf, os.getcwd(), cache=cache)   # 不传 verified ⇒ 旧缓存不可复用
+print('GREEN' if all(ok for _v, _p, ok, _d in rows) else 'RED')
+'''
 
 
 def main():
@@ -795,18 +1022,23 @@ def main():
         io.open(vol, 'wb').write(orig_g)
         _base(work)
 
-        # H 删游标后等长替换 ⇒ 证据缺失（rc=5）
+        # H 删游标后等长替换 ⇒ 封存仍在，仍判违例（rc=3），不是 5
+        orig_h = io.open(vol, 'rb').read()
         os.remove(cp)
         _tamper_mid(vol, 0.55)
         r = _run(work)
         txt = r.stdout + r.stderr
-        _ok('H 删游标+等长替换 ⇒ rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
+        _ok('H 删游标+等长替换 ⇒ rc=3（封存在即判违例）', r.returncode == 3, 'rc=%d' % r.returncode)
         _ok('H 报证据缺失（游标丢失）', '证据缺失' in txt and '游标' in txt)
         _ok('H 不得判未变', '未变·跳过' not in txt)
         _ok('H 不写回游标', not os.path.exists(cp))
         _log('H', r)
         r = _run(work)
-        _ok('H 未认基线前复跑仍 5', r.returncode == 5, 'rc=%d' % r.returncode)
+        _ok('H 复跑仍 3（不得洗成 5）', r.returncode == 3, 'rc=%d' % r.returncode)
+        r = _base(work)
+        _ok('H 违例态认基线被拒 ⇒ rc=3（删游标→5→认基线 的洗白路径已封）',
+            r.returncode == 3, 'rc=%d' % r.returncode)
+        io.open(vol, 'wb').write(orig_h)   # 复原后认基线，供 I 用干净状态
         _base(work)
 
         # I 游标写成 {} ⇒ 不可信，证据缺失（rc=5），且不自动修好
@@ -985,8 +1217,9 @@ def main():
         io.open(vol, 'wb').write(orig_t)
         _run(work)
 
-        # V5 rc=5 证据缺失：同样不可信即零落盘
-        # V5 rc=5 lost evidence: untrusted ⇒ zero write as well
+        # V5 删游标+等长改写：封存这位证人还在 ⇒ 必须判 3（不是 5），且零落盘
+        # V5 delete cursor + equal-length rewrite: the seal witness is still present ⇒ 3, not 5,
+        # and still zero write. (delete-cursor → 5 → baseline → 0 would be a laundering path.)
         orig_v5 = io.open(vol, 'rb').read()
         cp_v5 = io.open(cp, 'rb').read()
         os.remove(cp)
@@ -994,9 +1227,12 @@ def main():
         idx_before = _snapshot(os.path.join(work, '索引'))
         r = _run(work)
         idx_after = _snapshot(os.path.join(work, '索引'))
-        _ok('V5 删游标+等长改写 ⇒ rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
-        _ok('V5 rc=5 不可信即零落盘', idx_before == idx_after,
+        _ok('V5 删游标+等长改写 ⇒ rc=3（封存在即判违例）', r.returncode == 3, 'rc=%d' % r.returncode)
+        _ok('V5 rc=3 不可信即零落盘', idx_before == idx_after,
             '差异=%s' % (_snap_diff(idx_before, idx_after),))
+        r = _run(work, 'baseline')
+        _ok('V5 违例态认基线被拒 ⇒ rc=3（不得把篡改认成新基线）', r.returncode == 3,
+            'rc=%d' % r.returncode)
         io.open(vol, 'wb').write(orig_v5)
         io.open(cp, 'wb').write(cp_v5)
         _run(work)
@@ -1025,6 +1261,10 @@ def main():
         _case_partial_commit(work)
         _case_tail(work)
         _case_append(work)
+        _case_no_newline_tail(work)
+        _case_cli_root(work)
+        _case_cache_hash(work)
+        _case_msg_consistency(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',
@@ -1050,7 +1290,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–W 二十三组用例全绿')
+    print('PASS: A–AD 二十七组用例全绿')
     return 0
 
 

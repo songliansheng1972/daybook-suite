@@ -530,8 +530,6 @@ def build(conf, root='.', baseline=False, dry=False):
     CONFIG_ERRORS.clear()
     EVIDENCE_MISSING.clear()
     blocked = set()     # 证据缺失的卷：本轮不写回索引/游标/封存 · evidence-missing volumes: no writes
-    evidence_broken = set()  # 证据链断过的卷（含认基线轮）：不得再用残留封存判违例
-                             # volumes whose evidence chain broke (incl. baseline runs)
     RULE_WARN.clear()
     _RULE_WARN_SEEN.clear()
     vols = conf.get('volumes', {})
@@ -580,6 +578,8 @@ def build(conf, root='.', baseline=False, dry=False):
         author_seed = old_stamp.get('author_scan') if isinstance(old_stamp, dict) else None
         author_seed = author_seed if isinstance(author_seed, dict) else {}
         author_cache = {}
+        author_verified = {}   # 本轮用当前字节验过的内容哈希（缓存只许配它复用）
+                               # content hashes verified against the current bytes this run
         head_rx = conf['entries'].get('head_regex', '') or None
         from daybook_append import scan_author_cache
         gated = False
@@ -647,11 +647,6 @@ def build(conf, root='.', baseline=False, dry=False):
                                      # must not rebuild tampering into a fresh baseline
 
             def _evidence(msg):
-                # 证据链断了的卷：即使本轮是认基线，也不得再用「残留封存 vs 内容」判违例。
-                # 5 的语义就是「无法判定」，人认基线是这条链唯一的出口。
-                # Evidence chain broken: even a baseline run must not re-judge a violation
-                # from a surviving seal vs content; accepting a baseline is the only exit.
-                evidence_broken.add(vol)
                 if baseline:
                     # 认基线这一轮就是来重建的：不再报「证据缺失」，也不必提示认基线
                     # A baseline run exists to rebuild: do not report missing evidence
@@ -680,6 +675,8 @@ def build(conf, root='.', baseline=False, dry=False):
                 cache['size'] = size_now
                 cache['hash'] = full_hash
                 author_cache[vol] = cache
+                if full_hash is not None:
+                    author_verified[vol] = full_hash
 
             # ── 派生件三态：真未变 / 派生件丢失（重建并报告）/ 内容不符（违例）──
             # ── Three states: genuinely unchanged / derived artifacts lost (rebuild + report)
@@ -813,6 +810,14 @@ def build(conf, root='.', baseline=False, dry=False):
 
             # ── 情形二：只追加 ⇒ 已知前缀验哈希 ＋ 读尾部 ＋ 追加写索引 ──
             # ── Case 2: pure append ⇒ verify the known prefix hash + tail-read + append to the index ──
+            elif cur and index_present and size > cur.get('size') \
+                    and not _line_boundary(p, cur['size']):
+                # 旧游标停在不完整行的中间（原卷末无换行，追加前被补了一个 \n）：
+                # 那个「半行」现在成了完整一行，必须整卷重扫才能与全量重建同数同号。
+                # The old cursor stopped mid-line (the volume ended without a newline and the
+                # appender padded one): that half line is now a complete line, so a full rescan
+                # is required to match a rebuild's count and line numbers.
+                report.append((vol, '★ 游标边界不在行首（卷末原无换行）·全量重扫（不算违例）'))
             elif cur and index_present and size > cur.get('size'):
                 content_hash, pref_hash = _hash_vol(p, prefix_limit=cur['size'])
                 n_old_b = cur.get('resume_byte')
@@ -874,18 +879,19 @@ def build(conf, root='.', baseline=False, dry=False):
                 # 全扫也拿封存指纹对一次账本自身证据：派生件不一致触发的重扫不得把篡改洗白
                 # A full rescan also checks the sealed fingerprint: a rescan triggered by derived
                 # inconsistency must never launder a content rewrite.
-                # 已判证据缺失/已判违例的卷不再二次判违例：证据链断了就是 5，
-                # 不得因为封存还在就把「证据缺失」改判成「违例」，也不得重复刷违例文案。
-                # A volume already judged evidence-missing or violated is not re-judged here:
-                # a broken evidence chain stays 5; the surviving seal must not turn it into 3.
+                # 缺一名证人≠不可判定：游标/索引丢了，封存仍在，就仍须用封存证据判违例；
+                # 只有「封存也不在」才允许落 5（否则删游标→5→认基线→0 就是一条洗白路径）。
                 # 只按「可证明的改写」判：等长比全卷哈希、变长比封存长度的前缀哈希、变短即违例。
                 # 变长且前缀一致 = 纯追加之后的追赶重扫（如「索引新于游标」的崩溃恢复），
                 # 不是违例，不得退 3。
+                # One missing witness ≠ undecidable: with the seal still present, the seal's own
+                # size/hash evidence must still decide; only "the seal is gone too" may stay at 5.
+                # Otherwise delete-cursor→5→baseline→0 would be a laundering path.
                 # Judge only provable rewrites: equal size ⇒ whole-file hash; grown ⇒ prefix hash
                 # of the sealed length (a matching prefix is a catch-up rescan, never 3);
                 # shrunk ⇒ violation.
                 _seal = seals.get(vol)
-                if vol not in blocked and vol not in evidence_broken and _seal is not None:
+                if _seal is not None and not any(_v == vol for _v, _m in VIOLATIONS):
                     _s_size = _seal.get('size') or 0
                     if _s_size == size:
                         _bad = _seal.get('content_hash') != content_hash
@@ -930,7 +936,8 @@ def build(conf, root='.', baseline=False, dry=False):
         if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
         if VIOLATIONS: codes.append(EXIT_VIOLATION)
         if EVIDENCE_MISSING: codes.append(EXIT_EVIDENCE)
-        AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True, cache=author_cache)
+        AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True,
+                                                   cache=author_cache, verified=author_verified)
         if AUTHOR_RED and not baseline:
             codes.append(EXIT_AUTHOR)
         rc = worst_exit(codes)
@@ -1003,6 +1010,17 @@ def _read_json(path):
         return obj if isinstance(obj, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def _line_boundary(path, off):
+    """off 是否落在行首（off=0 或前一字节是 \\n）。用于识别「游标停在半行中间」。
+    Whether `off` sits on a line start (off=0 or the preceding byte is \\n); used to detect
+    a cursor that stopped mid-line."""
+    if off <= 0:
+        return True
+    with open(path, 'rb') as f:
+        f.seek(off - 1)
+        return f.read(1) == b'\n'
 
 
 def _count_index_rows(idf):
@@ -1292,17 +1310,21 @@ def query(conf, root, args):
     return '\n'.join(out)
 
 
-def check_authors(conf, root='.', cache=None):
+def check_authors(conf, root='.', cache=None, verified=None):
     """机检：作者位必须是显示名；机器 id 或同卷混两种形态即红；配置卷不存在也红。
     Machine check: the author slot must hold a display name; a machine id, mixed conventions,
     or a missing configured volume is red.
     返回 [(卷, 路径, ok, detail)]。
     Returns [(volume, path, ok, detail)].
-    cache：build 本轮已算好的增量扫描缓存（卷名→cache）；命中且尺寸一致就不再重扫。
-    cache: this build's incremental scan (volume → cache); a size-consistent hit is reused."""
+    cache/verified：只接受「本轮用该内容哈希验过」的缓存（verified={卷: 内容哈希}）；
+    缓存命中还须 size 与哈希都对上，等长改写后拿旧缓存喂进来不会被当成绿。
+    cache/verified: only a cache verified against this run's content hash is accepted
+    (verified = {volume: content hash}); a hit also needs the same size, so an old cache fed
+    in after an equal-length rewrite can never be taken as green."""
     from daybook_append import check_author_consistency, author_verdict
     head_rx = conf.get('entries', {}).get('head_regex', '') or None
     cache = cache if isinstance(cache, dict) else {}
+    verified = verified if isinstance(verified, dict) else {}
     rows = []
     for vol, path in conf.get('volumes', {}).items():
         p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -1316,8 +1338,14 @@ def check_authors(conf, root='.', cache=None):
                           'summary': '配置卷不存在（不是「无条目」）'}))
             continue
         c = cache.get(vol)
-        if isinstance(c, dict) and c.get('hash') is not None \
-                and c.get('size') == os.path.getsize(p):
+        good = isinstance(c, dict) and c.get('hash') is not None \
+            and verified.get(vol) == c.get('hash')
+        if good:
+            try:
+                good = c.get('size') == os.path.getsize(p)
+            except OSError:
+                good = False
+        if good:
             ok, detail = author_verdict(c)
         else:
             ok, detail = check_author_consistency(p, head_regex=head_rx)
@@ -1325,16 +1353,14 @@ def check_authors(conf, root='.', cache=None):
     return rows
 
 
-def _report_authors(conf, root, quiet_green=False, cache=None):
+def _report_authors(conf, root, quiet_green=False, cache=None, verified=None):
     """打印作者口径机检结果；返 True=有卷报红。
-    给出 cache（build 本轮的增量扫描结果）时直接复用，避免单条追加后全卷重解析。
+    给出 cache/verified（build 本轮增量扫描与其已验哈希）时复用，避免单条追加后全卷重解析。
     Print the author-convention check; returns True when any volume is red.
-    With `cache` (this build's incremental scan) the verdict is reused, so a single
-    append never re-parses the whole volume."""
-    from daybook_append import author_verdict
-    cache = cache if isinstance(cache, dict) else {}
+    With `cache`/`verified` (this build's incremental scan and its verified hashes) the
+    verdict is reused, so a single append never re-parses the whole volume."""
     red = False
-    for vol, p, ok, detail in check_authors(conf, root, cache=cache):
+    for vol, p, ok, detail in check_authors(conf, root, cache=cache, verified=verified):
         if ok:
             if not quiet_green:
                 print('  作者口径 %s: 一致（%s）' % (vol, detail.get('summary', '')), flush=True)
@@ -1373,21 +1399,15 @@ def main():
                          '  请把 daybook.conf 放在本程序同目录（配置里的 root 决定账本根）。\n' % exc)
         return 2
     # 根目录：conf[index][root] 控制。空=HERE；..=dirname(HERE)；绝对路径=原样
+    # 解析唯一在 ledger_root.resolve_root（与 MCP、追加 CLI 同源），结果 realpath 归一。
     # Root: conf[index][root]. Empty = HERE; '..' = parent; absolute = as-is.
-    root_cfg = conf.get('index', {}).get('root', '').strip()
-    if not root_cfg:
-        root = HERE
-    elif root_cfg == '..':
-        root = os.path.dirname(HERE)
-    elif os.path.isabs(root_cfg):
-        root = root_cfg
-    else:
-        root = os.path.join(HERE, root_cfg)
-    # 账本根必须存在：不存在即配置错，退 2，不回退到临时目录或其它目录
-    # The ledger root must exist: a missing root is a configuration error (rc=2); never fall
-    # back to the temp dir or any other directory.
-    if not os.path.isdir(root):
-        sys.stderr.write('★ 账本根不存在：%s（配置错·检查 daybook.conf 的 [index] root）\n' % root)
+    # The single resolver is ledger_root.resolve_root (shared with the MCP and the append CLI);
+    # its result is realpath-normalised so every process locks the same directory inode.
+    from ledger_root import resolve_root
+    try:
+        root = resolve_root(HERE, conf)
+    except ValueError as exc:
+        sys.stderr.write('★ %s（配置错·检查 daybook.conf 的 [index] root）\n' % exc)
         return 2
     # watch 监视面＝所有真实卷文件（内部卷变动也要触发）；索引面仍只认 conf['volumes']
     # The watch surface = every real volume file (internal changes must trigger too);
@@ -1435,9 +1455,15 @@ def main():
         # 机检在 build 内只跑一次（写入门也用同一结果），这里只读取，不重复扫卷。
         # The check runs once inside build (the write gate uses the same result); read it here.
         if AUTHOR_RED:
-            sys.stderr.write('★ 已写回·作者口径红·只报不拦（作者位出现机器 id 或同卷混用）\n')
             codes.append(EXIT_AUTHOR)
         rc = worst_exit(codes)
+        if AUTHOR_RED:
+            # 只有「本轮真的写回了」才能说已写回：rc=2/3/5 是零落盘，文案必须是「未写回」
+            # Only claim a write-back when this run actually wrote; rc=2/3/5 wrote nothing.
+            if rc == EXIT_AUTHOR:
+                sys.stderr.write('★ 已写回·作者口径红·只报不拦（作者位出现机器 id 或同卷混用）\n')
+            else:
+                sys.stderr.write('★ 作者口径红·未写回（本轮 rc=%d：配置错/违例/证据缺失 ⇒ 零落盘）\n' % rc)
         if rc:
             sys.exit(rc)
     elif cmd in ('baseline', '认基线'):

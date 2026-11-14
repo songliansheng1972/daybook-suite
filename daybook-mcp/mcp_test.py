@@ -104,7 +104,7 @@ def _setup_tmp_root():
         f.write('# G3 注册卷\n')
     # 端到端用：把索引器放进根目录（与真实部署一致，conf 从脚本同目录读）
     # For end-to-end: put the indexer in the root (matching real deployment; conf sits beside it)
-    for name in ('daybook.py', 'daybook_append.py', 'safeio.py'):
+    for name in ('daybook.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py'):
         src = os.path.join(HERE, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(tmp_root, name))

@@ -239,8 +239,11 @@ def gen_one(key, version):
     # ── payload：增量拷贝 + 逐件清陈旧（不批量删）──
     n = 0
     want = set()
-    for dirpath, _dirs, files in os.walk(box):
+    for dirpath, dirs, files in os.walk(box):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]     # 字节码缓存不进发行物
         for f in files:
+            if f.endswith(('.pyc', '.pyo')):
+                continue
             sp = os.path.join(dirpath, f)
             rel = os.path.relpath(sp, box)
             want.add(rel)
@@ -290,7 +293,9 @@ def _sub(text, sub):
 
 
 def verify_one(key):
-    """payload == 整装目录 逐件 md5 比对。"""
+    """payload == 整装目录 逐件 md5 比对；并确认产物里没有 .pyc/__pycache__。
+    Compare payload vs the packaged tree file by file (md5); also assert the payload carries
+    no .pyc / __pycache__."""
     spec = PKGS[key]
     box = os.path.join(REPO, spec["box"])
     root, srcroot = tree_paths(spec["dist"])
@@ -299,8 +304,11 @@ def verify_one(key):
         print("  ✗ %s payload 不存在（先 --pkg %s 生成）" % (spec["dist"], key), file=sys.stderr)
         return [spec["dist"] + "/<payload 缺>"]
     bad = []
-    for dirpath, _dirs, files in os.walk(box):
+    for dirpath, dirs, files in os.walk(box):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]   # 字节码缓存不属于发行物
         for f in files:
+            if f.endswith(('.pyc', '.pyo')):
+                continue
             sp = os.path.join(dirpath, f)
             rel = os.path.relpath(sp, box)
             dp = os.path.join(payload, rel)
@@ -308,6 +316,18 @@ def verify_one(key):
                 bad.append("%s/payload/%s 缺" % (spec["dist"], rel))
             elif md5_of(sp) != md5_of(dp):
                 bad.append("%s/payload/%s ≠ 整装目录" % (spec["dist"], rel))
+    # 发布卫生：产物里出现字节码缓存一律判失败（旧 _build 曾把 __pycache__ 带进 payload）
+    # Release hygiene: any bytecode cache in the payload fails the check (a stale _build used
+    # to drag __pycache__ into the payload).
+    for dirpath, dirs, files in os.walk(payload):
+        for d in dirs:
+            if d == "__pycache__":
+                bad.append("%s/payload/%s/<__pycache__>" % (spec["dist"],
+                                                            os.path.relpath(dirpath, payload)))
+        for f in files:
+            if f.endswith(('.pyc', '.pyo')):
+                bad.append("%s/payload/%s" % (spec["dist"],
+                                              os.path.relpath(os.path.join(dirpath, f), payload)))
     return bad
 
 
@@ -336,6 +356,17 @@ def main():
 
     if args.verify:
         print("== 一致校验：payload == 整装目录 ==")
+        # 发版路径固定：先清 _build 再重建再验——不许靠人记得清陈旧产物
+        # （旧 _build 曾带 2844 构建号与 __pycache__，让 --verify 假红/假绿）。
+        # Fixed release path: wipe _build, regenerate, then verify — never rely on a human to
+        # remember cleaning stale output (a stale _build once carried build 2844 and __pycache__).
+        build_root = os.path.join(HERE, "_build")
+        if os.path.isdir(build_root):
+            shutil.rmtree(build_root)
+        for k in targets:
+            r = gen_one(k, version)
+            if r:
+                return r
         bad = []
         for k in targets:
             bad += verify_one(k)
@@ -343,7 +374,7 @@ def main():
             for b in bad:
                 print("  ✗ " + b, file=sys.stderr)
             return 3
-        print("  全同 ✓（%d 包逐件比对通过）" % len(targets))
+        print("  全同 ✓（%d 包逐件比对通过·无 .pyc）" % len(targets))
         return 0
 
     rc = 0

@@ -84,7 +84,7 @@ def _write(path, text):
 def _stage_cli(tmp):
     """把被测 daybook.py/safeio.py/daybook_append.py 拷进隔离目录。
     Copy the daybook.py/safeio.py/daybook_append.py under test into an isolated directory."""
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
         shutil.copy2(os.path.join(HERE, name), os.path.join(tmp, name))
 
 

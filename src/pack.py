@@ -114,7 +114,7 @@ SAMPLE = ['sample/README.md',
 PACKAGES = {
     'daybook': {
         'box': 'daybook',
-        'prog': ['daybook.py', 'daybook_append.py', 'safeio.py',
+        'prog': ['daybook.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py',
                  'daybook_record.py', 'daybook_session_hook.py', 'daybook_hook.py',
                  # v3.1：四库式多级索引（部→类→属）·daybook.py multiindex 子命令懒 import
                  # v3.1: four-library-style multi-level index (section → category → attribute) · daybook.py multiindex subcommand lazy-imports it
@@ -153,7 +153,7 @@ PACKAGES = {
         'box': 'daybook-mcp',
         'prog': ['mcp_server.py', 'mcp_tools.py', 'mcp_resources.py',
                  'mcp_prompts.py', 'mcp_subscribe.py', 'mcp_transport.py',
-                 'daybook_append.py', 'safeio.py',
+                 'daybook_append.py', 'safeio.py', 'ledger_root.py',
                  # 下两件为 mcp_tools 顶层 import 所需（daybook＋agent_registry）
                  # 工单 §四 S1 mcp 核心件清单缺此两件·不补则 J3 自包含/J4 可启 不成立·订正
                  # The next two files are needed by mcp_tools' top-level imports (daybook + agent_registry)
@@ -195,7 +195,8 @@ PACKAGES = {
         'box': 'daybook-orch',
         'prog': ['orchestrator.py', 'agent_registry.py', 'agent_lock.py',
                  'agent_heartbeat.py', 'agent_message.py', 'task_volume.py',
-                 'cross_ref.py', 'daybook_append.py', 'safeio.py', 'volume_paths.py'],
+                 'cross_ref.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py',
+                 'volume_paths.py'],
         # 两个测试脚本 + 一个性能对照脚本随包发·不计入构建号
         # Two test scripts plus one performance A/B script ship with the package · not counted in the build number
         'prog_aux': ['orch_fixes_test.py', 'orch_mutation_check.py', 'orch_perf_bench.py',

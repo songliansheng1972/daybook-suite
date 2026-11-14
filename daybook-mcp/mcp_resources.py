@@ -86,27 +86,15 @@ def _conf_path():
 
 
 def _resolve_root(conf_dir, conf):
-    """conf [index] root → 绝对根目录（与 daybook.py main 同口径）。
-    [index] root → absolute root (same rule as daybook.py main).
-    空=conf 所在目录；'..'=上一级；绝对=原样；相对=join(conf 目录)。
-    Empty = conf dir; '..' = parent; absolute = as-is; relative = join(conf dir).
+    """conf [index] root → 绝对根目录（唯一实现在 ledger_root.resolve_root）。
+    [index] root → absolute root (the single implementation lives in ledger_root.resolve_root).
     目录不存在 → 抛 RootError（不静默返回空账本）。
     A missing directory raises RootError (never a silent empty ledger)."""
-    rc = (conf.get('index', {}).get('root', '') or '').strip()
-    if not rc:
-        root = conf_dir
-    elif rc == '..':
-        root = os.path.dirname(conf_dir)
-    elif os.path.isabs(rc):
-        root = rc
-    else:
-        root = os.path.join(conf_dir, rc)
-    root = os.path.normpath(root)
-    if not os.path.isdir(root):
-        raise RootError(
-            '账本根目录不存在或不是目录：%s（conf=%s，index.root=%r）'
-            % (root, os.path.join(conf_dir, CONF_NAME), rc))
-    return root
+    from ledger_root import resolve_root
+    try:
+        return resolve_root(conf_dir, conf)
+    except ValueError as exc:
+        raise RootError(str(exc))
 
 
 def _root():
@@ -116,7 +104,11 @@ def _root():
     Raises RootError on failure — a wrong root must fail loudly, never masquerade as an empty ledger."""
     env = (os.environ.get('DAYBOOK_ROOT') or '').strip()
     if env:
-        env = os.path.normpath(os.path.abspath(os.path.expanduser(env)))
+        # realpath 归一：与 conf [index] root 解析结果同形，否则 /var 与 /private/var
+        # 会看起来是两个根（锁仍同 inode，但字符串比对与日志会误导）。
+        # realpath-normalise: identical in form to the conf [index] root result; otherwise
+        # /var vs /private/var looks like two roots (same inode, but comparisons/logs mislead).
+        env = os.path.realpath(os.path.expanduser(env))
         if not os.path.isdir(env):
             raise RootError('DAYBOOK_ROOT 指向的目录不存在：%s' % env)
         return env
