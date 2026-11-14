@@ -155,26 +155,57 @@ def test_agent_message(tmp):
 
 
 def test_agent_lock(tmp):
-    """验收 5：文件锁防多 Agent 同时改一任务。
-    Acceptance 5: the file lock prevents multiple agents from editing one task simultaneously."""
+    """验收 5：文件锁防多 Agent 同时改一任务（新签名：acquire(resource, agent_id, blocking=False)）。
+    Acceptance 5: the file lock prevents multiple agents from editing one task at once
+    (new signature: acquire(resource, agent_id, blocking=False))."""
     from agent_lock import AgentLock
     lk = AgentLock(lock_dir=os.path.join(tmp, '.locks'),
                    lease_vol=os.path.join(tmp, '租约卷.txt'))
-    lid1 = lk.acquire('task:T001', 'ag-tom', ttl=60)
+    lid1 = lk.acquire('task:T001', 'ag-tom')
     if not _ok('5.1 Agent A 获取锁', bool(lid1)):
         return False
-    # Agent B 拿不到 · Agent B cannot acquire it
-    lid2 = lk.acquire('task:T001', 'ag-pit', ttl=60)
-    if not _ok('5.2 Agent B 同资源拿不到锁', lid2 is None):
+    # B 非阻塞：必须立刻拿到 None（不是等一会儿才 None）
+    # B non-blocking: must return None immediately
+    t0 = time.time()
+    lid2 = lk.acquire('task:T001', 'ag-pit')
+    dt = time.time() - t0
+    if not _ok('5.2 Agent B 同资源拿不到锁（非阻塞立刻 None）',
+               lid2 is None and dt < 0.5, 'lid2=%r dt=%.3fs' % (lid2, dt)):
         return False
-    # A 释放 · A releases
+    # 阻塞：C 在 B 之外等到 A 释放才进临界区
+    # Blocking: C waits until A releases, then enters
+    got = []
+    import threading
+    th = threading.Thread(target=lambda: got.append(lk.acquire('task:T001', 'ag-c', blocking=True)))
+    th.start()
+    time.sleep(0.3)
+    waiting = th.is_alive()
     lk.release(lid1)
-    # B 现在能拿到 · B can now acquire it
-    lid3 = lk.acquire('task:T001', 'ag-pit', ttl=60)
-    if not _ok('5.3 A 释放后 B 能拿到', bool(lid3)):
+    th.join(5)
+    if not _ok('5.3 blocking=True 确实阻塞到释放之后', waiting and bool(got) and got[0],
+               'waiting=%s got=%r' % (waiting, got)):
         return False
+    lid3 = got[0]
     lk.release(lid3)
-    return True
+    # 释放后可再次获取 · acquirable again after release
+    lid4 = lk.acquire('task:T001', 'ag-pit')
+    if not _ok('5.4 释放后可再次获取', bool(lid4)):
+        return False
+    lk.release(lid4)
+    # 变异自证：acquire 永远「成功」时，5.2 的互斥断言必须失败
+    # Mutation self-check: if acquire always "succeeds", the 5.2 exclusion assertion must fail
+    orig = AgentLock.acquire
+    AgentLock.acquire = lambda self, resource, agent_id, blocking=False: 'fake-lease'
+    try:
+        probe = AgentLock(lock_dir=os.path.join(tmp, '.locks'),
+                          lease_vol=os.path.join(tmp, '租约卷.txt'))
+        first = probe.acquire('task:MUT', 'ag-x')
+        second = probe.acquire('task:MUT', 'ag-y')
+        mutation_red = (first is not None and second is None)
+    finally:
+        AgentLock.acquire = orig
+    return _ok('5.5 变异：acquire 永真 ⇒ 互斥断言必须红', not mutation_red,
+               'mutation_red=%s' % mutation_red)
 
 
 def test_agent_heartbeat(tmp):

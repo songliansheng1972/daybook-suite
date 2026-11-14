@@ -13,10 +13,13 @@ Three primitives, zero dependencies (standard library only), minimal API:
 
 降级：无 fcntl 平台（Windows）退 mkdir 原子锁（os.mkdir 天生原子）。
 Fallback: on platforms without fcntl (Windows), fall back to a mkdir atomic lock (os.mkdir is inherently atomic).
-锁粒度：每个目标文件一把锁（.safeio_lock.<basename>），不锁卷原文。
-Lock granularity: one lock per target file (.safeio_lock.<basename>), never locking the volume contents themselves.
+锁粒度：每个目标文件一把锁（按目标 realpath 的稳定键，落系统临时目录 daybook-locks/），
+不锁卷原文，也不在账本目录里留下任何锁文件。
+Lock granularity: one lock per target file (stable key from the target's realpath, under
+daybook-locks/ in the system temp dir); the volume contents are never locked, and no lock
+file is ever left inside the ledger directory.
 """
-import os, contextlib, threading
+import os, contextlib, threading, hashlib, tempfile
 
 try:
     import fcntl
@@ -43,10 +46,16 @@ def _held_map():
 
 
 def _lock_path(path):
-    """锁文件路径：与目标同目录，隐藏前缀。
-    Lock-file path: same directory as the target, with a hidden prefix."""
-    d = os.path.dirname(path) or os.curdir
-    return os.path.join(d, '.safeio_lock.' + os.path.basename(path))
+    """锁文件路径：按目标文件 realpath 的稳定键，放到系统临时目录下的固定子目录。
+    账本根不再新增锁文件，且同一账本跨进程仍争同一把锁。
+    Lock-file path: a stable key derived from the target's realpath, under a fixed
+    subdirectory of the system temp dir. No lock file is ever created inside the ledger
+    root, yet all processes still contend on the same lock."""
+    key = hashlib.sha256(os.path.realpath(path).encode('utf-8')).hexdigest()[:32]
+    d = os.path.join(tempfile.gettempdir(), 'daybook-locks')
+    if not os.path.isdir(d):
+        os.makedirs(d, exist_ok=True)
+    return os.path.join(d, key + '.lock')
 
 
 @contextlib.contextmanager

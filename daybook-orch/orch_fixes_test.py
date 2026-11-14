@@ -39,6 +39,13 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+# conf 按脚本自身位置解析（不经 cwd）：盒内由 pack 改名为 daybook.conf，
+# 源树里同一份 conf 名为 daybook.orch.conf（pack.py 的 conf_rename 映射）。
+# The conf is resolved next to this script (never through cwd): pack renames it to
+# daybook.conf inside the box, while the source tree keeps the same single file as
+# daybook.orch.conf (pack.py's conf_rename mapping).
+CONF_CANDIDATES = ('daybook.conf', 'daybook.orch.conf')
+
 _results = []
 
 
@@ -573,8 +580,14 @@ def test_sock_and_dead_code():
     check('AgentLock.renew/force_release/sweep 已删',
           not any(hasattr(agent_lock.AgentLock, n)
                   for n in ('renew', 'force_release', 'sweep')))
-    conf = io.open(os.path.join(HERE, 'daybook.conf'), encoding='utf-8').read()
-    check('daybook.conf 抬头不再写 daybook-mcp', 'daybook-mcp' not in conf)
+    for name in CONF_CANDIDATES:
+        cp = os.path.join(HERE, name)
+        if os.path.exists(cp):
+            break
+    else:
+        raise FileNotFoundError('conf not found next to %s' % HERE)
+    conf = io.open(cp, encoding='utf-8').read()
+    check('daybook.conf 抬头不再写 daybook-mcp', 'daybook-mcp' not in conf, cp)
     return all(_results)
 
 

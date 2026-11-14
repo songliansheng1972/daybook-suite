@@ -105,13 +105,17 @@ def _prepare(tmp):
 
 
 def _run(tmp):
-    return subprocess.run([sys.executable, 'daybook.py', 'index'],
+    # -B：被测脚本被拷进隔离目录运行（真实部署里它在包目录、不在账本里），
+    # 关掉字节码缓存，免得 __pycache__ 冒充「账本被写」。
+    # -B: the script is staged inside the isolated ledger here (in real deployment it lives in
+    # the package dir), so suppress bytecode caching to keep __pycache__ out of the criterion.
+    return subprocess.run([sys.executable, '-B', 'daybook.py', 'index'],
                           cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           universal_newlines=True)
 
 
 def _base(tmp):
-    return subprocess.run([sys.executable, 'daybook.py', 'baseline'],
+    return subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'],
                           cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           universal_newlines=True)
 
@@ -166,11 +170,17 @@ def main():
         # A：首次索引非空卷 ⇒ 无任何封存证据，退 5 且不写回；认基线后才 0
         # A: first index of a non-empty volume has no sealed evidence ⇒ 5 and nothing written
         #    back; only an explicit baseline makes it 0
+        root_before = set(os.listdir(work))
         r = _run(work)
         txt = r.stdout + r.stderr
         _ok('A 首次索引 ⇒ rc=5（无封存证据）', r.returncode == 5, 'rc=%d' % r.returncode)
         _ok('A 报「无任何封存证据」', '无任何封存证据' in txt)
         _ok('A 不写回游标/索引', not os.path.exists(cp) and not os.path.exists(idf))
+        root_after = set(os.listdir(work))
+        _ok('A 账本目录零变化（rc=5 不新增文件或目录·锁在临时目录）',
+            root_before == root_after, '新增=%s' % sorted(root_after - root_before))
+        _ok('A 账本根无 .safeio_lock 残留',
+            not any(n.startswith('.safeio_lock') for n in root_after))
         _log('A', r)
         r = _run(work)
         _ok('A 未认基线前复跑仍 rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
@@ -245,12 +255,17 @@ def main():
             'fmt=%r' % cur2.get('fmt'))
         _log('F', r)
 
-        # B：未变复跑两次 ⇒ rc=0 稳定
+        # B：未变复跑两次 ⇒ rc=0 稳定，且正常跑也不得在账本根新增文件
+        # B: two unchanged reruns ⇒ stable 0, and a normal run must not add files to the ledger root
         for i in (1, 2):
+            before_b = set(os.listdir(work))
             r = _run(work)
             txt = r.stdout + r.stderr
+            after_b = set(os.listdir(work))
             _ok('B 未变复跑#%d rc=0' % i, r.returncode == 0, 'rc=%d' % r.returncode)
             _ok('B 未变复跑#%d 判未变' % i, '未变·跳过' in txt and '全扫' not in txt)
+            _ok('B 未变复跑#%d 账本根不新增文件' % i, before_b == after_b,
+                '新增=%s' % sorted(after_b - before_b))
 
         # ── G–K：派生件被删/被改写，不得与「未变」同码 ──
         # ── G–K: deleted or rewritten derived artifacts must never share the unchanged status ──

@@ -477,7 +477,9 @@ def build(conf, root='.', baseline=False, dry=False):
         if extra.strip(): heads.append(re.compile(extra.strip()))
     outdir = os.path.join(root, conf['index'].get('out_dir', ''))
     prefix = conf['index'].get('index_prefix', 'index_')
-    if not os.path.isdir(outdir): os.makedirs(outdir)
+    # 索引目录延迟创建：证据缺失的轮次一个字节都不落，账本根保持零变化
+    # The index dir is created lazily: an evidence-missing run writes nothing at all, so the
+    # ledger root stays byte-for-byte unchanged.
     incremental = conf['trigger'].get('incremental', '是') in ('是', '1', 'true', 'True', 'yes')
     per, total, report = {}, 0, []
     # 封存指纹：.head_stamp.json 里另存一份「卷→内容指纹」。游标与卷同目录、写它与信它
@@ -727,6 +729,7 @@ def build(conf, root='.', baseline=False, dry=False):
             # A violation may be detected after write_ok is computed: re-tighten before writing
             write_ok = write_ok and vol not in blocked
             if mode == 'append' and write_ok:
+                os.makedirs(outdir, exist_ok=True)
                 with io.open(idf, 'a', encoding='utf-8') as f:
                     for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
                 # ★ 索引 TXT 同步追加（老宋定：TSV+TXT 同目录·人读＋机读）
@@ -741,6 +744,7 @@ def build(conf, root='.', baseline=False, dry=False):
                 n_total = n_old + len(rows)
             else:
                 if write_ok:
+                    os.makedirs(outdir, exist_ok=True)
                     with io.open(idf, 'w', encoding='utf-8') as f:
                         f.write('\t'.join(fields) + '\n')
                         for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
@@ -761,6 +765,7 @@ def build(conf, root='.', baseline=False, dry=False):
                 n_total = len(rows)
             per[vol] = n_total; total += n_total
             if write_ok:
+                os.makedirs(outdir, exist_ok=True)
                 _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
                 new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
                 wrote_any = True
@@ -769,6 +774,7 @@ def build(conf, root='.', baseline=False, dry=False):
                                               # keep the old seal so the stamp rewrite cannot erase it
 
         if wrote_any and not dry:
+            os.makedirs(outdir, exist_ok=True)
             with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
                 f.write('# 卷首清单 / Volume manifest\n')
                 f.write('# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
