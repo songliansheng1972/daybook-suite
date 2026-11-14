@@ -206,8 +206,24 @@ def run(dialog_path, kw_path, root='.'):
     return 0
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def ledger_home():
+    """账本根：与 index/MCP/追加 CLI/司南 同源（ledger_root 唯一解析）；conf 缺失才退回脚本目录。
+    Ledger root: the same resolver as index/MCP/the append CLI/orch (one implementation in
+    ledger_root); a missing conf falls back to the script dir with an explicit notice."""
+    from ledger_root import ledger_root
+    try:
+        return ledger_root(HERE)
+    except ValueError as exc:
+        root = os.path.realpath(HERE)
+        sys.stderr.write('★ %s\n  ⇒ 回退脚本目录当账本根：%s（并发写可能分裂锁）\n' % (exc, root))
+        return root
+
+
 def main():
-    root = os.path.dirname(os.path.abspath(__file__))
+    root = ledger_home()
     dialog_path = sys.argv[1] if len(sys.argv) >= 3 else os.path.join(root, '对话卷.txt')
     kw_path = sys.argv[2] if len(sys.argv) >= 3 else os.path.join(root, 'hook_a_关键词.txt')
     if not os.path.exists(dialog_path):

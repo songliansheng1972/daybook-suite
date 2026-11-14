@@ -68,6 +68,103 @@ def _head_tokens(line):
     return tokens
 
 
+# 条目头必填四位：时间/类别/标题/作者（正文可选）· four required head slots
+REQUIRED_FIELDS = ('时间', '类别', '标题', '作者')
+TIME_SHAPE_RE = re.compile(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?$')
+
+
+def incomplete_fields(line, head_regex=None):
+    """补换行前检查行内必填字段；返回缺失字段名列表（空 = 齐全）。
+    只用于「卷末行不完整」的**报告**，不改内容、不拦截。
+    Check the required fields of a line that is about to be newline-padded; return the
+    missing field names (empty = complete). Reporting only: never edits or rejects content."""
+    head_re = re.compile(head_regex) if head_regex else DEFAULT_HEAD_RE
+    if not head_re.match(line):
+        return list(REQUIRED_FIELDS)
+    tokens = _head_tokens(line)
+    if tokens and ENTRY_NO_RE.match(tokens[0]):
+        tokens = tokens[1:]
+    have_time = bool(tokens) and bool(TIME_SHAPE_RE.match(tokens[0].strip()))
+    slot = tokens[1:] if have_time else tokens
+    missing = []
+    if not have_time:
+        missing.append('时间')
+    for name, idx in (('类别', 0), ('标题', 1), ('作者', 2)):
+        val = slot[idx].strip() if len(slot) > idx else ''
+        if not val:
+            missing.append(name)
+    return missing
+
+
+def last_line_info(path):
+    """卷末行信息 → (是否缺末换行, 行号, 行文本)。缺换行时才数行号（异常路径，平时零成本）。
+    Info about the last line → (missing trailing newline, line number, text). The line number
+    is counted only when the newline is missing (an abnormal path; zero cost otherwise)."""
+    if not os.path.exists(path):
+        return False, 0, ''
+    with open(path, 'rb') as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        if size <= 0:
+            return False, 0, ''
+        f.seek(size - 1)
+        if f.read(1) == b'\n':
+            return False, 0, ''
+        start = max(0, size - 65536)
+        f.seek(start)
+        chunk = f.read()
+    cut = chunk.rfind(b'\n')
+    line_start = start + (cut + 1)
+    text = chunk[cut + 1:].decode('utf-8', 'replace')
+    lineno = 0
+    with open(path, 'rb') as f:
+        left = line_start
+        while left > 0:
+            take = min(1 << 20, left)
+            left -= take
+            f.seek(left)
+            lineno += f.read(take).count(b'\n')
+    return True, lineno + 1, text
+
+
+def line_ending_at(path, end_off):
+    """取以 end_off 结尾的那一行 → (行号, 行文本)。end_off 是补换行前该行的末字节位置。
+    The line that ends at `end_off` → (line number, text). `end_off` is the byte just past the
+    line (where the pad newline was written)."""
+    if end_off <= 0:
+        return 0, ''
+    with open(path, 'rb') as f:
+        start = max(0, end_off - 65536)
+        f.seek(start)
+        chunk = f.read(end_off - start)
+        cut = chunk.rfind(b'\n')
+        line_start = start + cut + 1
+        lineno = 0
+        left = line_start
+        while left > 0:
+            take = min(1 << 20, left)
+            left -= take
+            f.seek(left)
+            lineno += f.read(take).count(b'\n')
+    return lineno + 1, chunk[cut + 1:].decode('utf-8', 'replace')
+
+
+def pad_notice(path, head_regex=None):
+    """卷末无换行时给出 (需要补换行, stderr 文案)。缺字段必须点名，不得静默升格。
+    When the volume lacks a trailing newline, return (needs padding, notice). Missing fields
+    must be named — a residue line is never silently promoted to a normal entry."""
+    need, lineno, text = last_line_info(path)
+    if not need:
+        return False, ''
+    vol = os.path.basename(path)
+    miss = incomplete_fields(text, head_regex)
+    if miss:
+        return True, ('★ 卷末行不完整·已补换行：卷=%s 行=%d 缺字段=%s 原行=%r\n'
+                      % (vol, lineno, '、'.join(miss), text[:80]))
+    return True, ('★ 卷末行不完整·已补换行：卷=%s 行=%d 缺字段=无（行完整）\n'
+                  % (vol, lineno))
+
+
 def classify_author(author):
     """作者口径归类：显示名 / 机器id / 未标。
     Classify an author value: display / machine-id / unmarked."""
@@ -263,16 +360,23 @@ def append_one(path, kind, title, msg, author='未标', to=None,
                     old = f.read()
             # 卷末无换行 ⇒ 先补一个换行再追加：既不把既有字节（合法正文）截掉，也不让新条目
             # 粘在旧行行尾造出「增量 2 条 / 全量 1 条」和幻影行号。
+            # 残渣行必须在 stderr 点名（卷名/行号/缺失字段），不得静默升格为正常条目。
             # Volume not ending in a newline ⇒ prepend one: never truncate legal bytes, and never
             # glue a new entry onto the old line (which caused incremental 2 / rebuild 1 and
-            # phantom line numbers).
+            # phantom line numbers). A residue line is named on stderr (volume/line/missing
+            # fields); it is never silently promoted to a normal entry.
             if old and not old.endswith(b'\n'):
+                _need, _notice = pad_notice(path)
+                if _notice:
+                    sys.stderr.write(_notice)
                 old += b'\n'
-                sys.stderr.write('★ 卷末无换行：已先补一个换行再追加（既有字节未改）\n')
             atomic_write(path, old + b)
         return 0
-    if atomic_append(path, b, root=ledger_root, ensure_newline=True):
-        sys.stderr.write('★ 卷末无换行：已先补一个换行再追加（既有字节未改）\n')
+    with locked(ledger_root):
+        _need, _notice = pad_notice(path)
+        if _notice:
+            sys.stderr.write(_notice)
+        atomic_append(path, b, root=ledger_root, ensure_newline=_need)
     return 0
 
 
@@ -366,15 +470,15 @@ def _cli_root():
     返回 None = 配置错（调用方退 2）；conf 缺失才退回 conf 目录并明示。
     None = config error (the caller exits 2); a missing conf falls back to the conf dir
     with an explicit notice."""
-    from ledger_root import CONF_NAME, conf_dir, read_index_root, resolve_root
-    cd = os.path.realpath(conf_dir(HERE))
-    cpath = os.path.join(cd, CONF_NAME)
-    if not os.path.isfile(cpath):
-        sys.stderr.write('★ 未找到 %s：按 %s 当账本根（并发写可能分裂锁）\n' % (cpath, cd))
+    from ledger_root import locate, read_conf_value, resolve_root
+    cd, cpath = locate(HERE)
+    if cpath is None:
+        sys.stderr.write('★ 未找到 %s：按 %s 当账本根（并发写可能分裂锁）\n'
+                         % (os.path.join(cd, 'daybook.conf'), cd))
         return cd
     try:
-        root_cfg = read_index_root(cpath)
-    except OSError as exc:                        # 配置坏了就是配置错，不猜根
+        root_cfg = read_conf_value(cpath, 'index', 'root')
+    except (OSError, UnicodeDecodeError) as exc:  # 配置坏了就是配置错，不猜根
         sys.stderr.write('★ 读不到/解析不了 %s：%s\n' % (cpath, exc))
         return None
     try:

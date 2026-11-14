@@ -66,6 +66,11 @@ def check(label, cond, detail=''):
 
 def _fresh_root(tag):
     root = tempfile.mkdtemp(prefix='orch_fix_%s_' % tag)
+    # 新根必须自带 conf：账本根只由 conf 的 [index] root 决定；无 [index] root ⇒ conf 所在目录。
+    # A fresh root must carry its own conf: the ledger root is decided solely by conf's
+    # [index] root; with no [index] root it is the conf's own directory.
+    with io.open(os.path.join(root, 'daybook.conf'), 'w', encoding='utf-8') as f:
+        f.write('# 测试根：conf 无 [index] root ⇒ 账本根 = 本目录\n')
     return root
 
 

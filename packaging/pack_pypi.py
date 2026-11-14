@@ -23,7 +23,7 @@
 用法
 ----
   python3 packaging/pack_pypi.py --pkg all                 # 生成三包树到 packaging/_build/
-  python3 packaging/pack_pypi.py --pkg daybook --verify    # 只核 payload == 整装目录（md5）
+  python3 packaging/pack_pypi.py --pkg daybook --verify    # 从源码重建·与已提交盒产物逐件比对（委托 pack.py）
   python3 packaging/pack_pypi.py --pkg all --build         # 生成 + python -m build 出 dist
   python3 packaging/pack_pypi.py --version 3.0.0rc1 --pkg daybook --build
 退出码：0 正常；2 缺件；3 一致校验失配。
@@ -292,43 +292,21 @@ def _sub(text, sub):
     return text
 
 
-def verify_one(key):
-    """payload == 整装目录 逐件 md5 比对；并确认产物里没有 .pyc/__pycache__。
-    Compare payload vs the packaged tree file by file (md5); also assert the payload carries
-    no .pyc / __pycache__."""
-    spec = PKGS[key]
-    box = os.path.join(REPO, spec["box"])
-    root, srcroot = tree_paths(spec["dist"])
-    payload = os.path.join(srcroot, spec["module"], "payload")
-    if not os.path.isdir(payload):
-        print("  ✗ %s payload 不存在（先 --pkg %s 生成）" % (spec["dist"], key), file=sys.stderr)
-        return [spec["dist"] + "/<payload 缺>"]
-    bad = []
-    for dirpath, dirs, files in os.walk(box):
-        dirs[:] = [d for d in dirs if d != "__pycache__"]   # 字节码缓存不属于发行物
-        for f in files:
-            if f.endswith(('.pyc', '.pyo')):
-                continue
-            sp = os.path.join(dirpath, f)
-            rel = os.path.relpath(sp, box)
-            dp = os.path.join(payload, rel)
-            if not os.path.exists(dp):
-                bad.append("%s/payload/%s 缺" % (spec["dist"], rel))
-            elif md5_of(sp) != md5_of(dp):
-                bad.append("%s/payload/%s ≠ 整装目录" % (spec["dist"], rel))
-    # 发布卫生：产物里出现字节码缓存一律判失败（旧 _build 曾把 __pycache__ 带进 payload）
-    # Release hygiene: any bytecode cache in the payload fails the check (a stale _build used
-    # to drag __pycache__ into the payload).
-    for dirpath, dirs, files in os.walk(payload):
-        for d in dirs:
-            if d == "__pycache__":
-                bad.append("%s/payload/%s/<__pycache__>" % (spec["dist"],
-                                                            os.path.relpath(dirpath, payload)))
-        for f in files:
-            if f.endswith(('.pyc', '.pyo')):
-                bad.append("%s/payload/%s" % (spec["dist"],
-                                              os.path.relpath(os.path.join(dirpath, f), payload)))
-    return bad
+def _shared_verify(targets):
+    """唯一校验语义：从源码重建 → 与仓里已提交的盒产物逐件比对（src/pack.py --verify）。
+    这里不自带第二套比对：源是唯一改动点，盒只是产物。
+    The only verification semantics: rebuild from source → compare with the committed box
+    (src/pack.py --verify). No second comparison lives here: the source is the only edit point,
+    the box is just an artifact."""
+    pack_src = os.path.join(REPO, "src", "pack.py")
+    rc = 0
+    for k in targets:
+        r = subprocess.run([sys.executable, pack_src, "--pkg", k, "--verify"],
+                           cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True)
+        sys.stdout.write(r.stdout if r.stdout.endswith("\n") else r.stdout + "\n")
+        rc = rc or r.returncode
+    return rc
 
 
 def build_one(key):
@@ -346,7 +324,8 @@ def main():
     ap.add_argument("--pkg", choices=list(PKGS) + ["all"], default="all")
     ap.add_argument("--version", default=None,
                     help="PyPI 版本号（默认取 src/pack.py 的 SUITE_VERSION 并补成三段）")
-    ap.add_argument("--verify", action="store_true", help="只核 payload == 整装目录（md5）")
+    ap.add_argument("--verify", action="store_true",
+                    help="从源码重建并与已提交盒产物逐件比对（复用 src/pack.py --verify）")
     ap.add_argument("--build", action="store_true", help="生成后再 python -m build 出 dist")
     args = ap.parse_args()
 
@@ -355,43 +334,16 @@ def main():
     print("PyPI 版本号：%s（仓内语义版本 %s）" % (version, suite_version()))
 
     if args.verify:
-        print("== 一致校验：payload == 整装目录 ==")
-        # 发版路径固定：先清 _build 再重建再验——不许靠人记得清陈旧产物
-        # （旧 _build 曾带 2844 构建号与 __pycache__，让 --verify 假红/假绿）。
-        # Fixed release path: wipe _build, regenerate, then verify — never rely on a human to
-        # remember cleaning stale output (a stale _build once carried build 2844 and __pycache__).
-        build_root = os.path.join(HERE, "_build")
-        if os.path.isdir(build_root):
-            shutil.rmtree(build_root)
-        for k in targets:
-            r = gen_one(k, version)
-            if r:
-                return r
-        bad = []
-        for k in targets:
-            bad += verify_one(k)
-        if bad:
-            for b in bad:
-                print("  ✗ " + b, file=sys.stderr)
-            return 3
-        print("  全同 ✓（%d 包逐件比对通过·无 .pyc）" % len(targets))
-        return 0
+        print("== 一致校验：从源码重建 → 与已提交盒产物逐件比对 ==")
+        return _shared_verify(targets)
 
     rc = 0
     for k in targets:
         r = gen_one(k, version)
         if r:
             rc = r
-    if rc == 0 and args.verify is False:
-        bad = []
-        for k in targets:
-            bad += verify_one(k)
-        if bad:
-            print("一致校验失配：", file=sys.stderr)
-            for b in bad:
-                print("  ✗ " + b, file=sys.stderr)
-            return 3
-        print("一致校验：payload == 整装目录 ✓")
+    if rc == 0:
+        rc = _shared_verify(targets)
     if rc == 0 and args.build:
         for k in targets:
             r = build_one(k)

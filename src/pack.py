@@ -287,8 +287,10 @@ def md5_of(path):
 
 
 def verify_one(pkg_key, spec, src, out_root):
-    """逐件比对「产物 == 源」md5；返回失配清单 [(盒, 件, 因)]。
-    Compare the md5 of "artifact == source" file by file; return the mismatch list [(box, file, reason)]."""
+    """逐件比对「产物 == 源」md5；并确认产物里没有 .pyc/__pycache__。
+    返回失配清单 [(盒, 件, 因)]。
+    Compare the md5 of "artifact == source" file by file, and assert the artifact carries no
+    .pyc/__pycache__. Returns the mismatch list [(box, file, reason)]."""
     box = spec['box']
     dest = os.path.join(out_root, box)
     plan, missing = plan_for(spec, src)
@@ -299,6 +301,18 @@ def verify_one(pkg_key, spec, src, out_root):
             bad.append((box, dn, '产物缺'))
         elif md5_of(sp) != md5_of(dp):
             bad.append((box, dn, '产物≠源'))
+    # 发布卫生：盒里出现字节码缓存一律失败（陈旧 _build 曾把它带进 payload）
+    # Release hygiene: any bytecode cache in the box fails (a stale _build once shipped it).
+    if os.path.isdir(dest):
+        for dirpath, dirs, files in os.walk(dest):
+            for d in dirs:
+                if d == '__pycache__':
+                    bad.append((box, os.path.relpath(os.path.join(dirpath, d), dest),
+                                '字节码缓存'))
+            for f in files:
+                if f.endswith(('.pyc', '.pyo')):
+                    bad.append((box, os.path.relpath(os.path.join(dirpath, f), dest),
+                                '字节码缓存'))
     return bad
 
 

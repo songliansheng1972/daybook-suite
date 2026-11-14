@@ -62,17 +62,23 @@ RESERVED_KEYS = {alias for aliases in VOLUME_ALIASES.values() for alias in alias
 
 
 def resolve_root(root=None):
-    """单一根解析：相对路径转绝对；缺省为本包目录。
-    Single root resolution: make it absolute; defaults to this package's directory."""
-    return os.path.abspath(os.path.expanduser(root or HERE))
+    """账本根：与 daybook / MCP / 追加 CLI / 钩子 同源（唯一实现 ledger_root）。
+    `root` 只用于定位 conf 目录，绝不直接当根；conf 的 [index] root 说了算。
+    Ledger root: the same resolver as daybook / MCP / the append CLI / the hook (the only
+    implementation is ledger_root). `root` only locates the conf dir — never the root itself;
+    conf's [index] root decides."""
+    from ledger_root import locate, read_conf_value, resolve_root as _resolve
+    cd, cp = locate(HERE, override=root)
+    if cp is None:
+        return os.path.realpath(os.path.expanduser(str(root or HERE)))
+    return _resolve(cd, {'index': {'root': read_conf_value(cp, 'index', 'root')}})
 
 
-def read_conf_sections(root=None):
-    """读 <root>/daybook.conf，返回 {段名小写: {键小写: 值}}。缺文件返 {}。
-    Read <root>/daybook.conf and return {lowercased section: {lowercased key: value}}. {} when absent."""
-    path = os.path.join(resolve_root(root), 'daybook.conf')
+def read_conf_sections_from(path):
+    """读指定 conf 文件，返回 {段名小写: {键小写: 值}}。缺文件返 {}。
+    Read the given conf file → {lowercased section: {lowercased key: value}}. {} when absent."""
     sections = {}
-    if not os.path.exists(path):
+    if not path or not os.path.exists(path):
         return sections
     sec = None
     for line in io.open(path, encoding='utf-8'):
@@ -93,9 +99,22 @@ def read_conf_sections(root=None):
     return sections
 
 
-def _volume_table(root=None):
-    """合并 [volumes] 与旧段名 [卷]。 · merge [volumes] with the legacy section name [卷]."""
-    sections = read_conf_sections(root)
+def read_conf_sections(root=None):
+    """读 conf（默认 <root>/daybook.conf）。conf 目录与根不同时由调用方直接给路径。
+    Read conf (defaults to <root>/daybook.conf). When the conf dir differs from the root the
+    caller passes the path directly."""
+    from ledger_root import locate
+    _cd, cp = locate(HERE, override=root)
+    if cp is None:
+        cp = os.path.join(resolve_root(root), 'daybook.conf')
+    return read_conf_sections_from(cp)
+
+
+def _volume_table(root=None, conf_path=None):
+    """合并 [volumes] 与旧段名 [卷]；给了 conf_path 就直接读那一份。
+    Merge [volumes] with the legacy section [卷]; an explicit conf_path is read as-is."""
+    sections = (read_conf_sections_from(conf_path) if conf_path
+                else read_conf_sections(root))
     table = {}
     for name in ('volumes', '卷'):
         table.update(sections.get(name, {}))
@@ -109,11 +128,18 @@ def content_volumes(root=None):
             if k not in RESERVED_KEYS and v}
 
 
-def resolve_volumes(root=None):
+def content_volumes_from(conf_path, root=None):
+    """按指定 conf 文件取内容卷表（conf 目录可与账本根不同）。
+    Content volume table from an explicit conf file (its dir may differ from the root)."""
+    return {k: v for k, v in _volume_table(root, conf_path=conf_path).items()
+            if k not in RESERVED_KEYS and v}
+
+
+def resolve_volumes(root=None, conf_path=None):
     """解析内部七卷的绝对路径。返回 {角色: 绝对路径, 'root': 绝对根}。
     Resolve absolute paths for the seven internal volumes. Returns {role: abs path, 'root': abs root}."""
     root = resolve_root(root)
-    table = _volume_table(root)
+    table = _volume_table(root, conf_path=conf_path)
     out = {}
     for role, default in DEFAULT_VOLUMES.items():
         rel = None

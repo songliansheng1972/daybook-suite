@@ -411,10 +411,13 @@ def test_root_from_conf():
 
         os.environ['DAYBOOK_ROOT'] = '/no/such/dir_xyz'
         try:
-            mr._root()
-            ok = _ok('10.5 无效 DAYBOOK_ROOT 报 RootError', False, '未报错') and ok
-        except mr.RootError:
-            ok = _ok('10.5 无效 DAYBOOK_ROOT 报 RootError', True) and ok
+            bad = mr._root()
+            # 新口径：conf 在本件目录就能找到 ⇒ 无效 env 只是「找不到别的 conf」，不得改根
+            ok = _ok('10.5 无效 DAYBOOK_ROOT 被忽略（conf 已在，仍用 conf root）',
+                     bad == os.path.realpath(d4), bad) and ok
+        except mr.RootError as exc:
+            ok = _ok('10.5 无效 DAYBOOK_ROOT 被忽略（conf 已在，仍用 conf root）',
+                     False, '误报 RootError：%s' % exc) and ok
     finally:
         os.environ.pop('DAYBOOK_ROOT', None)
         if saved_env is not None:

@@ -46,6 +46,10 @@ Cases
   写入门变异②：把提交条件改回 rc==0 ⇒ U 必红（作者红也被卷进零落盘）。
   锁的变异同理：把 safeio 的目录 flock 改回「目录内锁文件」⇒ A、B 必红；
   改回「临时目录按 realpath 命名的锁文件」⇒ P、Q 必红。
+  根解析变异：把任一处调用点改回旧算法（如 mcp_resources._root 拿 DAYBOOK_ROOT 直接当根）
+  ⇒ AE1 必红；把 hook 的 ledger_home 改成 env 当根 ⇒ AE1/AE2 必红。
+  补换行点名变异：删掉 daybook.py 里的「卷末行不完整·已补换行」报告行，或让 pad_notice
+  不写 stderr ⇒ AA 必红。
 
 跑法 / Run: python3 ledger_guard_test.py
 退出码 / Exit code: 0=全绿 1=有红
@@ -452,6 +456,11 @@ def _case_subdir(tmp):
     d = os.path.join(tmp, 'subdir')
     sub = os.path.join(d, '子目录')
     os.makedirs(sub)
+    # 账本根只由 conf 决定：d 自带 conf（[index] root 空 ⇒ 根 = d），env 仅用来找到它。
+    # The root is decided by conf alone: d carries its own conf ([index] root empty ⇒ root = d);
+    # the env var only locates it.
+    io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(
+        '[index]\nroot=\n')
     _stage_safeio(d)
     vol = os.path.join(sub, '账卷.txt')
     io.open(vol, 'w', encoding='utf-8').write('')
@@ -703,11 +712,26 @@ def _case_no_newline_tail(tmp):
                            cwd=inc, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
         _ok('AA[%s] 追加 rc=0' % label, r.returncode == 0, (r.stderr or r.stdout)[-160:])
+        pad_txt = r.stderr or ''
+        if label == '有换行':
+            _ok('AA[有换行] 不报「卷末行不完整」（本来就完整）',
+                '卷末行不完整' not in pad_txt, pad_txt[-160:])
+        else:
+            _ok('AA[%s] 补换行时点名残渣行（卷名/行号/缺失字段）' % label,
+                '卷末行不完整·已补换行' in pad_txt and '缺字段=' in pad_txt
+                and '卷=账卷.txt' in pad_txt, pad_txt[-200:])
         r = subprocess.run([sys.executable, '-B', 'daybook.py', 'index'], cwd=inc,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
         _ok('AA[%s] 增量索引 rc=0（非违例）' % label, r.returncode == 0,
             'rc=%d %s' % (r.returncode, (r.stderr or '')[-160:]))
+        if label == '半行残渣':
+            _ok('AA[半行残渣] 报告单列「卷末行不完整·已补换行」',
+                '卷末行不完整·已补换行' in (r.stdout or ''),
+                (r.stdout or '')[-200:])
+            _ok('AA[半行残渣] 点名缺失字段（类别/标题/作者）',
+                all(k in (r.stdout or '') for k in ('类别', '标题', '作者')),
+                (r.stdout or '')[-200:])
         shutil.copy2(os.path.join(inc, '账卷.txt'), os.path.join(full, '账卷.txt'))
         subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=full,
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -858,6 +882,136 @@ def _case_msg_consistency(tmp):
     _ok('AD1 违例 + 作者红 ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
     _ok('AD2 文案明确「未写回」', '未写回' in txt, txt[-160:])
     _ok('AD3 不得谎称「已写回」', '已写回' not in txt, txt[-160:])
+
+
+_CHILD_ROOT = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+kind = sys.argv[2]
+if kind == 'daybook':
+    import daybook
+    print(daybook.ledger_home(sys.argv[1]))
+elif kind == 'cli':
+    import daybook_append as da
+    da.HERE = sys.argv[1]
+    print(da._cli_root())
+elif kind == 'hook':
+    import daybook_hook as dh
+    dh.HERE = sys.argv[1]
+    print(dh.ledger_home())
+elif kind == 'mcp':
+    import mcp_resources as mr
+    mr.HERE = sys.argv[1]
+    print(mr._root())
+elif kind == 'orch':
+    import volume_paths as vp
+    vp.HERE = sys.argv[1]
+    print(vp.resolve_root())
+'''
+
+
+def _case_five_roots(tmp):
+    """AE 五个入口同源：同一 DAYBOOK_ROOT + conf 绝对 root ⇒ 五处落同目录；
+    持账本根锁时 index / CLI / hook 三个写入口都被挡（并给出落点与耗时）。
+    AE one resolver for five entries: same DAYBOOK_ROOT + absolute conf root ⇒ all five land
+    on one directory; with the ledger root held, the index / CLI / hook write entries all block
+    (lock point and elapsed shown for each)."""
+    print('  -- AE 五个入口同源（锁落点 + 互斥耗时） --')
+    base = os.path.join(tmp, 'ae')
+    confd = os.path.join(base, 'conf')
+    led = os.path.join(base, 'daybook')
+    os.makedirs(confd)
+    os.makedirs(led)
+    # 只拷本包真实存在的件：盒内 daybook 包不含 MCP/司南件，那两项跳过而不是报错。
+    # Copy only what this package really ships: the daybook box has no MCP/orch modules,
+    # so those entries are skipped instead of erroring.
+    present = []
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                 'daybook_hook.py', 'mcp_resources.py', 'mcp_transport.py',
+                 'volume_paths.py'):
+        src = os.path.join(os.path.dirname(SRC_BIN), name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(confd, name))
+            present.append(name)
+    kinds = ['daybook', 'cli', 'hook']
+    if 'mcp_resources.py' in present:
+        kinds.append('mcp')
+    if 'volume_paths.py' in present:
+        kinds.append('orch')
+    if len(kinds) < 5:
+        print('    [跳过] 本包缺 %s，AE 只测 %d 个入口'
+              % ('、'.join({'daybook', 'cli', 'hook', 'mcp', 'orch'}.difference(kinds)),
+                 len(kinds)))
+    io.open(os.path.join(confd, 'daybook.conf'), 'w', encoding='utf-8').write(
+        '[volumes]\n账=账卷.txt\n对话=对话卷.txt\n\n[index]\nroot=%s\nout_dir=索引\n' % led)
+    io.open(os.path.join(led, '账卷.txt'), 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+    # 对话卷条目必须登记原件路径（HOOK-A 扫的是原件内容，不是登记行本身）
+    # The dialog entry must register an original-file path (HOOK-A scans the original's
+    # content, not the registry line itself).
+    os.makedirs(os.path.join(led, '对话原件'))
+    io.open(os.path.join(led, '对话原件', 'd1.txt'), 'w', encoding='utf-8').write(
+        '讨论一下 决定 这件事\n')
+    io.open(os.path.join(led, '对话卷.txt'), 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [聊] [甲] [皮特] 对话原件/d1.txt\nSHA256: deadbeef\n')
+    io.open(os.path.join(confd, 'hook_a_关键词.txt'), 'w', encoding='utf-8').write(
+        '[账] [追更] 决定\n')
+    env = dict(os.environ)
+    env['DAYBOOK_ROOT'] = confd                 # 只用来找 conf
+    subprocess.run([sys.executable, '-B', os.path.join(confd, 'daybook.py'), 'baseline'],
+                   cwd=led, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    want = os.path.realpath(led)
+    got = {}
+    for kind in kinds:
+        r = subprocess.run([sys.executable, '-B', '-c', _CHILD_ROOT, confd, kind],
+                           cwd=led, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+        got[kind] = (r.stdout.strip().splitlines() or [''])[-1]
+        _ok('AE1 %s 根 = conf [index] root（%s）' % (kind, got[kind]),
+            got[kind] == want, 'want=%s' % want)
+    # 持锁：index / CLI / hook 都必须等（每个入口单独起一次持锁进程）
+    ents = {
+        'index': ([sys.executable, '-B', os.path.join(confd, 'daybook.py'), 'index'], led),
+        'cli': ([sys.executable, '-B', os.path.join(confd, 'daybook_append.py'),
+                 os.path.join(led, '账卷.txt'), '测试', '长条目', '皮特', '长' * 3000],
+                tempfile.gettempdir()),
+        'hook': ([sys.executable, '-B', os.path.join(confd, 'daybook_hook.py'),
+                  os.path.join(led, '对话卷.txt'),
+                  os.path.join(confd, 'hook_a_关键词.txt')], led),
+    }
+    for name, (cmd, cwd) in ents.items():
+        for f in ('release.flag', 'held.flag'):
+            try:
+                os.remove(os.path.join(led, f))
+            except OSError:
+                pass
+        holder = subprocess.Popen([sys.executable, '-B', '-c', _CHILD_HOLD_AB, confd, led],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True)
+        held = os.path.join(led, 'held.flag')
+        for _ in range(200):
+            if os.path.exists(held):
+                break
+            time.sleep(0.02)
+        if not os.path.exists(held):
+            holder.kill()
+            _ok('AE2 %s 持锁进程进入临界区' % name, False, 'held.flag 未出现')
+            continue
+        t0 = time.time()
+        p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, universal_newlines=True)
+        time.sleep(0.6)
+        still = p.poll() is None
+        io.open(os.path.join(led, 'release.flag'), 'w').write('1')
+        out, err = p.communicate()
+        elapsed = time.time() - t0
+        holder.communicate()
+        _ok('AE2 %s 被账本根锁挡住（rc=%s）' % (name, p.returncode),
+            still and p.returncode == 0, 'still=%s elapsed=%.2fs %s'
+            % (still, elapsed, (err or '')[-100:]))
+        print('    [数据] AE 锁落点 %s=%s 耗时=%.2fs'
+              % (name, got.get(name, got.get('daybook')), elapsed))
+    print('    [数据] AE 锁落点：' + ' '.join('%s=%s' % (k, got[k]) for k in kinds))
 
 
 _CHILD_HOLD_AB = r'''
@@ -1265,6 +1419,7 @@ def main():
         _case_cli_root(work)
         _case_cache_hash(work)
         _case_msg_consistency(work)
+        _case_five_roots(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',

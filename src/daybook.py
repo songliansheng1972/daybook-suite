@@ -814,10 +814,16 @@ def build(conf, root='.', baseline=False, dry=False):
                     and not _line_boundary(p, cur['size']):
                 # 旧游标停在不完整行的中间（原卷末无换行，追加前被补了一个 \n）：
                 # 那个「半行」现在成了完整一行，必须整卷重扫才能与全量重建同数同号。
+                # 残渣行若缺必填字段，报告里必须单列一条并点名，不能静默当正常条目。
                 # The old cursor stopped mid-line (the volume ended without a newline and the
                 # appender padded one): that half line is now a complete line, so a full rescan
-                # is required to match a rebuild's count and line numbers.
-                report.append((vol, '★ 游标边界不在行首（卷末原无换行）·全量重扫（不算违例）'))
+                # is required to match a rebuild's count and line numbers. A residue line missing
+                # required fields is named in the report — never silently counted as normal.
+                from daybook_append import incomplete_fields, line_ending_at
+                _ln, _txt = line_ending_at(p, cur['size'])
+                _miss = incomplete_fields(_txt, head_rx)
+                report.append((vol, '★ 卷末行不完整·已补换行：行=%d 缺字段=%s（全量重扫·不算违例）'
+                               % (_ln, '、'.join(_miss) if _miss else '无')))
             elif cur and index_present and size > cur.get('size'):
                 content_hash, pref_hash = _hash_vol(p, prefix_limit=cur['size'])
                 n_old_b = cur.get('resume_byte')
@@ -1375,6 +1381,16 @@ def _report_authors(conf, root, quiet_green=False, cache=None, verified=None):
     return red
 
 
+def ledger_home(here=None):
+    """账本根：conf 位置由 ledger_root.locate 统一（与 MCP/CLI/钩子/司南同源）。
+    Ledger root: the conf location comes from ledger_root.locate (shared with MCP/CLI/hook/orch)."""
+    from ledger_root import locate, resolve_root
+    conf_dir, conf_path = locate(here or HERE)
+    if conf_path is None:
+        raise OSError('找不到 daybook.conf：%s' % os.path.join(conf_dir, 'daybook.conf'))
+    return resolve_root(conf_dir, load_conf(conf_path))
+
+
 def main():
     """Dispatch the selected command using the adjacent DAYBOOK configuration.
     按所选子命令分派；配置取同目录 daybook.conf。
@@ -1392,22 +1408,22 @@ def main():
         sys.stderr.write('★ 未知子命令：%r\n' % cmd)
         print(__doc__)
         return 2
-    try:
-        conf = load_conf()
-    except OSError as exc:
+    # 根目录：conf 的 [index] root 唯一决定，conf 位置由 ledger_root.locate 统一（与 MCP、
+    # 追加 CLI、钩子、司南同源）。环境变量只用来找 conf，绝不直接当根。
+    # Root: decided only by conf's [index] root; conf location comes from ledger_root.locate
+    # (shared with MCP, the append CLI, the hook and orch). Env vars only locate conf.
+    from ledger_root import locate
+    conf_dir, conf_path = locate(HERE)
+    if conf_path is None:
         sys.stderr.write('★ 读不到 daybook.conf：%s\n'
-                         '  请把 daybook.conf 放在本程序同目录（配置里的 root 决定账本根）。\n' % exc)
+                         '  请把 daybook.conf 放在本程序同目录（配置里的 root 决定账本根）。\n'
+                         % os.path.join(conf_dir, 'daybook.conf'))
         return 2
-    # 根目录：conf[index][root] 控制。空=HERE；..=dirname(HERE)；绝对路径=原样
-    # 解析唯一在 ledger_root.resolve_root（与 MCP、追加 CLI 同源），结果 realpath 归一。
-    # Root: conf[index][root]. Empty = HERE; '..' = parent; absolute = as-is.
-    # The single resolver is ledger_root.resolve_root (shared with the MCP and the append CLI);
-    # its result is realpath-normalised so every process locks the same directory inode.
-    from ledger_root import resolve_root
     try:
-        root = resolve_root(HERE, conf)
-    except ValueError as exc:
-        sys.stderr.write('★ %s（配置错·检查 daybook.conf 的 [index] root）\n' % exc)
+        conf = load_conf(conf_path)
+        root = ledger_home(HERE)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        sys.stderr.write('★ 配置错（检查 daybook.conf 与 [index] root）：%s\n' % exc)
         return 2
     # watch 监视面＝所有真实卷文件（内部卷变动也要触发）；索引面仍只认 conf['volumes']
     # The watch surface = every real volume file (internal changes must trigger too);

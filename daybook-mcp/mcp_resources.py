@@ -75,14 +75,19 @@ def _warn(msg, key=None):
 
 
 def _conf_dir():
-    """conf 所在目录：DAYBOOK_ROOT 显式覆盖，否则本件所在目录。
-    Directory holding daybook.conf: explicit DAYBOOK_ROOT override, else this file's dir."""
-    return (os.environ.get('DAYBOOK_ROOT') or '').strip() or HERE
+    """conf 所在目录：唯一由 ledger_root.locate 决定（override/env 只找 conf，不当根）。
+    Directory holding daybook.conf: decided solely by ledger_root.locate (override/env only
+    locate conf, never become the root)."""
+    from ledger_root import locate
+    return locate(HERE)[0]
 
 
 def _conf_path():
-    """daybook.conf 的绝对路径。Absolute path of daybook.conf."""
-    return os.path.join(_conf_dir(), CONF_NAME)
+    """daybook.conf 的绝对路径（locate 找到的那一份；没找到返回默认位）。
+    Absolute path of the located daybook.conf (default location when none was found)."""
+    from ledger_root import locate
+    _cd, cp = locate(HERE)
+    return cp or os.path.join(_cd, CONF_NAME)
 
 
 def _resolve_root(conf_dir, conf):
@@ -98,21 +103,15 @@ def _resolve_root(conf_dir, conf):
 
 
 def _root():
-    """账本根：DAYBOOK_ROOT（显式覆盖）> conf [index] root（空=conf 所在目录）。
-    Ledger root: explicit DAYBOOK_ROOT override > conf [index] root (empty = conf dir).
+    """账本根 = conf 的 [index] root（locate 找到 conf 后唯一解析）。
+    Ledger root = conf's [index] root (one resolution after locate finds the conf).
     解析失败抛 RootError —— 读错根必须报错，绝不静默当空账本。
     Raises RootError on failure — a wrong root must fail loudly, never masquerade as an empty ledger."""
-    env = (os.environ.get('DAYBOOK_ROOT') or '').strip()
-    if env:
-        # realpath 归一：与 conf [index] root 解析结果同形，否则 /var 与 /private/var
-        # 会看起来是两个根（锁仍同 inode，但字符串比对与日志会误导）。
-        # realpath-normalise: identical in form to the conf [index] root result; otherwise
-        # /var vs /private/var looks like two roots (same inode, but comparisons/logs mislead).
-        env = os.path.realpath(os.path.expanduser(env))
-        if not os.path.isdir(env):
-            raise RootError('DAYBOOK_ROOT 指向的目录不存在：%s' % env)
-        return env
-    return _resolve_root(HERE, _load_conf())
+    from ledger_root import locate
+    cd, cp = locate(HERE)
+    if cp is None:
+        raise RootError('找不到 daybook.conf：%s' % os.path.join(cd, CONF_NAME))
+    return _resolve_root(cd, _load_conf(cp))
 
 
 def _audit(method, agent_id, detail):
@@ -134,10 +133,10 @@ def _audit(method, agent_id, detail):
         pass
 
 
-def _load_conf():
-    """读 <conf 目录>/daybook.conf。缺失/不可读抛 RootError（不静默返空）。
-    Read <conf dir>/daybook.conf. Missing/unreadable raises RootError (never silently {})."""
-    cp = _conf_path()
+def _load_conf(path=None):
+    """读 conf（缺省为 locate 找到的那一份）。缺失/不可读抛 RootError（不静默返空）。
+    Read conf (defaults to the located one). Missing/unreadable raises RootError."""
+    cp = path or _conf_path()
     try:
         import daybook as _db
         return _db.load_conf(cp)

@@ -311,12 +311,15 @@ def load_roles(path):
 
 # ── v3.1 四库式多级目录：分发接上目录（读派生件·缺则原文兜底）──────────
 # v3.1 four-library-style multi-level directory: distribution hooked to the directory (reads derived artifacts · falls back to raw text if absent)
-def _load_volumes(root):
-    """读 <root>/daybook.conf [volumes] 表 → {卷名: 相对/绝对路径}。缺则 {}。
+def _load_volumes(root, conf_path=None):
+    """读 conf [volumes] 表 → {卷名: 相对/绝对路径}。缺则 {}。
+    conf_path 给出时直接读那一份（conf 目录可与账本根不同）。
     orch 内部卷的保留键（registry/tasks/…）不算内容卷，此处过滤。
-    Read the <root>/daybook.conf [volumes] table → {volume name: relative/absolute path}. {} if absent.
+    Read the conf [volumes] table → {volume name: relative/absolute path}. {} if absent.
+    An explicit conf_path is read as-is (the conf dir may differ from the ledger root).
     Reserved orch-internal keys (registry/tasks/…) are not content volumes and are filtered out here."""
-    return _vp.content_volumes(root)
+    return _vp.content_volumes(root) if not conf_path \
+        else _vp.content_volumes_from(conf_path, root=root)
 
 
 def read_multidx_rows(root, index=None):
@@ -514,10 +517,14 @@ class Hub:
     Orchestration hub: the six primitives + routing, under a single entry point."""
 
     def __init__(self, root=None, rule=None, roles=None):
-        # 单一根 + conf 驱动：七卷全由 <root>/daybook.conf 解析，--root 一处生效。
-        # Single root + conf-driven: all seven volumes resolve from <root>/daybook.conf, so --root takes effect in one place.
+        # 账本根与 conf 位置都由 ledger_root 唯一解析（与 index/MCP/追加 CLI/钩子同源）；
+        # root/--root 只用于定位 conf，[index] root 说了算。
+        # Both the ledger root and the conf location come from ledger_root (shared with
+        # index/MCP/the append CLI/the hook); root/--root only locates conf, [index] root decides.
+        from ledger_root import locate as _locate_conf
+        self.conf_path = _locate_conf(HERE, override=root)[1]
         self.root = _vp.resolve_root(root)
-        self.vols = _vp.resolve_volumes(self.root)
+        self.vols = _vp.resolve_volumes(self.root, conf_path=self.conf_path)
         # conf 指向自定义子目录时先建父目录（卷本身仍由各件按需创建）。
         # Create parent directories first when conf points at custom subdirectories
         # (the volume files themselves are still created on demand by each primitive).
@@ -764,7 +771,7 @@ class Hub:
             raise ValueError('limit 必须 ≥ 0（0=全部，正数=最近 N 条）')
         index = VolumeIndex()
         rows, src, errors = read_multidx_rows(self.root, index=index)
-        vols = _load_volumes(self.root)
+        vols = _load_volumes(self.root, conf_path=self.conf_path)
         if vol:
             rows = [r for r in rows if r.get('volume') == vol]
         if cls:
