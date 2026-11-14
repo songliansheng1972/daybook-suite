@@ -5,51 +5,54 @@
 """LedgerRoot · 账本根的唯一解析（daybook / MCP / 追加 CLI / 钩子 / 司南 五处同源）
 LedgerRoot · the single ledger-root resolver (shared by daybook / MCP / append CLI / hook / orch)
 ================================================
-唯一口径（五处调用点必须传同一组输入，结果才可能同一个 inode）：
-One rule only (the five call sites must pass the same inputs for the same inode):
-  1) conf 目录：显式 override（--root/--home）> DAYBOOK_ROOT > DAYBOOK_HOME > 本件所在目录；
-     取第一个**存在 daybook.conf** 的目录；都没有 conf 时退回本件所在目录（调用方按配置错处理）。
-     conf dir: explicit override > DAYBOOK_ROOT > DAYBOOK_HOME > this file's dir; the first
-     directory that actually holds daybook.conf wins; with no conf anywhere it falls back to
-     this file's dir (the caller reports a config error).
+唯一口径（两级，猜不到就停 / two levels only — stop when unknown）：
+  1) conf 目录：显式指定优先（--home/--root 参数 > DAYBOOK_ROOT > DAYBOOK_HOME）；
+     未显式指定 ⇒ **当前工作目录**。显式指定但该目录没有 conf ⇒ 立刻报错，
+     绝不静默换下一个候选，也绝不以「本件所在目录」兜底。
+     conf dir: an explicit location wins (--home/--root argument > DAYBOOK_ROOT >
+     DAYBOOK_HOME); with none given, the **current working directory** is used. An explicit
+     location without a conf fails immediately — no silent fall-through to the next candidate,
+     no "script directory" fallback.
   2) 账本根 = conf 的 [index] root：空 → conf 所在目录；'..' → 上一级；
      绝对 → 原样；相对 → join(conf 目录)。
      Ledger root = conf [index] root: empty → conf dir; '..' → parent; absolute → as-is;
      relative → join(conf dir).
-  3) 环境变量只用来**找 conf**，绝不直接当账本根，也绝不覆盖 conf 的 root。
-     Environment variables only locate conf — never the root itself, never an override of
-     conf's root.
-  4) 全部 realpath 归一（锁的身份是目录 inode）。
+  3) 全部 realpath 归一（锁的身份是目录 inode）。
      Everything is realpath-normalised (the lock identity is the directory inode).
 """
 import os
 
 CONF_NAME = 'daybook.conf'
+# 显式指定的环境变量（优先级从高到低）· explicit env vars (highest first)
 ENV_VARS = ('DAYBOOK_ROOT', 'DAYBOOK_HOME')
 
 
-def locate(default_dir, override=None):
-    """定位 conf：override > DAYBOOK_ROOT > DAYBOOK_HOME > default_dir，取第一个有 conf 的。
-    Locate conf: override > DAYBOOK_ROOT > DAYBOOK_HOME > default_dir, first one holding conf.
-    返回 (conf_dir_realpath, conf_path|None)。
-    Returns (conf_dir_realpath, conf_path|None)."""
-    cands = []
-    if override:
-        cands.append(override)
+def not_found_message(conf_dir):
+    """五处入口共用的「找不到 conf」文案（逐字一致）。
+    The one "conf not found" wording shared verbatim by all five entries."""
+    return ('★ 未找到 daybook.conf：%s（请用 --home 或 DAYBOOK_HOME 指定 conf 所在目录）'
+            % conf_dir)
+
+
+def _explicit(override=None):
+    if override is not None and str(override).strip():
+        return str(override).strip()
     for name in ENV_VARS:
         v = (os.environ.get(name) or '').strip()
         if v:
-            cands.append(v)
-    cands.append(default_dir)
-    first = None
-    for c in cands:
-        d = os.path.realpath(os.path.expanduser(str(c).strip()))
-        if first is None:
-            first = d
-        p = os.path.join(d, CONF_NAME)
-        if os.path.isfile(p):
-            return d, p
-    return (first or os.path.realpath(default_dir)), None
+            return v
+    return ''
+
+
+def locate(override=None):
+    """定位 conf：显式指定优先，否则当前工作目录；只查这一个候选。
+    Locate conf: an explicit location, else the current working directory; one candidate only.
+    返回 (conf_dir_realpath, conf_path|None)。无 conf 时 conf_dir 仍是该候选目录。
+    Returns (conf_dir_realpath, conf_path|None); with no conf, conf_dir is still that candidate."""
+    raw = _explicit(override)
+    d = os.path.realpath(os.path.expanduser(raw if raw else os.getcwd()))
+    p = os.path.join(d, CONF_NAME)
+    return d, (p if os.path.isfile(p) else None)
 
 
 def read_conf_value(conf_path, section, key):
@@ -95,14 +98,13 @@ def resolve_root(conf_dir_path, conf):
     return root
 
 
-def ledger_root(default_dir, override=None):
+def ledger_root(override=None):
     """一步到位：定位 conf → 解析 [index] root。找不到 conf / 根不存在都抛 ValueError。
     One call: locate conf → resolve [index] root. Raises ValueError when conf is missing or
     the root does not exist."""
-    cd, cp = locate(default_dir, override)
+    cd, cp = locate(override)
     if cp is None:
-        raise ValueError('找不到 daybook.conf：%s（可用 DAYBOOK_ROOT 指向 conf 所在目录）'
-                         % os.path.join(cd, CONF_NAME))
+        raise ValueError(not_found_message(cd))
     return resolve_root(cd, {'index': {'root': read_conf_value(cp, 'index', 'root')}})
 
 

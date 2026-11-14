@@ -1381,13 +1381,14 @@ def _report_authors(conf, root, quiet_green=False, cache=None, verified=None):
     return red
 
 
-def ledger_home(here=None):
-    """账本根：conf 位置由 ledger_root.locate 统一（与 MCP/CLI/钩子/司南同源）。
-    Ledger root: the conf location comes from ledger_root.locate (shared with MCP/CLI/hook/orch)."""
-    from ledger_root import locate, resolve_root
-    conf_dir, conf_path = locate(here or HERE)
+def ledger_home(override=None):
+    """账本根：conf 由 ledger_root 两级定位（显式 > 当前目录，找不到即报错），根只看 [index] root。
+    Ledger root: ledger_root locates the conf in two levels (explicit > cwd, failing when
+    absent); the root itself comes only from [index] root."""
+    from ledger_root import locate, not_found_message, resolve_root
+    conf_dir, conf_path = locate(override)
     if conf_path is None:
-        raise OSError('找不到 daybook.conf：%s' % os.path.join(conf_dir, 'daybook.conf'))
+        raise OSError(not_found_message(conf_dir))
     return resolve_root(conf_dir, load_conf(conf_path))
 
 
@@ -1408,20 +1409,18 @@ def main():
         sys.stderr.write('★ 未知子命令：%r\n' % cmd)
         print(__doc__)
         return 2
-    # 根目录：conf 的 [index] root 唯一决定，conf 位置由 ledger_root.locate 统一（与 MCP、
-    # 追加 CLI、钩子、司南同源）。环境变量只用来找 conf，绝不直接当根。
-    # Root: decided only by conf's [index] root; conf location comes from ledger_root.locate
-    # (shared with MCP, the append CLI, the hook and orch). Env vars only locate conf.
-    from ledger_root import locate
-    conf_dir, conf_path = locate(HERE)
+    # 根目录：conf 的 [index] root 唯一决定；conf 只查两级（显式指定 > 当前目录），
+    # 找不到立刻 rc=2，不以本件目录兜底、不换下一个候选。
+    # Root: decided only by conf's [index] root; the conf is looked up in two levels only
+    # (explicit > cwd) and a miss fails immediately — no script-dir fallback, no next candidate.
+    from ledger_root import locate, not_found_message
+    conf_dir, conf_path = locate()
     if conf_path is None:
-        sys.stderr.write('★ 读不到 daybook.conf：%s\n'
-                         '  请把 daybook.conf 放在本程序同目录（配置里的 root 决定账本根）。\n'
-                         % os.path.join(conf_dir, 'daybook.conf'))
+        sys.stderr.write(not_found_message(conf_dir) + '\n')
         return 2
     try:
         conf = load_conf(conf_path)
-        root = ledger_home(HERE)
+        root = ledger_home()
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         sys.stderr.write('★ 配置错（检查 daybook.conf 与 [index] root）：%s\n' % exc)
         return 2

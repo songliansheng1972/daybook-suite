@@ -65,8 +65,8 @@ MUTATIONS = [
          "        self.ledger = self.vols['ledger']",
          "        self.ledger = os.path.join(HERE, '编排卷.txt')"),
         ('agent_message.py',
-         """    return INBOX_VOL if root is None else _vp.resolve_volumes(root)['inbox']""",
-         """    return INBOX_VOL"""),
+         """    return _vp.resolve_volumes(root)['inbox']""",
+         """    return os.path.join(HERE, '消息卷.txt')"""),
     ]),
     (4, '派生件原子替换改回两段非原子写', [(
         'safeio.py',

@@ -18,15 +18,15 @@
 
 ## 为什么需要一层壳（`cli_shim.py`）
 
-产品件是「进目录直接跑」形态：`daybook.py`／`mcp_*.py`／`orchestrator.py` 等都用
-`HERE = dirname(abspath(__file__))` 锚定 conf 与各类数据卷。装进 `site-packages` 后，
-conf 不在脚本旁会直接报错；即便随包带上 conf，**账本与数据卷也会写进程序安装目录**。
+产品件的 conf 只查两级：显式指定（`--home`／`DAYBOOK_HOME`／`DAYBOOK_ROOT`）优先，
+未指定即**当前工作目录**；两边都没有 conf 直接 rc=2。账本根只由 conf 的 `[index] root`
+决定，与代码装在哪无关（`HERE` 不再参与根解析）。
 
 壳把「代码目录」与「运行目录」分开：
 
 ```
 分包内  <mod>/payload/          ← 代码在此（随 pip 升级生效）
-运行目录  --home=|$DAYBOOK_HOME|当前目录(若已有 conf)   ← 必须显式，不再默认 ~/.daybook
+conf 目录  --home=|$DAYBOOK_HOME|$DAYBOOK_ROOT|当前目录（必须能找到 conf）
           ├─ daybook.conf       ← 复制一份（用户可改）
           ├─ sample/            ← 复制一份
           └─ daybook.py, *.py … ← 软链，指回 payload

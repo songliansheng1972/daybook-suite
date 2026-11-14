@@ -51,7 +51,7 @@ cd daybook-mcp
 python3 mcp_server.py        # JSON-RPC 2.0 over stdio
 ```
 
-把 `mcp_server.py` 配成任意 MCP 客户端的 **stdio server** 即可。`DAYBOOK_ROOT` 可指定卷根（默认脚本所在目录）。
+把 `mcp_server.py` 配成任意 MCP 客户端的 **stdio server** 即可。`DAYBOOK_ROOT` 指定 **conf 所在目录**（默认当前工作目录；账本根由 conf 的 `[index] root` 决定，找不到 conf 即 rc=2）。
 
 ## 边界（诚实）
 

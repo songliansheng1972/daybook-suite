@@ -367,7 +367,8 @@ def test_root_from_conf():
     sys.path.insert(0, HERE)
     import mcp_resources as mr
     saved_env = os.environ.pop('DAYBOOK_ROOT', None)
-    saved_here = mr.HERE
+    saved_home = os.environ.pop('DAYBOOK_HOME', None)
+    saved_cwd = os.getcwd()
     ok = True
     dirs = []
 
@@ -382,18 +383,18 @@ def test_root_from_conf():
 
     try:
         d = mk('')
-        mr.HERE = d
+        os.environ['DAYBOOK_ROOT'] = d
         ok = _ok('10.1 conf root 为空 ⇒ conf 所在目录（realpath 归一）',
                  mr._root() == os.path.realpath(d), mr._root()) and ok
 
         d2 = mk('ledger')
         os.makedirs(os.path.join(d2, 'ledger'))
-        mr.HERE = d2
+        os.environ['DAYBOOK_ROOT'] = d2
         ok = _ok('10.2 conf root=ledger ⇒ conf 目录/ledger（realpath 归一）',
                  mr._root() == os.path.realpath(os.path.join(d2, 'ledger')), mr._root()) and ok
 
         d3 = mk('./nope')
-        mr.HERE = d3
+        os.environ['DAYBOOK_ROOT'] = d3
         try:
             mr._root()
             ok = _ok('10.3 无效 conf root 报 RootError', False, '未报错') and ok
@@ -401,28 +402,30 @@ def test_root_from_conf():
             ok = _ok('10.3 无效 conf root 报 RootError', True, str(e)[:60]) and ok
 
         d4 = mk('')
-        mr.HERE = d4
+        os.environ.pop('DAYBOOK_ROOT', None)
+        os.chdir(d4)                       # 无显式指定 ⇒ 当前目录的 conf
         no_env = mr._root()
         os.environ['DAYBOOK_ROOT'] = d4
         with_env = mr._root()
         os.environ.pop('DAYBOOK_ROOT', None)
-        ok = _ok('10.4 无 env 与 DAYBOOK_ROOT 指向同一账本',
+        ok = _ok('10.4 当前目录与 DAYBOOK_ROOT 指向同一账本',
                  no_env == with_env == os.path.realpath(d4), '%s | %s' % (no_env, with_env)) and ok
 
         os.environ['DAYBOOK_ROOT'] = '/no/such/dir_xyz'
         try:
             bad = mr._root()
-            # 新口径：conf 在本件目录就能找到 ⇒ 无效 env 只是「找不到别的 conf」，不得改根
-            ok = _ok('10.5 无效 DAYBOOK_ROOT 被忽略（conf 已在，仍用 conf root）',
-                     bad == os.path.realpath(d4), bad) and ok
+            ok = _ok('10.5 显式 DAYBOOK_ROOT 无 conf ⇒ 立即 RootError（不跳候选）',
+                     False, '未报错：%s' % bad) and ok
         except mr.RootError as exc:
-            ok = _ok('10.5 无效 DAYBOOK_ROOT 被忽略（conf 已在，仍用 conf root）',
-                     False, '误报 RootError：%s' % exc) and ok
+            ok = _ok('10.5 显式 DAYBOOK_ROOT 无 conf ⇒ 立即 RootError（不跳候选）',
+                     '未找到 daybook.conf' in str(exc), str(exc)[:80]) and ok
     finally:
         os.environ.pop('DAYBOOK_ROOT', None)
         if saved_env is not None:
             os.environ['DAYBOOK_ROOT'] = saved_env
-        mr.HERE = saved_here
+        if saved_home is not None:
+            os.environ['DAYBOOK_HOME'] = saved_home
+        os.chdir(saved_cwd)
         for d in dirs:
             shutil.rmtree(d, ignore_errors=True)
     return ok

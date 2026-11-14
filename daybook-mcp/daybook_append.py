@@ -33,8 +33,7 @@ Author ID iron rule: every entry must carry an author, auditable, verifiable and
 """
 import io, os, re, sys, time
 
-HERE = os.path.dirname(os.path.abspath(__file__))   # 脚本所在＝部署账本根 / script dir = ledger root in deployment
-_WARNED_NO_ROOT = [False]      # 「未传账本根」只警告一次 · warn once per process
+HERE = os.path.dirname(os.path.abspath(__file__))   # 脚本所在（不再用作账本根兜底）/ script dir (never a root fallback)
 
 FALLBACK_LIMIT = 4096          # POSIX PIPE_BUF 之保守值（探测失败兜底）· conservative POSIX PIPE_BUF value (fallback on probe failure)
 PROMPT_TEMPLATE = '★ 本条超 {limit} 字节：POSIX 只保证 ≤ PIPE_BUF 之单次 write 原子。请拆条或改用加锁写入。\n'
@@ -336,17 +335,13 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     b = rec.encode('utf-8')
     # 所有账本写路径统一锁账本根（子目录卷、软链卷也争同一把锁）
     # Every ledger write path locks the ledger root (sub-directory and symlinked volumes contend too)
-    if root:
-        ledger_root = os.path.realpath(root)
-    else:
-        # 未给出账本根：退到卷所在目录，但绝不静默——分裂锁必须让人看见
-        # No ledger root supplied: fall back to the volume's directory, but never silently —
-        # a split lock must be visible.
-        ledger_root = os.path.dirname(os.path.abspath(path))
-        if not _WARNED_NO_ROOT[0]:
-            _WARNED_NO_ROOT[0] = True
-            sys.stderr.write('★ 未能确定账本根（未传 root）：回退到卷所在目录 %s，'
-                             '并发写可能分裂锁\n' % ledger_root)
+    if not root:
+        # 不知道账本根就不写：一条告警挡不住分裂锁，直接退回调用方判 rc=2。
+        # No ledger root means no write: a warning cannot prevent a split lock; the caller
+        # must turn this into rc=2.
+        sys.stderr.write('★ 未能确定账本根（请在账本目录下调用或设置 DAYBOOK_HOME）\n')
+        return 2
+    ledger_root = os.path.realpath(root)
     from safeio import atomic_append, atomic_write, locked
     if len(b) > limit:
         # W-75 修③：超 PIPE_BUF 走账本根排他锁 + 整文件原子换入（读者不取锁也不撕裂）
@@ -467,15 +462,14 @@ def _cli_root():
     """CLI 的账本根：与 daybook.py / MCP 同源（ledger_root.conf_dir + resolve_root）。
     The CLI's ledger root: the same source as daybook.py / the MCP
     (ledger_root.conf_dir + resolve_root).
-    返回 None = 配置错（调用方退 2）；conf 缺失才退回 conf 目录并明示。
-    None = config error (the caller exits 2); a missing conf falls back to the conf dir
-    with an explicit notice."""
-    from ledger_root import locate, read_conf_value, resolve_root
-    cd, cpath = locate(HERE)
+    返回 None = 配置错（调用方退 2）；conf 只查两级（显式 > 当前目录），找不到即报错。
+    None = config error (the caller exits 2); the conf is looked up in two levels only
+    (explicit > cwd) and a miss fails immediately."""
+    from ledger_root import locate, not_found_message, read_conf_value, resolve_root
+    cd, cpath = locate()
     if cpath is None:
-        sys.stderr.write('★ 未找到 %s：按 %s 当账本根（并发写可能分裂锁）\n'
-                         % (os.path.join(cd, 'daybook.conf'), cd))
-        return cd
+        sys.stderr.write(not_found_message(cd) + '\n')
+        return None
     try:
         root_cfg = read_conf_value(cpath, 'index', 'root')
     except (OSError, UnicodeDecodeError) as exc:  # 配置坏了就是配置错，不猜根

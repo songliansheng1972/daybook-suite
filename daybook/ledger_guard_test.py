@@ -771,7 +771,8 @@ def _case_cli_root(tmp):
     cli = [sys.executable, '-B', os.path.join(tool, 'daybook_append.py'), volp,
            '测试', '长条目', '皮特', '长' * 3000]
     env = dict(os.environ)
-    env.pop('DAYBOOK_ROOT', None)          # 未设 DAYBOOK_ROOT：只能靠 conf 的 [index] root
+    env.pop('DAYBOOK_HOME', None)
+    env['DAYBOOK_ROOT'] = tool             # 显式指定 conf 目录（账本根仍由 [index] root 决定）
     holder = subprocess.Popen(
         [sys.executable, '-B', '-c', _CHILD_HOLD_AB, tool, led],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
@@ -801,11 +802,11 @@ def _case_cli_root(tmp):
         os.remove(os.path.join(led, 'release.flag'))
     except OSError:
         pass
-    # 一半带 DAYBOOK_ROOT、一半不带：旧实现下两者解析到不同目录 ⇒ 分裂锁 ⇒ 丢更新
-    # Half run with DAYBOOK_ROOT, half without: the old resolver split them into different
-    # roots ⇒ split locks ⇒ lost updates.
+    # 一半 DAYBOOK_ROOT、一半 DAYBOOK_HOME：两条显式通道必须落到同一个 inode
+    # Half via DAYBOOK_ROOT, half via DAYBOOK_HOME: both explicit channels must land on one inode.
     env_b = dict(env)
-    env_b['DAYBOOK_ROOT'] = led
+    env_b.pop('DAYBOOK_ROOT', None)
+    env_b['DAYBOOK_HOME'] = tool
     procs = [subprocess.Popen(cli, cwd=tempfile.gettempdir(),
                               env=(env if i % 2 == 0 else env_b),
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -890,7 +891,7 @@ sys.path.insert(0, sys.argv[1])
 kind = sys.argv[2]
 if kind == 'daybook':
     import daybook
-    print(daybook.ledger_home(sys.argv[1]))
+    print(daybook.ledger_home())
 elif kind == 'cli':
     import daybook_append as da
     da.HERE = sys.argv[1]
@@ -938,10 +939,18 @@ def _case_five_roots(tmp):
         kinds.append('mcp')
     if 'volume_paths.py' in present:
         kinds.append('orch')
-    if len(kinds) < 5:
-        print('    [跳过] 本包缺 %s，AE 只测 %d 个入口'
-              % ('、'.join({'daybook', 'cli', 'hook', 'mcp', 'orch'}.difference(kinds)),
-                 len(kinds)))
+    missing = sorted({'daybook', 'cli', 'hook', 'mcp', 'orch'}.difference(kinds))
+    if missing:
+        print('    [跳过] 本包缺 %s，AE 只测 %d 个入口' % ('、'.join(missing), len(kinds)))
+    # 源树必须硬断言五个入口全部在场：否则源里真少一件时只会静默少测、依旧全绿，
+    # 而 pack.py --verify 在「盒也少」时同样抓不到。
+    # The source tree must assert all five entries are present: otherwise a real missing file
+    # would silently shrink the suite and stay green, and pack.py --verify cannot catch it either
+    # when the box is missing the same file.
+    src_dir = os.path.dirname(os.path.abspath(SRC_BIN))
+    if os.path.exists(os.path.join(src_dir, 'pack.py')):
+        _ok('AE 源树五入口件齐全（skip 为空）', len(kinds) == 5 and not missing,
+            'missing=%s' % missing)
     io.open(os.path.join(confd, 'daybook.conf'), 'w', encoding='utf-8').write(
         '[volumes]\n账=账卷.txt\n对话=对话卷.txt\n\n[index]\nroot=%s\nout_dir=索引\n' % led)
     io.open(os.path.join(led, '账卷.txt'), 'w', encoding='utf-8').write(
@@ -957,6 +966,7 @@ def _case_five_roots(tmp):
     io.open(os.path.join(confd, 'hook_a_关键词.txt'), 'w', encoding='utf-8').write(
         '[账] [追更] 决定\n')
     env = dict(os.environ)
+    env.pop('DAYBOOK_HOME', None)
     env['DAYBOOK_ROOT'] = confd                 # 只用来找 conf
     subprocess.run([sys.executable, '-B', os.path.join(confd, 'daybook.py'), 'baseline'],
                    cwd=led, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1012,6 +1022,224 @@ def _case_five_roots(tmp):
         print('    [数据] AE 锁落点 %s=%s 耗时=%.2fs'
               % (name, got.get(name, got.get('daybook')), elapsed))
     print('    [数据] AE 锁落点：' + ' '.join('%s=%s' % (k, got[k]) for k in kinds))
+
+
+_MATRIX_COPY = ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                'daybook_hook.py', 'mcp_resources.py', 'mcp_transport.py', 'mcp_server.py',
+                'mcp_tools.py', 'mcp_prompts.py', 'mcp_subscribe.py',
+                'volume_paths.py', 'orchestrator.py', 'agent_registry.py', 'cross_ref.py',
+                'task_volume.py', 'agent_lock.py', 'agent_heartbeat.py', 'agent_message.py',
+                'daybook_multidx.py')
+
+
+def _matrix_cmds(exedir, ledger, kinds):
+    """矩阵用的真实入口命令（失败格要真的 rc=2，不能拿 traceback 充数）。
+    Real entry commands for the matrix (a failing cell must really exit 2, not traceback)."""
+    py = sys.executable
+    want = {
+        'daybook': [py, '-B', os.path.join(exedir, 'daybook.py'), 'index'],
+        'cli': [py, '-B', os.path.join(exedir, 'daybook_append.py'),
+                os.path.join(ledger, '账卷.txt'), '测试', '条目', '皮特', '正文'],
+        'hook': [py, '-B', os.path.join(exedir, 'daybook_hook.py')],
+        'mcp': [py, '-B', os.path.join(exedir, 'mcp_server.py')],
+        'orch': [py, '-B', os.path.join(exedir, 'orchestrator.py'), 'alarm'],
+    }
+    return {k: want[k] for k in kinds}
+
+
+def _matrix_lock(label, code, ledger, env, cwd):
+    """持账本根锁，三个写入口必须都被挡住（每格都实测，锁落点与耗时逐个打印）。
+    Hold the ledger root and require every write entry to block (measured per cell; lock point and
+    elapsed printed for each)."""
+    cmds = _matrix_cmds(code, ledger, ('daybook', 'cli', 'hook'))
+    for name in ('daybook', 'cli', 'hook'):
+        for f in ('release.flag', 'held.flag'):
+            try:
+                os.remove(os.path.join(ledger, f))
+            except OSError:
+                pass
+        holder = subprocess.Popen([sys.executable, '-B', '-c', _CHILD_HOLD_AB, code, ledger],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True)
+        held = os.path.join(ledger, 'held.flag')
+        for _ in range(200):
+            if os.path.exists(held):
+                break
+            time.sleep(0.02)
+        if not os.path.exists(held):
+            holder.kill()
+            holder.communicate()
+            _ok('%s 持锁进程进入临界区（%s）' % (label, name), False, 'held.flag 未出现')
+            continue
+        t0 = time.time()
+        p = subprocess.Popen(cmds[name], cwd=cwd, env=env, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, universal_newlines=True)
+        time.sleep(0.35)
+        still = p.poll() is None
+        io.open(os.path.join(ledger, 'release.flag'), 'w').write('1')
+        _o, err = p.communicate()
+        elapsed = time.time() - t0
+        holder.communicate()
+        _ok('%s %s 被账本根锁挡住' % (label, name), still,
+            'still=%s elapsed=%.2fs %s' % (still, elapsed, (err or '')[-100:]))
+        print('    [数据] %s 锁落点 %s=%s 耗时=%.2fs'
+              % (label, name, os.path.realpath(ledger), elapsed))
+
+
+def _case_root_matrix(tmp):
+    """AF 根解析矩阵：env（未设／指向 conf／指向无 conf）× conf root（空／相对／绝对）×
+    启动方式（账本内／账本外／装好的入口）。成功格五入口同根且争同一把锁；失败格五入口
+    全部 rc=2 且文案逐字一致。
+    AF root matrix: env (unset / conf dir / no-conf dir) x conf root (empty / relative /
+    absolute) x launch (inside the ledger / outside / installed entry). Working cells: all
+    entries land on one root and contend on one lock. Failing cells: all exit 2 with one
+    identical message."""
+    print('  -- AF 根解析矩阵（env × conf root × 启动方式） --')
+    base = os.path.join(tmp, 'af')
+    os.makedirs(base)
+    code = os.path.join(base, 'code')
+    os.makedirs(code)
+    present = []
+    for name in _MATRIX_COPY:
+        sp = os.path.join(os.path.dirname(SRC_BIN), name)
+        if os.path.exists(sp):
+            shutil.copy2(sp, os.path.join(code, name))
+            present.append(name)
+    kinds = ['daybook', 'cli', 'hook']
+    if 'mcp_resources.py' in present and 'mcp_server.py' in present:
+        kinds.append('mcp')
+    if 'volume_paths.py' in present and 'orchestrator.py' in present:
+        kinds.append('orch')
+    missing = sorted(set(('daybook', 'cli', 'hook', 'mcp', 'orch')) - set(kinds))
+    print('    [跳过] %s；固定测 %d 个入口' % ('、'.join(missing) or '无', len(kinds)))
+    inst = os.path.join(base, 'inst')
+    os.makedirs(inst)
+    for name in present:
+        os.symlink(os.path.join(code, name), os.path.join(inst, name))
+    other = os.path.join(base, 'elsewhere')
+    os.makedirs(other)
+    nc = os.path.join(base, 'noconf')
+    os.makedirs(nc)
+    ncell = 0
+    for env_state in ('unset', 'conf', 'noconf'):
+        for root_mode in ('empty', 'relative', 'absolute'):
+            for start in ('inside', 'outside', 'installed'):
+                ncell += 1
+                cell = os.path.join(base, 'cell%02d' % ncell)
+                confd = os.path.join(cell, 'conf')
+                os.makedirs(confd)
+                if root_mode == 'empty':
+                    root_val, ledger = '', confd
+                elif root_mode == 'relative':
+                    root_val, ledger = 'ledger', os.path.join(confd, 'ledger')
+                else:
+                    root_val = os.path.join(cell, 'abs')
+                    ledger = root_val
+                os.makedirs(ledger, exist_ok=True)
+                io.open(os.path.join(confd, 'daybook.conf'), 'w', encoding='utf-8').write(
+                    '[volumes]\n账=账卷.txt\n对话=对话卷.txt\n\n[index]\nroot=%s\nout_dir=索引\n'
+                    % root_val)
+                io.open(os.path.join(ledger, '账卷.txt'), 'w', encoding='utf-8').write(
+                    '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+                os.makedirs(os.path.join(ledger, '对话原件'), exist_ok=True)
+                io.open(os.path.join(ledger, '对话原件', 'd1.txt'), 'w',
+                        encoding='utf-8').write('讨论一下 决定 这件事\n')
+                io.open(os.path.join(ledger, '对话卷.txt'), 'w', encoding='utf-8').write(
+                    '[2026-11-13 10:00:00] [聊] [甲] [皮特] 对话原件/d1.txt\nSHA256: deadbeef\n')
+                io.open(os.path.join(confd, 'hook_a_关键词.txt'), 'w',
+                        encoding='utf-8').write('[账] [追更] 决定\n')
+                # 无参 hook 从账本根取关键词表（root 可与 conf 目录不同）
+                io.open(os.path.join(ledger, 'hook_a_关键词.txt'), 'w',
+                        encoding='utf-8').write('[账] [追更] 决定\n')
+                env = dict(os.environ)
+                env.pop('DAYBOOK_ROOT', None)
+                env.pop('DAYBOOK_HOME', None)
+                if env_state == 'conf':
+                    env['DAYBOOK_ROOT'] = confd
+                elif env_state == 'noconf':
+                    env['DAYBOOK_ROOT'] = nc
+                cwd = ledger if start == 'inside' else other
+                exedir = inst if start == 'installed' else code
+                label = 'AF(%s/%s/%s)' % (env_state, root_mode, start)
+                expect_ok = (env_state == 'conf') or (
+                    env_state == 'unset' and start == 'inside' and root_mode == 'empty')
+                if expect_ok:
+                    want = os.path.realpath(ledger)
+                    got = {}
+                    for kind in kinds:
+                        r = subprocess.run([sys.executable, '-B', '-c', _CHILD_ROOT,
+                                            exedir, kind], cwd=cwd, env=env,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                           universal_newlines=True)
+                        got[kind] = (r.stdout.strip().splitlines() or [''])[-1]
+                    _ok('%s 五入口同根' % label,
+                        all(v == want for v in got.values()),
+                        ' | '.join('%s=%s' % (k, got[k]) for k in kinds))
+                    print('    [数据] %s 根: %s' % (label, ' '.join(
+                        '%s=%s' % (k, got[k]) for k in kinds)))
+                    _matrix_lock(label, code, ledger, env, cwd)
+                else:
+                    rcs, msgs = {}, {}
+                    for kind, cmd in _matrix_cmds(exedir, ledger, kinds).items():
+                        r = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, universal_newlines=True)
+                        rcs[kind] = r.returncode
+                        found = [ln.strip() for ln in (r.stderr or '').splitlines()
+                                 if '未找到 daybook.conf' in ln]
+                        msgs[kind] = found[0] if found else ''
+                    _ok('%s 五入口 rc=2' % label, all(v == 2 for v in rcs.values()),
+                        'rcs=%s' % rcs)
+                    uniq = set(msgs.values())
+                    _ok('%s 文案逐字一致' % label,
+                        all(msgs.values()) and len(uniq) == 1,
+                        ' | '.join('%s=%s' % (k, msgs[k][:70]) for k in kinds))
+                    if msgs:
+                        print('    [数据] %s 文案: %s' % (label, list(uniq)[0]))
+
+
+def _case_pad_notice(tmp):
+    """AG pad_notice 五种输入：有换行／无换行但合法／半行残渣／只有时间戳／二进制垃圾。
+    每种都要给可读结论且不崩（残渣必须点名缺失字段）。
+    AG pad_notice on five inputs: trailing newline / no newline but valid / half-line residue /
+    timestamp only / binary garbage. Each must give a readable verdict and never crash (a
+    residue line must name its missing fields)."""
+    print('  -- AG pad_notice 五种输入 --')
+    sys.path.insert(0, os.path.dirname(SRC_BIN))
+    import daybook_append as da
+    d = os.path.join(tmp, 'ag')
+    os.makedirs(d)
+    cases = [
+        ('有换行', '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n'.encode('utf-8'), False, ''),
+        ('无换行合法', '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文'.encode('utf-8'), True,
+         '缺字段=无'),
+        ('半行残渣', '[2026-11-13 10:02:00] [测试'.encode('utf-8'), True, '缺字段=类别、标题、作者'),
+        ('只有时间戳', '[2026-11-13 10:00:00]'.encode('utf-8'), True, '缺字段=类别、标题、作者'),
+        ('二进制垃圾', b'\xff\xfe\x00\x01abc', True, '缺字段=时间'),
+    ]
+    for i, (label, blob, need, contains) in enumerate(cases):
+        p = os.path.join(d, '卷%d.txt' % i)
+        io.open(p, 'wb').write(blob)
+        crash = ''
+        try:
+            got_need, notice = da.pad_notice(p)
+        except Exception as exc:
+            got_need, notice = None, ''
+            crash = '%s: %s' % (type(exc).__name__, exc)
+        _ok('AG[%s] 不崩且判断正确' % label, not crash and got_need == need,
+            crash or 'need=%s notice=%r' % (got_need, notice[:80]))
+        if need:
+            _ok('AG[%s] 文案可读（卷名/行号/缺字段）' % label,
+                notice.startswith('★ 卷末行不完整·已补换行') and '卷=' in notice
+                and '行=' in notice and contains in notice, notice[:120])
+    # 不知道账本根就不写：append_one(root=None) 必须 rc=2 且一个字节都不动
+    # No root means no write: append_one(root=None) must return 2 and leave the file untouched.
+    p = os.path.join(d, '无根卷.txt')
+    io.open(p, 'w', encoding='utf-8').write('[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+    before = io.open(p, 'rb').read()
+    rc = da.append_one(p, '测试', '无根', '正文', author='皮特')
+    after = io.open(p, 'rb').read()
+    _ok('AG 无账本根 ⇒ append_one rc=2 且不写', rc == 2 and before == after,
+        'rc=%r changed=%s' % (rc, before != after))
 
 
 _CHILD_HOLD_AB = r'''
@@ -1420,6 +1648,8 @@ def main():
         _case_cache_hash(work)
         _case_msg_consistency(work)
         _case_five_roots(work)
+        _case_root_matrix(work)
+        _case_pad_notice(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',

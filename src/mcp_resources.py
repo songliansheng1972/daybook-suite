@@ -79,14 +79,14 @@ def _conf_dir():
     Directory holding daybook.conf: decided solely by ledger_root.locate (override/env only
     locate conf, never become the root)."""
     from ledger_root import locate
-    return locate(HERE)[0]
+    return locate()[0]
 
 
 def _conf_path():
-    """daybook.conf 的绝对路径（locate 找到的那一份；没找到返回默认位）。
-    Absolute path of the located daybook.conf (default location when none was found)."""
+    """daybook.conf 的绝对路径（locate 找到的那一份；没找到返回候选位）。
+    Absolute path of the located daybook.conf (the candidate location when none was found)."""
     from ledger_root import locate
-    _cd, cp = locate(HERE)
+    _cd, cp = locate()
     return cp or os.path.join(_cd, CONF_NAME)
 
 
@@ -107,10 +107,10 @@ def _root():
     Ledger root = conf's [index] root (one resolution after locate finds the conf).
     解析失败抛 RootError —— 读错根必须报错，绝不静默当空账本。
     Raises RootError on failure — a wrong root must fail loudly, never masquerade as an empty ledger."""
-    from ledger_root import locate
-    cd, cp = locate(HERE)
+    from ledger_root import locate, not_found_message
+    cd, cp = locate()
     if cp is None:
-        raise RootError('找不到 daybook.conf：%s' % os.path.join(cd, CONF_NAME))
+        raise RootError(not_found_message(cd))
     return _resolve_root(cd, _load_conf(cp))
 
 
@@ -148,7 +148,7 @@ def _load_volumes():
     """读 daybook.conf [volumes] 表·返回有序 dict {卷名: 相对路径}。
     Read the conf [volumes] table → ordered dict {volume name: relative path}.
     失败抛 RootError（不静默当空卷表）。
-    conf 路径走 conf 目录·生产=本件所在目录·测试可走 DAYBOOK_ROOT。"""
+    conf 走两级定位：显式指定（--home/DAYBOOK_ROOT/DAYBOOK_HOME）> 当前工作目录。"""
     return _load_conf().get('volumes', {})
 
 

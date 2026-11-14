@@ -132,24 +132,35 @@ def test_agent_message(tmp):
     Acceptance 4: after Agent A writes a volume, Agent B receives a notify."""
     sys.path.insert(0, HERE)
     import agent_message as am
-    # 改 inbox 路径到 tmp · point the inbox path to tmp
-    am.INBOX_VOL = os.path.join(tmp, '消息卷.txt')
+    # 消息卷一律经 conf 解析：把 tmp 作为 conf 目录（显式 DAYBOOK_ROOT）
+    # The inbox is always resolved through the conf: make tmp the conf dir (explicit DAYBOOK_ROOT).
+    with open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
+        f.write('[volumes]\ninbox=消息卷.txt\n')
+    saved = os.environ.get('DAYBOOK_ROOT')
+    os.environ['DAYBOOK_ROOT'] = tmp
     am.SOCK_DIR = tmp
-    # 启 B 的服务端 · start B's server
-    srv = am.AgentServer('B')
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    time.sleep(0.3)
-    # A 发 notify · A sends notify
-    ok, reply = am.send('A', 'B', 'notify', '写完协作卷条目 12')
-    srv.shutdown()
-    srv.server_close()
+    inbox = am.inbox_path()
+    try:
+        # 启 B 的服务端 · start B's server
+        srv = am.AgentServer('B')
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        time.sleep(0.3)
+        # A 发 notify · A sends notify
+        ok, reply = am.send('A', 'B', 'notify', '写完协作卷条目 12')
+        srv.shutdown()
+        srv.server_close()
+    finally:
+        if saved is None:
+            os.environ.pop('DAYBOOK_ROOT', None)
+        else:
+            os.environ['DAYBOOK_ROOT'] = saved
     if not _ok('4.1 notify 送达', ok, reply or ''):
         return False
     # inbox 卷有记录 · the inbox volume has a record
-    if not os.path.exists(am.INBOX_VOL):
+    if not os.path.exists(inbox):
         return _ok('4.2 消息卷有记录', False, '文件不存在')
-    with open(am.INBOX_VOL, 'r', encoding='utf-8') as f:
+    with open(inbox, 'r', encoding='utf-8') as f:
         content = f.read()
     return _ok('4.2 消息卷有记录', 'notify' in content and 'B' in content, content)
 

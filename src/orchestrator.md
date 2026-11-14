@@ -76,7 +76,7 @@ python3 daybook.py 编排 alarm               # 体检（硬警/软警按结构�
 python3 daybook.py 编排 digest --limit 5    # 变动摘要（0=全部；负数非法）
 python3 daybook.py 编排 selftest            # 端到端自检
 ```
-`--root DIR` 指定卷根（默认本包自身）；`--rule/--roles` 换路由表/角色表。
+`--root DIR` 指定 **conf 所在目录**（默认当前工作目录；账本根由 conf 的 `[index] root` 决定，找不到 conf 即 rc=2）；`--rule/--roles` 换路由表/角色表。
 
 退出码（`alarm`）：0 干净｜1 有硬警｜2 参数/文件错｜3 体检执行异常（读卷/解析失败）。
 `digest`：卷表为空报 `no-volumes`，卷读失败与互见引用失败均显式标注（输出 + stderr），不伪装成「没有」。

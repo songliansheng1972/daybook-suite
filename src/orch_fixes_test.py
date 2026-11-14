@@ -87,9 +87,9 @@ def test_pull_reply():
         aid_p, _ = hub.join('皮特')
 
         # 旧格式批次：两条落在皮特，随后一条皮特的无关消息（旧代码据位置判「已回」）
-        append_one(hub.ledger, '报', '交活 T001', '旧正文一', author=aid_t, to=aid_p)
-        append_one(hub.ledger, '报', '交活 T002', '旧正文二', author=aid_t, to=aid_p)
-        append_one(hub.ledger, '聊', '皮特自言自语', '与回复无关', author=aid_p)
+        append_one(hub.ledger, '报', '交活 T001', '旧正文一', author=aid_t, to=aid_p, root=hub.root)
+        append_one(hub.ledger, '报', '交活 T002', '旧正文二', author=aid_t, to=aid_p, root=hub.root)
+        append_one(hub.ledger, '聊', '皮特自言自语', '与回复无关', author=aid_p, root=hub.root)
         pend = hub.pull('皮特')
         legacy = [e for e, _p, _w in pend if e['title'] in ('交活 T001', '交活 T002')]
         check('旧批次无 id= → 判 unknown，照样列出（2 条）', len(legacy) == 2,
@@ -106,7 +106,7 @@ def test_pull_reply():
 
         # 未签名「回应」不算已回
         eid2 = hub._log('报', '交活 T004', '新正文四', aid_t, to=aid_p)
-        append_one(hub.ledger, '审', '伪造回应', '未签名', author=aid_p, re_ref=eid2)
+        append_one(hub.ledger, '审', '伪造回应', '未签名', author=aid_p, re_ref=eid2, root=hub.root)
         pend_ids = [e.get('id') for e, _p, _w in hub.pull('皮特')]
         check('unsigned 回应不计为已回', eid2 in pend_ids)
 
@@ -151,7 +151,7 @@ def test_identity_signature():
         check('正常条目验签 ok', hub.entry_auth(e) == 'ok', hub.entry_auth(e))
 
         # 旧格式（无 sig）→ unsigned，不得当合法
-        append_one(hub.ledger, '聊', '旧条目', '无签名', author=aid_t)
+        append_one(hub.ledger, '聊', '旧条目', '无签名', author=aid_t, root=hub.root)
         e_old = parse_ledger(hub.ledger)[-1]
         check('旧条目判 unsigned', hub.entry_auth(e_old) == 'unsigned', hub.entry_auth(e_old))
 
@@ -160,7 +160,7 @@ def test_identity_signature():
         forged_id = 'mforged000000001'
         payload = entry_payload(now, '聊', '冒充', aid_p, '', forged_id, '', '冒名正文')
         wrong_sig = hub.reg.sign(aid_t, payload)       # 用汤姆的钥签皮特的名
-        append_one(hub.ledger, '聊', '冒充', '冒名正文', author=aid_p,
+        append_one(hub.ledger, '聊', '冒充', '冒名正文', author=aid_p, root=hub.root,
                    msg_id=forged_id, sig=wrong_sig, now=now)
         e_forged = [x for x in parse_ledger(hub.ledger) if x.get('id') == forged_id][0]
         check('借钥冒充判 invalid', hub.entry_auth(e_forged) == 'invalid',

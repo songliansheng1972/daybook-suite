@@ -94,7 +94,10 @@ def resolve_home(argv):
         i += 1
     if home:
         return os.path.abspath(os.path.expanduser(home)), rest
-    env = os.environ.get("DAYBOOK_HOME", "").strip()
+    # 显式指定：DAYBOOK_HOME 优先，其次 DAYBOOK_ROOT（两者都只指向 conf 所在目录）。
+    # Explicit: DAYBOOK_HOME first, then DAYBOOK_ROOT (both point at the conf directory only).
+    env = (os.environ.get("DAYBOOK_HOME", "").strip()
+           or os.environ.get("DAYBOOK_ROOT", "").strip())
     if env:
         return os.path.abspath(os.path.expanduser(env)), rest
     if os.path.isfile(os.path.join(os.getcwd(), _CONF)):
@@ -212,8 +215,11 @@ def main(argv=None):
     for p in reversed(sibling_payloads()):
         if p not in sys.path:
             sys.path.insert(0, p)
-    # mcp/orch 各件支持 DAYBOOK_ROOT 覆盖（其自带测试逃生门）·一并设上以求一致
-    os.environ.setdefault("DAYBOOK_ROOT", home)
+    # 运行目录就是 conf 目录：覆盖 DAYBOOK_ROOT，使产品侧与壳的解析完全一致
+    # （--home 优先于环境变量时，不能让旧的 DAYBOOK_ROOT 把壳的选择覆盖掉）。
+    # The run directory is the conf directory: overwrite DAYBOOK_ROOT so the product side
+    # resolves exactly what the shell resolved (--home must win over a stale env value).
+    os.environ["DAYBOOK_ROOT"] = home
     if made or fresh:
         sys.stderr.write(
             "%s: 运行目录 = %s%s（%s）\n"

@@ -101,19 +101,6 @@ def load_conf(path):
     return conf
 
 
-def resolve_root(conf, here):
-    """根目录：conf[index][root] 控制。空=here；..=上一级；绝对=原样。（与 daybook.py 同口径）
-    Root resolution: conf[index][root]. Empty = here; '..' = parent; absolute = as-is."""
-    rc = (conf.get('index', {}).get('root', '') or '').strip()
-    if not rc:
-        return here
-    if rc == '..':
-        return os.path.dirname(here)
-    if os.path.isabs(rc):
-        return rc
-    return os.path.join(here, rc)
-
-
 # ── 工具 ──────────────────────────────────────────────────────
 # ── Helpers ───────────────────────────────────────────────────
 def _t(s):
@@ -375,8 +362,22 @@ def main(argv=None):
     orders = ('子', '史', '集') if a.order_view == '全部' else tuple(x for x in ('子', '史', '集') if x in a.order_view)
     if not orders:
         orders = ('子',)
-    conf = load_conf(a.conf or os.path.join(HERE, 'daybook.conf'))
-    root = resolve_root(conf, HERE)
+    from ledger_root import locate, not_found_message, resolve_root
+    if a.conf:
+        from ledger_root import conf_root_from_path
+        _cd, root = conf_root_from_path(a.conf)
+        conf = load_conf(a.conf)
+    else:
+        cd, cp = locate()
+        if cp is None:
+            sys.stderr.write(not_found_message(cd) + '\n')
+            return 2
+        conf = load_conf(cp)
+        try:
+            root = resolve_root(cd, conf)
+        except ValueError as exc:
+            sys.stderr.write('%s\n' % exc)
+            return 2
     per, total = build(conf, root, now=a.now, only_vol=a.only_vol, orders=orders)
     print('多级目录已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
           + '｜合计 %d 条' % total

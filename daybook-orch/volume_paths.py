@@ -67,10 +67,10 @@ def resolve_root(root=None):
     Ledger root: the same resolver as daybook / MCP / the append CLI / the hook (the only
     implementation is ledger_root). `root` only locates the conf dir — never the root itself;
     conf's [index] root decides."""
-    from ledger_root import locate, read_conf_value, resolve_root as _resolve
-    cd, cp = locate(HERE, override=root)
+    from ledger_root import locate, not_found_message, read_conf_value, resolve_root as _resolve
+    cd, cp = locate(override=root)
     if cp is None:
-        return os.path.realpath(os.path.expanduser(str(root or HERE)))
+        raise ValueError(not_found_message(cd))
     return _resolve(cd, {'index': {'root': read_conf_value(cp, 'index', 'root')}})
 
 
@@ -104,9 +104,9 @@ def read_conf_sections(root=None):
     Read conf (defaults to <root>/daybook.conf). When the conf dir differs from the root the
     caller passes the path directly."""
     from ledger_root import locate
-    _cd, cp = locate(HERE, override=root)
+    _cd, cp = locate(override=root)
     if cp is None:
-        cp = os.path.join(resolve_root(root), 'daybook.conf')
+        return {}
     return read_conf_sections_from(cp)
 
 

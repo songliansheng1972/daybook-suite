@@ -320,17 +320,21 @@ def test_author_cli_backdoor(tmp):
     os.makedirs(d)
     vol = os.path.join(d, '卷.txt')
     _write(vol, '')
+    _write(os.path.join(d, 'daybook.conf'), '[volumes]\n卷=卷.txt\n[index]\nroot=\n')
     cli = os.path.join(HERE, 'daybook_append.py')
+    cli_env = dict(os.environ)
+    cli_env.pop('DAYBOOK_HOME', None)
+    cli_env['DAYBOOK_ROOT'] = d
     r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '正文四参'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
     _ok('⑫1 4 参形态（默认未标）被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
     r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '未标', '正文'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
     _ok('⑫2 显式「未标」占位被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
     r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '汤姆', '正文', '--name=别人'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
     _ok('⑫3 --name= 后门被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
     _ok('⑫4 三次拒写都没落条目', io.open(vol, encoding='utf-8').read().strip() == '')
@@ -340,8 +344,10 @@ def test_author_cli_backdoor(tmp):
     os.makedirs(iso)
     ivol = os.path.join(iso, '卷.txt')
     _write(ivol, '')
+    _write(os.path.join(iso, 'daybook.conf'), '[volumes]\n卷=卷.txt\n[index]\nroot=\n')
+    iso_env = dict(cli_env, DAYBOOK_ROOT=iso)
     r = subprocess.run([sys.executable, cli, ivol, '聊', '标题', AID, '正文'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=iso_env,
                        universal_newlines=True)
     _ok('⑫5 独立模式拒机器 id（rc=2）', r.returncode == 2, 'rc=%d' % r.returncode)
 
@@ -353,11 +359,15 @@ def test_author_source(tmp):
     vol = os.path.join(work, '协作卷.txt')
     _write(vol, '')
     _write(os.path.join(work, '注册卷.txt'), REGISTRY)
+    _write(os.path.join(work, 'daybook.conf'), '[volumes]\n协作卷=协作卷.txt\n[index]\nroot=\n')
     cli = os.path.join(HERE, 'daybook_append.py')
+    cli_env = dict(os.environ)
+    cli_env.pop('DAYBOOK_HOME', None)
+    cli_env['DAYBOOK_ROOT'] = work
 
     # 注册过的显示名 ⇒ 作者位仍是显示名，id 只作 [id=ag-…] 附注
     r = subprocess.run([sys.executable, cli, vol, '聊', '第一条', '汤姆', '正文一'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
     lines = [l for l in io.open(vol, encoding='utf-8').read().splitlines() if l.startswith('[')]
     tok = dba._head_tokens(lines[0]) if lines else []
@@ -367,7 +377,7 @@ def test_author_source(tmp):
 
     # 未注册作者 ⇒ 允许写入，stderr 警告，附注 [未注册]
     r = subprocess.run([sys.executable, cli, vol, '聊', '未注册', '未注册人', '正文'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
     lines = [l for l in io.open(vol, encoding='utf-8').read().splitlines() if l.startswith('[')]
     tok = dba._head_tokens(lines[-1]) if lines else []
@@ -378,7 +388,7 @@ def test_author_source(tmp):
 
     # 未注册的机器 id ⇒ 拒写（作者位不许出现 id，且无法反查显示名）
     r = subprocess.run([sys.executable, cli, vol, '聊', '坏id', 'ag-ffffffffffffffff', '正文'],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
     _ok('④3e 未注册机器 id 被拒（rc=2）', r.returncode == 2, 'rc=%d' % r.returncode)
 
@@ -388,8 +398,8 @@ def test_author_source(tmp):
                                       encoding='utf-8').read())
     mcp_vol = os.path.join(work, 'MCP卷.txt')
     _write(mcp_vol, '')
-    dba.append_one(vol, 'MCP', '_', '正文二', author='汤姆', author_id=AID)
-    dba.append_one(mcp_vol, 'MCP', '_', '正文二', author='汤姆', author_id=AID)
+    dba.append_one(vol, 'MCP', '_', '正文二', author='汤姆', author_id=AID, root=work)
+    dba.append_one(mcp_vol, 'MCP', '_', '正文二', author='汤姆', author_id=AID, root=work)
     shape = r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[[^\]]+\] \[[^\]]*\] \[汤姆\] \[id=ag-[0-9a-f]{16}\] '
     import re as _re
     ok_shape = all(_re.match(shape, l) for l in

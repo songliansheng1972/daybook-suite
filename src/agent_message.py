@@ -42,16 +42,16 @@ sys.path.insert(0, HERE)
 import volume_paths as _vp
 
 SOCK_DIR = '/tmp'
-# 默认 inbox（无 --root 时的旧行为）· default inbox (legacy behavior without --root)
-INBOX_VOL = os.path.join(HERE, '消息卷.txt')
+
 
 MSG_TYPES = ('notify', 'request', 'response', 'broadcast')
 
 
 def inbox_path(root=None):
-    """消息卷路径：给了 root 就经 conf 解析（与编排卷同一个根），否则用旧默认。
-    Inbox volume path: with a root, resolve through conf (same root as the ledger); otherwise the legacy default."""
-    return INBOX_VOL if root is None else _vp.resolve_volumes(root)['inbox']
+    """消息卷路径：一律经 conf 解析（与编排卷同一个根）；找不到 conf 抛 ValueError（调用方 rc=2）。
+    Inbox volume path: always resolved through the conf (the same root as the ledger); a missing
+    conf raises ValueError (the caller exits 2)."""
+    return _vp.resolve_volumes(root)['inbox']
 
 
 def _now():
@@ -215,34 +215,40 @@ def main():
     if len(argv) < 1:
         print(__doc__); return 1
     cmd = argv[0]
-    if cmd == 'serve' and len(argv) >= 2:
-        name = argv[1]
-        try:
-            srv = AgentServer(name, root=root)
-        except ValueError as exc:
-            sys.stderr.write('%s\n' % exc)
-            return 2
-        print('Agent %s 监听 %s' % (name, srv.sock_path))
-        print('消息卷 %s' % inbox_path(root))
-        try:
-            srv.serve_forever()
-        except KeyboardInterrupt:
-            srv.server_close()
-            print('退出')
-    elif cmd == 'send' and len(argv) >= 5:
-        ok, reply = send(argv[1], argv[2], argv[3], argv[4], root=root)
-        print('OK' if ok else 'FAIL', reply or '')
-    elif cmd == 'tail':
-        # 看消息卷 · view the message volume
-        path = inbox_path(root)
-        if not os.path.exists(path):
-            print('（无）'); return 0
-        from safeio import read_vol
-        text, _enc, _why = read_vol(path)
-        for line in text.splitlines():
-            print(line.rstrip('\n'))
-    else:
-        print(__doc__); return 1
+    try:
+        if cmd == 'serve' and len(argv) >= 2:
+            name = argv[1]
+            try:
+                srv = AgentServer(name, root=root)
+            except ValueError as exc:
+                sys.stderr.write('%s\n' % exc)
+                return 2
+            print('Agent %s 监听 %s' % (name, srv.sock_path))
+            print('消息卷 %s' % inbox_path(root))
+            try:
+                srv.serve_forever()
+            except KeyboardInterrupt:
+                srv.server_close()
+                print('退出')
+        elif cmd == 'send' and len(argv) >= 5:
+            ok, reply = send(argv[1], argv[2], argv[3], argv[4], root=root)
+            print('OK' if ok else 'FAIL', reply or '')
+        elif cmd == 'tail':
+            # 看消息卷 · view the message volume
+            path = inbox_path(root)
+            if not os.path.exists(path):
+                print('（无）'); return 0
+            from safeio import read_vol
+            text, _enc, _why = read_vol(path)
+            for line in text.splitlines():
+                print(line.rstrip('\n'))
+        else:
+            print(__doc__); return 1
+    except ValueError as exc:
+        # 根/conf 定位失败 = 配置错：rc=2，文案与其他入口逐字一致。
+        # A missing root/conf is a config error: rc=2 with the same wording as the other entries.
+        sys.stderr.write('%s\n' % exc)
+        return 2
     return 0
 
 

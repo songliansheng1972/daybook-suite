@@ -45,8 +45,9 @@ Ledger entry header (since v3.2):
     [时间] [类] [标题] [作者] [id=<条号>] [re=<回应条号>] [sig=<HMAC-SHA256>] [致=…] 正文
     · pull 只认 [re=] 判「已回」；旧条目无 id=/sig= ⇒ unknown/unsigned，绝不默认合法。
     · pull only honours [re=] as "replied"; legacy entries without id=/sig= ⇒ unknown/unsigned, never silently legal.
-    · 七卷路径全由 <root>/daybook.conf 的 [volumes] 段解析，--root 一处生效。
-    · All seven volume paths resolve from the [volumes] section of <root>/daybook.conf; --root takes effect in one place.
+    · 七卷路径全由 conf 的 [volumes] 段解析；conf 只查两级（显式 --root/环境变量 > 当前目录）。
+    · All seven volume paths resolve from the conf [volumes] section; the conf is looked up in
+      two levels only (explicit --root/env > the current working directory).
 
 三条戒律（与路由层同）：
 Three commandments (same as the routing layer):
@@ -522,7 +523,7 @@ class Hub:
         # Both the ledger root and the conf location come from ledger_root (shared with
         # index/MCP/the append CLI/the hook); root/--root only locates conf, [index] root decides.
         from ledger_root import locate as _locate_conf
-        self.conf_path = _locate_conf(HERE, override=root)[1]
+        self.conf_path = _locate_conf(override=root)[1]
         self.root = _vp.resolve_root(root)
         self.vols = _vp.resolve_volumes(self.root, conf_path=self.conf_path)
         # conf 指向自定义子目录时先建父目录（卷本身仍由各件按需创建）。
@@ -903,7 +904,8 @@ def _print_pull(hub, who):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='daybook 智能体编排中心')
-    ap.add_argument('--root', default=HERE, help='卷根目录（默认本包自身）')
+    ap.add_argument('--root', default=None,
+                    help='conf 所在目录（默认当前工作目录；显式指定但无 conf 即 rc=2）')
     ap.add_argument('--rule', default=DEFAULT_RULE)
     ap.add_argument('--roles', default=DEFAULT_ROLES)
     sub = ap.add_subparsers(dest='cmd')
@@ -945,6 +947,11 @@ def main(argv=None):
 
     try:
         hub = Hub(root=args.root, rule=args.rule, roles=args.roles)
+    except ValueError as exc:
+        # 根/conf 定位失败就是配置错（rc=2），文案与其余四入口逐字一致。
+        # A missing root/conf is a config error (rc=2) with the same wording as the other four.
+        sys.stderr.write('%s\n' % exc)
+        return 2
     except Exception as exc:  # 初始化失败也不许与「有硬警」共用 rc=1 · init failures must not share rc=1 with hard warnings
         sys.stderr.write('⚠ 初始化失败：%s: %s\n' % (type(exc).__name__, exc))
         if args.cmd == 'alarm':

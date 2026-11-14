@@ -15,7 +15,7 @@ Templates for the two pending clients, stdio only. Read-only is mandatory: with
 | 启动命令 | `/path/to/daybook-suite/daybook-mcp/daybook-mcp` |
 | 传输 | stdio（换行分隔 JSON-RPC 2.0） |
 | 协议版本 | `2024-11-05` |
-| 账本根 | `DAYBOOK_ROOT=/path/to/daybook-ledger`（示例值，换成自己的账本根）。**发布版内置 conf 是空卷样板，必须显式给 `DAYBOOK_ROOT` 或改 conf，否则启动告警 `volumes 为空`** |
+| conf 目录 | `DAYBOOK_ROOT=/path/to/daybook-ledger`（示例值，换成放 `daybook.conf` 的目录；账本根由 conf 的 `[index] root` 决定）。**发布版内置 conf 是空卷样板，必须显式给 `DAYBOOK_ROOT` 或改 conf，否则启动告警 `volumes 为空`；该目录没有 conf 时启动直接 rc=2** |
 | 身份 | `DAYBOOK_AGENT_ID`（模板里是占位值，改成实际 agent_id；也可在请求 `_meta.agentId` 里逐条携带） |
 | 写权限 | **不提供**。开写前置是密钥轮换，方案另出，未获批准前不开放 |
 
@@ -25,8 +25,9 @@ Templates for the two pending clients, stdio only. Read-only is mandatory: with
   （若其配置键为 `servers`，把外层键名改掉即可，内层字段不变）。
 - **WORKBUDDY**：用 `workbuddy.json`，同上。
 - `DAYBOOK_AGENT_ID` 分别留了 `DEEPSEEK_HARNESS` / `WORKBUDDY` 作为占位，按实际 agent_id 替换。
-- 两份模板都写入了显式 `DAYBOOK_ROOT`（示例账本根，按实际替换）；发布版包内
-  `daybook-mcp/daybook.conf` 是空卷样板，不设 `DAYBOOK_ROOT` 会按 `[index] root` 解析并告警 0 卷。
+- 两份模板都写入了显式 `DAYBOOK_ROOT`（示例 conf 目录，按实际替换）；发布版包内
+  `daybook-mcp/daybook.conf` 是空卷样板，不设 `DAYBOOK_ROOT` 就只在当前工作目录找 conf，
+  找不到即 rc=2，找到空卷样板则按 `[index] root` 解析并告警 0 卷。
   生产接入请用真实 conf，或始终显式传 `DAYBOOK_ROOT`。
 
 ## 3. 自检方法 / Self-check

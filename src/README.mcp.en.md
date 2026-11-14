@@ -91,7 +91,7 @@ python3 mcp_server.py          # serve over stdio; clients talk JSON-RPC
 ```
 
 Plug into any MCP client: configure `mcp_server.py` as a **stdio server**.
-The `DAYBOOK_ROOT` environment variable sets the volume root (defaults to the script's directory).
+`DAYBOOK_ROOT` points at the **conf directory** (defaults to the current working directory; the ledger root comes from conf's `[index] root`, and a missing conf exits 2).
 
 ## What you can change
 

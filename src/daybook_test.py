@@ -20,7 +20,7 @@ NPER = 30
 EXPECTED = NPROC * NPER  # 600 · 期望条数 / expected count
 
 
-def run_concurrency_test(vol_path, append_path):
+def run_concurrency_test(vol_path, append_path, env=None):
     """起 NPROC 进程各写 NPER 条，验证零交错。
     Spawn NPROC processes each writing NPER records; verify zero interleaving."""
     procs = []
@@ -30,7 +30,7 @@ def run_concurrency_test(vol_path, append_path):
             msg = 'msg-%d-%d-body' % (i, j)
             procs.append(subprocess.Popen(
                 [sys.executable, append_path, vol_path,
-                 '并发', 'smoke', author, msg],
+                 '并发', 'smoke', author, msg], env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
     for p in procs:
         if p.wait() != 0:
@@ -76,8 +76,15 @@ def main():
         return 1
     with tempfile.TemporaryDirectory() as tmp:
         vol = os.path.join(tmp, 'test_卷.txt')
+        # 追加 CLI 只认 conf：给临时目录一份 conf，并用显式 DAYBOOK_ROOT 指过去
+        # The append CLI trusts conf only: give the temp dir a conf and point DAYBOOK_ROOT at it.
+        with open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
+            f.write('[volumes]\nsmoke=test_卷.txt\n[index]\nroot=\n')
+        env = dict(os.environ)
+        env.pop('DAYBOOK_HOME', None)
+        env['DAYBOOK_ROOT'] = tmp
         t0 = time.time()
-        ok, msg = run_concurrency_test(vol, append_path)
+        ok, msg = run_concurrency_test(vol, append_path, env=env)
         elapsed = time.time() - t0
         verified, verify_msg = verify(vol)
         ok = ok and verified

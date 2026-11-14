@@ -252,7 +252,8 @@ def main():
     try:
         root, nvol = res.self_check()
     except res.RootError as e:
-        sys.stderr.write('[daybook-mcp] FATAL 启动自检失败：%s\n' % e)
+        # 五入口同一句文案（逐字一致）· the one wording shared verbatim by all five entries
+        sys.stderr.write('%s\n' % e)
         sys.stderr.flush()
         raise SystemExit(2)
     sys.stderr.write('[daybook-mcp] root=%s volumes=%d\n' % (root, nvol))
