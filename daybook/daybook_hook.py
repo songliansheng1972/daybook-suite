@@ -32,7 +32,7 @@ import os, sys, re, time, io
 
 # 复用 daybook_append 的原子写 · reuse daybook_append's atomic write
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from daybook_append import append_one, get_pipe_buf, _head_tokens
+from daybook_append import append_one, get_pipe_buf, head_author, _head_tokens
 
 
 def load_keywords(kw_path):
@@ -81,8 +81,8 @@ def scan_block(text, rules):
 
 
 def parse_dialog(dialog_path, root='.'):
-    """解析对话卷，返回 [(行号, 时间, 类, 标题, 作者, 正文)]
-    Parse the dialog volume; return [(line_no, time, kind, title, author, body)].
+    """解析对话卷，返回 [(行号, 时间, 类, 标题, 作者, 作者id, 正文)]
+    Parse the dialog volume; return [(line_no, time, kind, title, author, author_id, body)].
     对话卷格式：每条登记了原件路径 + SHA-256。
     Dialog volume format: each entry registers an original file path + SHA-256.
     HOOK-A 要扫的是原件文件的内容，不是对话卷的登记条目。
@@ -111,15 +111,17 @@ def parse_dialog(dialog_path, root='.'):
             cur_line = line
             cur_start = ln
             cur_text = line
-            # 解析条头走 _head_tokens（唯一实现）：[名=…]/[id=…]/[未注册] 等附注段
-            # 不会把标题/作者错位，也不会让整条静默跳过。
-            # Head parsing goes through _head_tokens (single implementation): annotation tokens
-            # such as [名=…]/[id=…]/[未注册] no longer shift title/author or silently drop the entry.
-            toks = _head_tokens(line)
+            # 解析条头走 head_author（唯一实现）：作者位与 [id=ag-…] 附注一起取回，
+            # 追更条目不会再丢机器 id 附注。
+            # Head parsing goes through head_author (single implementation): the author slot
+            # and the [id=ag-…] annotation come back together, so a followed entry never
+            # loses its machine-id annotation.
             pm = re.search(r'(对话原件/[^\s]+\.txt)', line)
+            toks = _head_tokens(line)
             if pm and len(toks) >= 3:
+                author, author_id = head_author(line)
                 cur_meta = (toks[1], toks[2],
-                            toks[3] if len(toks) > 3 else '未标', pm.group(1))
+                            author if author else '未标', pm.group(1), author_id)
             else:
                 cur_meta = None
         elif cur_line is not None:
@@ -174,7 +176,7 @@ def run(dialog_path, kw_path, root='.'):
         if not meta:
             mark_processed(record_path, ln)
             continue
-        kind, title, author, orig_path = meta
+        kind, title, author, orig_path, author_id = meta
         full_orig = os.path.join(root, orig_path)
         if not os.path.exists(full_orig):
             print('  ★ 原件不存在：%s' % orig_path)
@@ -190,7 +192,8 @@ def run(dialog_path, kw_path, root='.'):
         target_path = os.path.join(root, '%s卷.txt' % target_vol)
         msg = 'HOOK-A 追更·来源 对话卷 行=%d·原件=%s·命中「%s」\n%s' % (
             ln, orig_path, kw, orig_text.rstrip()[:100])  # 截 100 字防超 512B · truncate to 100 chars to stay under 512B
-        rc = append_one(target_path, target_kind, 'HOOK-A 追更', msg, author=author)
+        rc = append_one(target_path, target_kind, 'HOOK-A 追更', msg,
+                        author=author, author_id=author_id, root=root)
         if rc == 0:
             mark_processed(record_path, ln)
             n_hit += 1

@@ -41,6 +41,19 @@ AUDIT_VOL_NAME = 'MCP审计卷.txt'
 SIG_SIDECAR = 'MCP签名边车.jsonl'   # 签名边车（append-only JSONL）/ signature sidecar (append-only JSONL)
 WRITE_TOOLS = ('daybook_append', 'daybook_mark_read', 'daybook_heartbeat', 'daybook_index')
 
+# 账本拒绝（非 0 退出）不是参数错：按错误类别取文案，绝不套「参数错：」。
+# A ledger refusal (non-zero exit) is not a bad argument: label it by its own class and
+# never prefix it with "参数错：".
+_REFUSAL_LABEL = {2: '配置错', 3: 'append-only 违例', 4: '作者口径红', 5: '证据缺失'}
+
+
+class _LedgerRefusal(ValueError):
+    """账本按退出码拒绝本次调用（2/3/4/5），由调用层按类别渲染。"""
+
+    def __init__(self, rc, detail):
+        ValueError.__init__(self, detail)
+        self.rc = rc
+
 
 def _audit_vol():
     """审计卷路径·走 _root()·监理 r4 修复：隔离测试审计不再混进生产。
@@ -77,7 +90,7 @@ def _audit(method, agent_id, detail, ok=True):
         return
     try:
         from safeio import atomic_append
-        atomic_append(_audit_vol(), rec)
+        atomic_append(_audit_vol(), rec, root=_root())
     except OSError:
         pass  # 审计失败不阻塞主流程
               # an audit failure does not block the main flow
@@ -95,7 +108,8 @@ def _record_signature(tool, agent_id, signature, payload, **fields):
     rec.update(fields)
     from safeio import atomic_append
     atomic_append(os.path.join(_root(), SIG_SIDECAR),
-                  json.dumps(rec, ensure_ascii=False, sort_keys=True) + '\n')
+                  json.dumps(rec, ensure_ascii=False, sort_keys=True) + '\n',
+                  root=_root())
 
 
 def _append_payload(volume, tag, subtag, to, ts, content):
@@ -163,8 +177,8 @@ def _write_cursor(agent_id, vol, resume_byte):
     import json
     cp = os.path.join(_root(), '.已读_%s_%s.json' % (agent_id, vol))
     cur = {'resume_byte': resume_byte, 'mtime': time.time()}
-    with open(cp, 'w', encoding='utf-8') as f:
-        json.dump(cur, f, ensure_ascii=False)
+    from safeio import atomic_write
+    atomic_write(cp, json.dumps(cur, ensure_ascii=False))
 
 
 # ── v3.1 多级目录下钻（四库式：部=卷／类·作者／属=条目）──────
@@ -850,7 +864,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             # 调 daybook_append.append_one 原子写·传 to
             # call daybook_append.append_one for an atomic write · passing `to`
             rc = _dba.append_one(full_path, tag, subtag, content, author=author_slot,
-                                 to=to, author_id=agent_id)
+                                 to=to, author_id=agent_id, root=_root())
             if rc != 0:
                 raise RuntimeError('append_one rc=%d' % rc)
             _audit('append', agent_id, 'vol=%s tag=%s to=%s → %s' % (vol, tag, to or '广播', full_path))
@@ -920,7 +934,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             _hb_agent = _agent_reg().lookup(agent_id)
             _hb_author = (_hb_agent.name if _hb_agent and _hb_agent.name else agent_id)
             rc = _dba.append_one(hb_vol, '心跳', agent_id, msg, author=_hb_author,
-                                 author_id=agent_id)
+                                 author_id=agent_id, root=_root())
             if rc != 0:
                 raise RuntimeError('heartbeat append_one rc=%d' % rc)
             _audit('heartbeat', agent_id, 'load=%s' % load)
@@ -987,7 +1001,9 @@ def call_tool(name, args, agent_id=None, signature=None):
             if _db.CONFIG_ERRORS: codes.append(_db.EXIT_CONFIG)
             if _db.VIOLATIONS: codes.append(_db.EXIT_VIOLATION)
             if _db.EVIDENCE_MISSING: codes.append(_db.EXIT_EVIDENCE)
-            if _db._report_authors(conf, _root(), quiet_green=True):
+            # 作者机检在 build 内只跑一次；这里只读取结果，不重复扫卷。
+            # The author check runs once inside build; read the result, do not rescan.
+            if _db.AUTHOR_RED:
                 codes.append(_db.EXIT_AUTHOR)
             rc = _db.worst_exit(codes)
             if rc:
@@ -1008,7 +1024,7 @@ def call_tool(name, args, agent_id=None, signature=None):
                     detail.append('作者口径红（只报不拦，不阻断）')
                 if rc == _db.EXIT_VIOLATION:
                     _audit('index', agent_id, '违例·拒绝写回 → rc=3', ok=False)
-                raise ValueError('rc=%d %s' % (rc, '｜'.join(detail)))
+                raise _LedgerRefusal(rc, '｜'.join(detail))
             summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total
             _audit('index', agent_id, '→ %d 条' % total)
             return _tool_ok(summary)
@@ -1063,6 +1079,10 @@ def call_tool(name, args, agent_id=None, signature=None):
         _audit(name, agent_id, '未知工具', ok=False)
         return _tool_error('未知工具：%s' % name)
 
+    except _LedgerRefusal as e:
+        _audit(name, agent_id, 'REFUSE rc=%d: %s' % (e.rc, str(e)[:200]), ok=False)
+        return _tool_error('%s（rc=%d）：%s'
+                           % (_REFUSAL_LABEL.get(e.rc, '账本拒绝'), e.rc, e))
     except ValueError as e:
         # 参数错/验签失败/卷不存在·返 isError:true 让模型看见（P2-1）
         # bad args / signature failure / missing volume · return isError:true so the model can see it (P2-1)

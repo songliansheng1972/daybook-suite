@@ -61,6 +61,8 @@ ENC_REPORT = []
 VIOLATIONS = []      # 本轮 build 的 append-only 违例（卷, 说明）；CLI index 据此非零退出
 CONFIG_ERRORS = []   # 卷配置错误（目录型条目等）；解析层不崩溃，CLI 明确报错非零退出
 EVIDENCE_MISSING = []  # 派生件缺失/不可解析/不可信（证据缺失·重建）；与「未变」不得同码
+AUTHOR_RED = False   # 本轮作者口径机检是否报红（build 内一处实现；CLI/MCP 只读结果）
+                     # whether the author-convention gate went red (checked once inside build)
 RULE_WARN = []       # 字段规则告警（tag:N 无法解析等），每轮去重后上报·不再静默
 CURSOR_FMT = 2       # 游标代次：1=size+mtime+头尾探针（旧·可伪造⇒判过期）；2=全卷 sha256
 INDEX_FMT = 2        # 索引代次：写进 .head_stamp.json 与卷首清单，旧代一律视为过期
@@ -377,7 +379,7 @@ def _criterion_stamp(conf):
     return hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]
 
 
-def _criterion_gate(conf, outdir, vols, prefix, report):
+def _criterion_gate(conf, outdir, vols, prefix, report, old):
     """口径漂移闸：索引旁 .head_stamp.json 记着上次建索引用的口径。
     Drift gate: the stamp records the criterion used by the previous build.
       一致   ⇒ 放行（增量照旧）/ same ⇒ proceed incrementally
@@ -385,49 +387,40 @@ def _criterion_gate(conf, outdir, vols, prefix, report):
                 （增量游标已越过旧行、不回补；留着就是静默丢条目）
       无戳   ⇒ 存量索引口径未溯源：放行并补戳，不冤枉升级用户
                 (no stamp ⇒ legacy index: proceed and stamp, never punish an upgrade)
-    返回 True 表示本轮触发了漂移重建。Returns True when a drift rebuild happened."""
-    sp = os.path.join(outdir, '.head_stamp.json')
+    old 由调用方在临界区内读好传进来：本闸不再读盘（快照只读一次）。
+    `old` is read once inside the critical section by the caller; this gate never touches disk.
+    返回 (是否漂移重建, 待清理路径)。Returns (drift rebuild?, paths to purge)."""
     now_stamp = _criterion_stamp(conf)
-    old = {}
-    if os.path.isfile(sp):
-        try:
-            old = json.load(io.open(sp, encoding='utf-8'))
-        except Exception:
-            old = {}
     prev = old.get('口径')
     prev_fmt = old.get('index_fmt')
     if prev is not None and prev_fmt != INDEX_FMT:
         # ★ 索引代次过期：旧判据（size+mtime 即可判「未变」）不可信，暂存的索引一律重建。
         # ★ Stale index generation: the old "unchanged" criterion is forgeable; rebuild all.
+        purge = []
         for vol in vols:
             for name in (os.path.join(outdir, '%s%s.tsv' % (prefix, vol)),
                          os.path.join(outdir, '%s%s.txt' % (prefix, vol)),
                          os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol)),
                          _cursor_path(outdir, vol), _legacy_cursor_path(outdir, vol)):
-                try:
-                    os.remove(name)
-                except OSError:
-                    pass
-        report.append(('格式闸', '★ 索引格式过期（第 %s 代 → 第 %d 代）：旧索引不可静默沿用，已清索引与游标·全量重扫'
+                purge.append(name)
+        report.append(('格式闸', '★ 索引格式过期（第 %s 代 → 第 %d 代）：旧索引不可静默沿用，清索引与游标（rc=0 落地）·全量重扫'
                        % (prev_fmt if prev_fmt is not None else '无标记', INDEX_FMT)))
-        return True
+        return True, purge
     if prev is None:
         report.append(('口径闸', '存量索引无口径戳·本轮补戳（口径未溯源）·legacy index, stamp added'))
-        return False
+        return False, []
     if prev == now_stamp:
-        return False
+        return False, []
+    purge = []
     for vol in vols:
         for name in (os.path.join(outdir, '%s%s.tsv' % (prefix, vol)),
                      os.path.join(outdir, '%s%s.txt' % (prefix, vol)),
                      os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol)),
                      _cursor_path(outdir, vol), _legacy_cursor_path(outdir, vol)):
-            try:
-                os.remove(name)
-            except OSError:
-                pass
-    report.append(('口径闸', '★ 口径已改（%s → %s）：增量不回补，已清索引与游标·全量重扫'
+            purge.append(name)
+    report.append(('口径闸', '★ 口径已改（%s → %s）：增量不回补，清索引与游标（rc=0 落地）·全量重扫'
                    % (prev[:8], now_stamp[:8])))
-    return True
+    return True, purge
 
 
 def _cursor_obj(size, mtime, resume_byte, n, last_lineno, enc, content_hash):
@@ -440,9 +433,81 @@ def _cursor_obj(size, mtime, resume_byte, n, last_lineno, enc, content_hash):
 
 
 def _write_cursor(path, obj):
-    """写游标 json（与 index 同临界区）。Write the cursor json (same critical section as the index)."""
-    with io.open(path, 'w', encoding='utf-8') as f:
-        f.write(json.dumps(obj, ensure_ascii=False))
+    """写游标 json（同目录临时文件 + os.replace）。Write the cursor json (temp + os.replace)."""
+    from safeio import atomic_write as _atomic_write
+    _atomic_write(path, json.dumps(obj, ensure_ascii=False))
+
+
+def _txt_lines(rows):
+    """索引 TXT 的一行式渲染（TSV/TXT 共用同一字段口径）。One-line renderer shared by TSV/TXT."""
+    for r in rows:
+        yield '[%s] line=%s category=%s title=%s author=%s\n' % (
+            r[2] if len(r) > 2 else '', r[1] if len(r) > 1 else '',
+            r[3] if len(r) > 3 else '', r[4] if len(r) > 4 else '',
+            r[5] if len(r) > 5 else '')
+
+
+def _run_ops(ops):
+    """执行 build 暂存的落盘动作（只有 rc=0 时才会被调用）。
+    Execute the writes staged by build (only ever called when the run's exit code is 0).
+    ★ 所有文件写入都经 safeio.atomic_write（同目录临时文件 + os.replace），读者不取写锁。
+    ★ Every file write goes through safeio.atomic_write (temp + os.replace); readers take no lock."""
+    from safeio import atomic_write as _atomic_write
+    for op in ops:
+        kind = op[0]
+        if kind == 'purge':
+            for p in op[1]:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        elif kind == 'cursor':
+            _write_cursor(op[1], op[2])
+        elif kind == 'txt_from_tsv':
+            _idf, itxt, vol = op[1], op[2], op[3]
+            with io.open(_idf, encoding='utf-8') as src:
+                old = src.read().split('\n')[1:]   # 跳过表头 / skip the header
+            buf = ['# index_%s (human-readable; machine-readable TSV alongside)\n' % vol,
+                   '# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol,
+                   '# Generated by daybook.py index · rebuildable from the volumes at any time\n',
+                   '# 由 daybook.py index 自动生成·可随时从原文重算\n',
+                   '# The index is a catalogue, not the record. The record is the volumes.\n',
+                   '# 索引是目录不是真相·真相在各卷原文\n\n']
+            for line in old:
+                if line.strip():
+                    cols = line.split('\t')
+                    buf.append('[%s] line=%s category=%s title=%s author=%s\n' % (
+                        cols[2] if len(cols) > 2 else '',
+                        cols[1] if len(cols) > 1 else '',
+                        cols[3] if len(cols) > 3 else '',
+                        cols[4] if len(cols) > 4 else '',
+                        cols[5] if len(cols) > 5 else ''))
+            _atomic_write(itxt, ''.join(buf))
+        elif kind == 'append':
+            _idf, rows, itxt = op[1], op[2], op[3]
+            old = b''
+            if os.path.exists(_idf):
+                with open(_idf, 'rb') as f:
+                    old = f.read()
+            data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
+            _atomic_write(_idf, old + data.encode('utf-8'))
+            told = b''
+            if os.path.exists(itxt):
+                with open(itxt, 'rb') as f:
+                    told = f.read()
+            _atomic_write(itxt, told + ''.join(_txt_lines(rows)).encode('utf-8'))
+        elif kind == 'rewrite':
+            _idf, fields, rows, itxt, vol = op[1], op[2], op[3], op[4], op[5]
+            data = '\t'.join(fields) + '\n' + ''.join(
+                '\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
+            _atomic_write(_idf, data)
+            head = ('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol
+                    + '# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol
+                    + '# Generated by daybook.py index · rebuildable from the volumes at any time\n'
+                    + '# 由 daybook.py index 自动生成·可随时从原文重算\n'
+                    + '# The index is a catalogue, not the record. The record is the volumes.\n'
+                    + '# 索引是目录不是真相·真相在各卷原文\n\n')
+            _atomic_write(itxt, head + ''.join(_txt_lines(rows)))
 
 
 def build(conf, root='.', baseline=False, dry=False):
@@ -489,26 +554,39 @@ def build(conf, root='.', baseline=False, dry=False):
     # a cursor rewrite after a volume rewrite is invisible to the cursor alone; two derived
     # artifacts cross-checking each other give the criterion teeth.
     stamp_path = os.path.join(outdir, '.head_stamp.json')
-    old_stamp = _read_json(stamp_path)
-    seals = old_stamp.get('vol_seals') if isinstance(old_stamp, dict) else None
-    seals = seals if isinstance(seals, dict) else {}
-    new_seals = {}
-    wrote_any = False   # 本轮是否真的写过派生件：rc=5 时不写口径戳，靠它判定
-                        # did this run really write anything? rc=5 must not touch the stamp
     # W-75 修②：索引写入全临界区（TSV/游标/清单）——锁账本根目录本身，不建锁文件
     # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest) —
     # the ledger-root directory itself is locked; no lock file is created
+    # ★ 封存快照的读取也在锁内（且只读一次）：锁外读到的旧快照会让并发索引互相误判。
+    # ★ The sealed snapshot is read inside the lock and only once: a read outside the lock
+    #   makes concurrent index runs judge each other from stale bytes.
     from safeio import locked as _safe_locked
-    gated = False
+    global AUTHOR_RED
     with _safe_locked(root):
+        old_stamp = _read_json(stamp_path)
+        seals = old_stamp.get('vol_seals') if isinstance(old_stamp, dict) else None
+        seals = seals if isinstance(seals, dict) else {}
+        new_seals = dict(seals)   # 未写回的卷保留旧封存（配置错/跳过不得抹掉证据）
+                                  # volumes that are not written back keep their old seal
+        gated = False
+        purged = []
+        # 所有落盘都先记入 ops，末尾按「本轮退出码是否为 0」一次性提交：
+        # 非 0 一律不写派生件、不写时戳、不删任何封存/游标/清单（唯一判据·唯一入口）。
+        # Every write is staged in `ops` and committed at the end only when the run's exit
+        # code is 0: a non-zero run writes no derived artifact or timestamp and deletes
+        # nothing — one predicate, one entrance.
+        ops = []
 
         # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
         # ── Criterion drift gate: a changed criterion forces a full rescan ──
-        if not dry and _criterion_gate(conf, outdir, vols, prefix, report):
-            # 闸自己删了索引与游标：这是有意重建，不是证据缺失
-            # The gate dropped index and cursor on purpose: a deliberate rebuild, not lost evidence
-            seals = {}
-            gated = True
+        if not dry:
+            gated, purged = _criterion_gate(conf, outdir, vols, prefix, report, old_stamp)
+            if gated:
+                # 闸判定要重建：清理动作同样延后到「本轮 rc=0」时执行
+                # The gate's purge is deferred to the same rc==0 commit
+                seals = {}
+                new_seals = {}
+                ops.append(('purge', purged))
 
         for vol, path in vols.items():
             p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -530,11 +608,16 @@ def build(conf, root='.', baseline=False, dry=False):
             size, mt = os.path.getsize(p), os.path.getmtime(p)
 
             cur = None
-            index_present = os.path.exists(idf) or os.path.exists(idf_legacy)
-            idf_use = idf if os.path.exists(idf) else idf_legacy
-            # 读游标：新名优先，旧名回退（兼容改名前的账本）
-            # Read cursor: new name first, legacy name as fallback (pre-rename books)
-            cpath = cp if os.path.exists(cp) else (cp_legacy if os.path.exists(cp_legacy) else None)
+            if gated:
+                # 闸判重建：本轮按「派生件不存在」扫描；真正的删除在 rc=0 提交时执行
+                # Gated: scan as if no artifacts existed; the actual purge happens on rc==0 commit
+                index_present, idf_use, cpath = False, idf, None
+            else:
+                index_present = os.path.exists(idf) or os.path.exists(idf_legacy)
+                idf_use = idf if os.path.exists(idf) else idf_legacy
+                # 读游标：新名优先，旧名回退（兼容改名前的账本）
+                # Read cursor: new name first, legacy name as fallback (pre-rename books)
+                cpath = cp if os.path.exists(cp) else (cp_legacy if os.path.exists(cp_legacy) else None)
 
             rows, mode, n_old = [], 'full', 0
             content_hash = None
@@ -636,9 +719,9 @@ def build(conf, root='.', baseline=False, dry=False):
                         report.append((vol, '未变·跳过（全卷哈希一致·mtime 已变化，仅记入游标）'
                                        + ('' if write_ok else '·证据缺失·未写回')))
                         if write_ok:
-                            _write_cursor(cp, _cursor_obj(size, mt, size, cur.get('n', 0),
-                                                          cur.get('last_lineno', 0),
-                                                          cur.get('enc', '?'), content_hash))
+                            ops.append(('cursor', cp, _cursor_obj(
+                                size, mt, size, cur.get('n', 0), cur.get('last_lineno', 0),
+                                cur.get('enc', '?'), content_hash)))
                     else:
                         report.append((vol, '未变·跳过（全卷哈希一致）'
                                        + ('' if write_ok else '·证据缺失·未写回')))
@@ -647,33 +730,13 @@ def build(conf, root='.', baseline=False, dry=False):
                     # ★ Song: even when skipping, make sure the TXT index exists (first upgrade)
                     itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
                     if write_ok and not os.path.exists(itxt) and os.path.exists(idf_use):
-                        with io.open(idf_use, encoding='utf-8') as src:
-                            with io.open(itxt, 'w', encoding='utf-8') as dst:
-                                dst.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
-                                dst.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
-                                dst.write('# Generated by daybook.py index · rebuildable from the volumes at any time\n')
-                                dst.write('# 由 daybook.py index 自动生成·可随时从原文重算\n')
-                                dst.write('# The index is a catalogue, not the record. The record is the volumes.\n')
-                                dst.write('# 索引是目录不是真相·真相在各卷原文\n\n')
-                                lines = src.read().split('\n')
-                                for line in lines[1:]:  # 跳过表头 / skip the header
-                                    if not line.strip(): continue
-                                    cols = line.split('\t')
-                                    dst.write('[%s] line=%s category=%s title=%s author=%s\n' % (
-                                        cols[2] if len(cols) > 2 else '',
-                                        cols[1] if len(cols) > 1 else '',
-                                        cols[3] if len(cols) > 3 else '',
-                                        cols[4] if len(cols) > 4 else '',
-                                        cols[5] if len(cols) > 5 else ''))
+                        ops.append(('txt_from_tsv', idf_use, itxt, vol))
                     # 未变也是「有证据」：补记封存指纹，供下轮互证（证据缺失时不写）
                     # Unchanged is still evidence: (re)seal the fingerprint for the next
                     # cross-check — unless evidence is missing, in which case nothing is written
                     if write_ok:
                         new_seals[vol] = {'size': size, 'content_hash': content_hash,
                                           'n': cur.get('n', 0)}
-                        wrote_any = True
-                    elif seals.get(vol) is not None:
-                        new_seals[vol] = seals[vol]
                     continue
                 _violate('★ 等长改写（字节数未变·全卷哈希不符）·append-only 违例·全重扫')
 
@@ -730,98 +793,80 @@ def build(conf, root='.', baseline=False, dry=False):
             # A violation may be detected after write_ok is computed: re-tighten before writing
             write_ok = write_ok and vol not in blocked
             if mode == 'append' and write_ok:
-                os.makedirs(outdir, exist_ok=True)
-                with io.open(idf, 'a', encoding='utf-8') as f:
-                    for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
-                # ★ 索引 TXT 同步追加（老宋定：TSV+TXT 同目录·人读＋机读）
-                # ★ Append the TXT index in step (Song: TSV + TXT side by side)
                 itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                with io.open(itxt, 'a', encoding='utf-8') as f:
-                    for r in rows:
-                        f.write('[%s] line=%s category=%s title=%s author=%s\n' % (
-                            r[2] if len(r) > 2 else '', r[1] if len(r) > 1 else '',
-                            r[3] if len(r) > 3 else '', r[4] if len(r) > 4 else '',
-                            r[5] if len(r) > 5 else ''))
+                ops.append(('append', idf, rows, itxt))
                 n_total = n_old + len(rows)
             else:
                 if write_ok:
-                    os.makedirs(outdir, exist_ok=True)
-                    with io.open(idf, 'w', encoding='utf-8') as f:
-                        f.write('\t'.join(fields) + '\n')
-                        for r in rows: f.write('\t'.join(x.replace('\t', ' ') for x in r) + '\n')
-                    # ★ 索引 TXT 同步生成（全扫重建） / ★ TXT rebuilt too (full rescan)
                     itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                    with io.open(itxt, 'w', encoding='utf-8') as f:
-                        f.write('# index_%s (human-readable; machine-readable TSV alongside)\n' % vol)
-                        f.write('# 索引 %s（人类可读·机器可读 TSV 同目录）\n' % vol)
-                        f.write('# Generated by daybook.py index · rebuildable from the volumes at any time\n')
-                        f.write('# 由 daybook.py index 自动生成·可随时从原文重算\n')
-                        f.write('# The index is a catalogue, not the record. The record is the volumes.\n')
-                        f.write('# 索引是目录不是真相·真相在各卷原文\n\n')
-                        for r in rows:
-                            f.write('[%s] line=%s category=%s title=%s author=%s\n' % (
-                                r[2] if len(r) > 2 else '', r[1] if len(r) > 1 else '',
-                                r[3] if len(r) > 3 else '', r[4] if len(r) > 4 else '',
-                                r[5] if len(r) > 5 else ''))
+                    ops.append(('rewrite', idf, fields, rows, itxt, vol))
                 n_total = len(rows)
             per[vol] = n_total; total += n_total
             if write_ok:
-                os.makedirs(outdir, exist_ok=True)
-                _write_cursor(cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash))
+                ops.append(('cursor', cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash)))
                 new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
-                wrote_any = True
-            elif seals.get(vol) is not None:
-                new_seals[vol] = seals[vol]   # 保留旧封存，不让清单写回把证据抹掉
-                                              # keep the old seal so the stamp rewrite cannot erase it
+            # 未写回的卷保留旧封存（new_seals 已由 seals 起底）
+            # Volumes not written back keep their old seal (new_seals starts as a copy of seals)
 
-        if wrote_any and not dry:
+        # ── 唯一写入门：退出码非 0 ⇒ 一个派生件、一个时戳都不写，也不删任何东西 ──
+        # ── The single write gate: a non-zero exit writes no derived artifact and no
+        #    timestamp, and deletes nothing. ──
+        codes = []
+        if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
+        if VIOLATIONS: codes.append(EXIT_VIOLATION)
+        if EVIDENCE_MISSING: codes.append(EXIT_EVIDENCE)
+        AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True)
+        if AUTHOR_RED and not baseline:
+            codes.append(EXIT_AUTHOR)
+        rc = worst_exit(codes)
+        if (not dry) and rc == 0:
             os.makedirs(outdir, exist_ok=True)
-            with io.open(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), 'w', encoding='utf-8') as f:
-                f.write('# 卷首清单 / Volume manifest\n')
-                f.write('# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
-                        % (INDEX_FMT, CURSOR_FMT))
-                f.write('| volume | entries | index file |\n|---|---|---|\n')
-                for v, n in per.items(): f.write('| %s | %d | %s%s.tsv |\n' % (v, n, prefix, v))
-                f.write('| **合计 / total** | **%d** | |\n\n' % total)
-                f.write('索引是目录，不是真相。真相在各卷原文。索引可随时从原文重算。\n')
-                f.write('The index is a catalogue, not the record. The record is the volumes; the index is rebuildable.\n\n')
-                f.write('## 本次增量报告 / This run\n\n| volume | action |\n|---|---|\n')
-                for v, w in report: f.write('| %s | %s |\n' % (v, w))
-                for w in RULE_WARN: f.write('| 规则 / rules | ★ %s |\n' % w)
-                # 被跳过的非卷键：不静默，进清单
-                # Skipped non-volume keys are never silent: recorded in the manifest
-                skipped = conf.get('volumes_skipped') or {}
-                if skipped:
-                    f.write('\n## 已跳过的非卷键 / Skipped non-volume keys\n\n| key | value | reason |\n|---|---|---|\n')
-                    for k, v in skipped.items():
-                        if isinstance(v, dict):
-                            f.write('| %s | %s | %s |\n' % (k, v.get('value', ''), v.get('reason', '')))
-                        else:
-                            f.write('| %s | %s | |\n' % (k, v))
-                # 派生件状态：未变 / 重建（证据缺失）/ 违例，三态分列
-                # Derived-artifact states: unchanged / rebuilt (evidence lost) / violation
-                f.write('\n## 派生件状态 / Derived-artifact state\n\n| volume | state |\n|---|---|\n')
-                for v in per:
-                    if any(vv == v for vv, _m in VIOLATIONS):
-                        f.write('| %s | 违例（内容不符）·violation |\n' % v)
-                    elif any(vv == v for vv, _m in EVIDENCE_MISSING):
-                        f.write('| %s | 重建（证据缺失）·rebuilt (evidence lost) |\n' % v)
+            _run_ops(ops)
+            from safeio import atomic_write as _atomic_write
+            man = ['# 卷首清单 / Volume manifest\n',
+                   '# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
+                   % (INDEX_FMT, CURSOR_FMT),
+                   '| volume | entries | index file |\n|---|---|---|\n']
+            for v, n in per.items():
+                man.append('| %s | %d | %s%s.tsv |\n' % (v, n, prefix, v))
+            man.append('| **合计 / total** | **%d** | |\n\n' % total)
+            man.append('索引是目录，不是真相。真相在各卷原文。索引可随时从原文重算。\n')
+            man.append('The index is a catalogue, not the record. The record is the volumes; the index is rebuildable.\n\n')
+            man.append('## 本次增量报告 / This run\n\n| volume | action |\n|---|---|\n')
+            for v, w in report: man.append('| %s | %s |\n' % (v, w))
+            for w in RULE_WARN: man.append('| 规则 / rules | ★ %s |\n' % w)
+            # 被跳过的非卷键：不静默，进清单
+            # Skipped non-volume keys are never silent: recorded in the manifest
+            skipped = conf.get('volumes_skipped') or {}
+            if skipped:
+                man.append('\n## 已跳过的非卷键 / Skipped non-volume keys\n\n| key | value | reason |\n|---|---|---|\n')
+                for k, v in skipped.items():
+                    if isinstance(v, dict):
+                        man.append('| %s | %s | %s |\n' % (k, v.get('value', ''), v.get('reason', '')))
                     else:
-                        f.write('| %s | 未变 / 正常·unchanged |\n' % v)
-                f.write('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
-                for v, e, w in ENC_REPORT: f.write('| %s | %s | %s |\n' % (v, e, w))
-        # 口径戳：本轮判据落盘，供下轮比对（与 TSV／游标同临界区）
-        # 是否写只看「本轮是否真的写过东西」：保留的旧封存不算写过，rc=5 不动口径戳
-        # Stamp the criteria for the next comparison — gated only by "did this run really
-        # write?"; preserved old seals do not count, so an rc=5 run never touches the stamp.
-        if wrote_any and not dry:
-            with io.open(os.path.join(outdir, '.head_stamp.json'), 'w', encoding='utf-8') as f:
-                f.write(json.dumps({'口径': _criterion_stamp(conf),
-                                    'index_fmt': INDEX_FMT,
-                                    'cursor_fmt': CURSOR_FMT,
-                                    'head_regex': conf.get('entries', {}).get('head_regex', ''),
-                                    'vol_seals': new_seals,
-                                    '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
+                        man.append('| %s | %s | |\n' % (k, v))
+            # 派生件状态：未变 / 重建（证据缺失）/ 违例，三态分列
+            # Derived-artifact states: unchanged / rebuilt (evidence lost) / violation
+            man.append('\n## 派生件状态 / Derived-artifact state\n\n| volume | state |\n|---|---|\n')
+            for v in per:
+                if any(vv == v for vv, _m in VIOLATIONS):
+                    man.append('| %s | 违例（内容不符）·violation |\n' % v)
+                elif any(vv == v for vv, _m in EVIDENCE_MISSING):
+                    man.append('| %s | 重建（证据缺失）·rebuilt (evidence lost) |\n' % v)
+                else:
+                    man.append('| %s | 未变 / 正常·unchanged |\n' % v)
+            man.append('\n## 编码检测（不静默）/ Encoding detected (never silent)\n\n| volume | encoding | reason |\n|---|---|---|\n')
+            for v, e, w in ENC_REPORT: man.append('| %s | %s | %s |\n' % (v, e, w))
+            _atomic_write(os.path.join(outdir, conf['index'].get('manifest', 'volumes.md')), ''.join(man))
+            # 口径戳：与 TSV／游标同一临界区、同一写入门（rc=0 才写），原子替换
+            # The criterion stamp shares the critical section and the single rc==0 gate; written atomically
+            _atomic_write(os.path.join(outdir, '.head_stamp.json'), json.dumps(
+                {'口径': _criterion_stamp(conf),
+                 'index_fmt': INDEX_FMT,
+                 'cursor_fmt': CURSOR_FMT,
+                 'head_regex': conf.get('entries', {}).get('head_regex', ''),
+                 'vol_seals': new_seals,
+                 '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
         return per, total, report
 
 
@@ -879,6 +924,14 @@ def _mk(blk, start, which, heads, head_re0, fields, rules, tag, vol):
                 is_extra=(which not in (0, None)))
 
 def backup(conf, root='.'):
+    """备份入口：整段持账本根排他锁（与 index/append 串行）。
+    Backup entry: holds the ledger-root exclusive lock for the whole copy (serialized with index/append)."""
+    from safeio import locked as _safe_locked
+    with _safe_locked(root):
+        return _backup_locked(conf, root)
+
+
+def _backup_locked(conf, root='.'):
     """把所有卷复制到 backup/YYYY-MM-DD_HHMMSS/。append-only 纪律适用于备份：旧的不删不改。
     Copy every volume into backup/YYYY-MM-DD_HHMMSS/. Append-only applies to backups too:
     old copies are never deleted or modified.
@@ -1220,7 +1273,9 @@ def main():
             codes.append(EXIT_EVIDENCE)
         # ★ 作者口径机检：作者位必须是显示名，机器 id 或混用直接报红
         # ★ Author-convention gate: the author slot must hold a display name; ids or mixing go red
-        if _report_authors(conf, root, quiet_green=True):
+        # 机检在 build 内只跑一次（写入门也用同一结果），这里只读取，不重复扫卷。
+        # The check runs once inside build (the write gate uses the same result); read it here.
+        if AUTHOR_RED:
             codes.append(EXIT_AUTHOR)
         rc = worst_exit(codes)
         if rc:
@@ -1246,9 +1301,9 @@ def main():
             sys.exit(worst_exit(codes))
         # 作者口径红只报不拦（人记账不必因未注册被卡），认基线继续
         # Author-convention red is reported but does not block a baseline
-        if _report_authors(conf, root, quiet_green=True):
-            sys.stderr.write('★ 作者口径红：只报不拦，基线照认并已写回派生件\n')
         per, total, rep = build(conf, root, baseline=True)
+        if AUTHOR_RED:
+            sys.stderr.write('★ 作者口径红：只报不拦，基线照认并已写回派生件\n')
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         print('基线已认：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
               + '｜合计 %d 条' % total, flush=True)

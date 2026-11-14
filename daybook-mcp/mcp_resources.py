@@ -137,7 +137,7 @@ def _audit(method, agent_id, detail):
         return
     try:
         from safeio import atomic_append
-        atomic_append(_audit_vol(), rec)
+        atomic_append(_audit_vol(), rec, root=_root())
     except OSError:
         pass
 

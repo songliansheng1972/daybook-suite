@@ -22,6 +22,13 @@ Cases
   M 三件派生件全删                              ⇒ rc=5（无外部锚·复跑仍 5），认基线后 0
   N 索引缺失且卷变长、旧前缀被改                 ⇒ rc=3（不能因「卷变大」跳过前缀校验）
   O 违例态认基线                                ⇒ rc=3，三件派生件零变化（不替人认下篡改）
+  R ≥8 进程并发 index                           ⇒ 零误报、零丢更新、复跑全 0（封存快照锁内只读一次）
+  S 配置错（卷指向目录）                        ⇒ rc=2 且派生件递归哈希零变化（不删封存指纹）
+  T rc=3 违例                                   ⇒ 清单/封存时戳零变化（非 0 不写派生件）
+  U rc=4 作者口径红                             ⇒ 同样零变化（非 0 不写派生件）
+  R2 两进程 20ms 错峰并发 index                 ⇒ 两侧 rc=0（一「只追加」一「未变」）
+  V safeio 原子替换/无锁读者                    ⇒ atomic_write 走 os.replace，read_vol 不取锁
+  W 子目录卷 + 长条目 append                    ⇒ 与 index 争同一把账本根锁（不被子目录锁旁路）
   P 同一账本·两个不同 TMPDIR 并发持锁读改写     ⇒ 临界区不重叠、不丢更新（锁绑目录 inode）
   Q 持锁期间删除任何外部件                      ⇒ 仍互斥（账本内本无锁件可删）
 
@@ -29,6 +36,9 @@ Cases
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
   D、E 必须红；恢复原码后必须全绿。用法：
     DAYBOOK_SRC=/tmp/mutant/daybook.py python3 ledger_guard_test.py
+  封存快照的变异：把 build() 里的 old_stamp = _read_json(...) 挪回 with 之前（锁外读）
+  ⇒ R 必红（迟到进程拿旧封存比新游标，误报 rc=3）。
+  写入门变异：把 rc == 0 的提交条件改成恒真 ⇒ S/T/U 必红。
   锁的变异同理：把 safeio 的目录 flock 改回「目录内锁文件」⇒ A、B 必红；
   改回「临时目录按 realpath 命名的锁文件」⇒ P、Q 必红。
 
@@ -156,10 +166,22 @@ def _snapshot(d):
             out[os.path.relpath(os.path.join(base, name), d) + '/'] = 'd'
         for name in files:
             p = os.path.join(base, name)
+            try:
+                os.lstat(p)
+            except OSError:
+                continue
+            if os.path.islink(p):
+                try:
+                    os.stat(p)          # 断链跳过，别让账本里的断链把判据打崩
+                except OSError:         # skip broken symlinks; they must not crash the criterion
+                    continue
             h = hashlib.sha256()
-            with open(p, 'rb') as f:
-                for chunk in iter(lambda: f.read(1 << 20), b''):
-                    h.update(chunk)
+            try:
+                with open(p, 'rb') as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b''):
+                        h.update(chunk)
+            except OSError:
+                continue
             out[os.path.relpath(p, d)] = h.hexdigest()
     return out
 
@@ -224,6 +246,58 @@ except TimeoutError:
     print('BUSY')
 '''
 
+# 并发 index 子进程：先 import 好，等屏障后同时进入 main（把进程启动抖动挤掉）
+# Concurrent index child: import first, then enter main together after the barrier
+# (removes process-startup jitter so the read/commit windows really overlap).
+_CHILD_INDEX = r'''
+import os, sys, time
+root, barrier = sys.argv[1], sys.argv[2]
+sys.path.insert(0, root)
+os.chdir(root)
+import daybook
+while not os.path.exists(barrier):
+    time.sleep(0.001)
+sys.argv = ['daybook.py', 'index']
+daybook.main()
+'''
+
+# 子目录卷 + 长条目：append_one 必须锁账本根（不是卷所在子目录）
+# Sub-directory volume + long entry: append_one must lock the ledger root, not the volume dir.
+_CHILD_APPEND = r'''
+import os, sys, time
+src, root, vol, msg = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, src)
+import daybook_append
+t0 = time.time()
+daybook_append.append_one(vol, '聊', '子目录长条目', msg, author='皮特', root=root)
+print('%.3f' % (time.time() - t0))
+'''
+
+# safeio 单实现自证：原子替换必须调用 os.replace；read_vol 不得取锁
+# safeio self-check: atomic replace must call os.replace; read_vol must not take a lock.
+_CHILD_SAFEIO = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import safeio
+p = sys.argv[2]
+calls = [0]
+real = os.replace
+def spy(a, b):
+    calls[0] += 1
+    return real(a, b)
+safeio.os.replace = spy
+safeio.atomic_write(p, '新内容')
+assert open(p, encoding='utf-8').read() == '新内容', 'atomic_write 内容不符'
+assert calls[0] >= 1, 'atomic_write 未走 os.replace'
+assert not [n for n in os.listdir(os.path.dirname(p)) if n.endswith('.tmp')], '残留临时件'
+def _no_lock(*a, **k):
+    raise AssertionError('read_vol 取了锁')
+safeio.locked = _no_lock
+t, _enc, _why = safeio.read_vol(p)
+assert t == '新内容', 'read_vol 内容不符'
+print('OK')
+'''
+
 
 def _stage_safeio(tmp):
     shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
@@ -283,9 +357,13 @@ def _case_q(tmp):
             break
         time.sleep(0.02)
     _ok('Q 持锁进程已进临界区', os.path.exists(held))
-    ext = os.path.join(tempfile.gettempdir(), 'daybook-locks')
-    if os.path.isdir(ext):
-        shutil.rmtree(ext, ignore_errors=True)
+    # 只删本用例自己造的路径（账本外）：产品在系统临时目录已无任何锁件。
+    # Delete only a path this test created itself (outside the ledger): the product keeps
+    # no lock artifact in the system temp dir any more.
+    decoy = os.path.join(tmp, 'q-decoy')
+    os.makedirs(decoy)
+    shutil.rmtree(decoy)
+    _ok('Q 自造外部件已删（不碰系统临时目录）', not os.path.exists(decoy))
     locks = [k for k in _snapshot(d) if '.safeio_lock' in k or 'daybook-locks' in k]
     _ok('Q 账本内无锁件可删', not locks, '发现=%s' % locks)
     probe = subprocess.run([sys.executable, '-B', '-c', _CHILD_PROBE, d, d],
@@ -300,6 +378,107 @@ def _case_q(tmp):
                             universal_newlines=True)
     _ok('Q 释放后可获取（探针 OK）', probe2.stdout.strip() == 'OK',
         probe2.stdout.strip() or probe2.stderr.strip()[:120])
+
+
+def _case_stagger(tmp):
+    """R2 两进程 20ms 错峰并发 index：一「只追加」一「未变」，两侧 rc=0。
+    R2 Two processes 20 ms apart on one ledger: one appends, one sees unchanged; both rc=0.
+    The mutant that reads the seal outside the lock goes red here (the late starter judges a
+    fresh cursor against the stale seal)."""
+    d = os.path.join(tmp, 'stagger')
+    os.makedirs(d)
+    here = os.path.dirname(SRC_BIN)
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+        shutil.copy2(os.path.join(here, name), os.path.join(d, name))
+    with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
+        f.write(CONF)
+    vol = os.path.join(d, '账卷.txt')
+    with io.open(vol, 'w', encoding='utf-8') as f:
+        for i in range(20000):
+            f.write('[2026-11-13 10:00:00] [测试] [错峰%05d] [皮特] 正文\n' % i)
+    def run():
+        return subprocess.run([sys.executable, '-B', 'daybook.py', 'index'], cwd=d,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    _base_r = subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=d,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             universal_newlines=True)
+    _ok('R2 认基线 rc=0', _base_r.returncode == 0, 'rc=%d' % _base_r.returncode)
+    with io.open(vol, 'a', encoding='utf-8') as f:
+        f.write('[2026-11-13 10:00:01] [测试] [错峰追加] [皮特] 正文\n')
+    p1 = subprocess.Popen([sys.executable, '-B', 'daybook.py', 'index'], cwd=d,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True)
+    time.sleep(0.02)
+    p2 = subprocess.Popen([sys.executable, '-B', 'daybook.py', 'index'], cwd=d,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True)
+    o1, e1 = p1.communicate()
+    o2, e2 = p2.communicate()
+    t1, t2 = o1 + e1, o2 + e2
+    _ok('R2 20ms 错峰两侧 rc=0', p1.returncode == 0 and p2.returncode == 0,
+        'rc=%d/%d' % (p1.returncode, p2.returncode))
+    _ok('R2 两侧无违例误报', '违例' not in t1 and '违例' not in t2)
+    _ok('R2 一「只追加」一「未变」',
+        ('只追加' in t1 and '未变·跳过' in t2) or ('只追加' in t2 and '未变·跳过' in t1),
+        'p1=%r p2=%r' % ('只追加' in t1, '只追加' in t2))
+    r = run()
+    _ok('R2 复跑 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+
+
+def _case_safeio(tmp):
+    """V 派生件原子替换 + 读者不取锁：两件都必须可自证。
+    V Atomic replacement for derived artifacts + lock-free readers: both must be self-evident."""
+    d = os.path.join(tmp, 'safeio')
+    os.makedirs(d)
+    p = os.path.join(d, 'x.txt')
+    r = subprocess.run([sys.executable, '-B', '-c', _CHILD_SAFEIO,
+                        os.path.dirname(SRC_BIN), p],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('V atomic_write 走 os.replace 且无临时残留 + read_vol 不取锁',
+        r.returncode == 0 and r.stdout.strip() == 'OK',
+        (r.stdout.strip() or r.stderr.strip())[:160])
+
+
+def _case_subdir(tmp):
+    """W 子目录卷 + 长条目 append：必须与 index 争同一把账本根锁。
+    W A sub-directory volume with a long append must contend on the same ledger-root lock."""
+    d = os.path.join(tmp, 'subdir')
+    sub = os.path.join(d, '子目录')
+    os.makedirs(sub)
+    _stage_safeio(d)
+    vol = os.path.join(sub, '账卷.txt')
+    io.open(vol, 'w', encoding='utf-8').write('')
+    holder = subprocess.Popen([sys.executable, '-B', '-c', _CHILD_HOLD, d, d],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    held = os.path.join(d, 'held.flag')
+    for _ in range(200):
+        if os.path.exists(held):
+            break
+        time.sleep(0.02)
+    _ok('W 持根锁进程已进临界区', os.path.exists(held))
+    long_msg = '长' * 2000
+    app = subprocess.Popen([sys.executable, '-B', '-c', _CHILD_APPEND,
+                            os.path.dirname(SRC_BIN), d, vol, long_msg],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+    time.sleep(0.4)
+    still_running = app.poll() is None
+    probe = subprocess.run([sys.executable, '-B', '-c', _CHILD_PROBE, d, d],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+    _ok('W 子目录长条目被根锁挡住（未提前返回）', still_running)
+    _ok('W 根锁探针 BUSY（同一把锁）', probe.stdout.strip() == 'BUSY',
+        probe.stdout.strip() or probe.stderr.strip()[:120])
+    io.open(os.path.join(d, 'release.flag'), 'w').write('1')
+    outp, errp = app.communicate(timeout=30)
+    holder.communicate(timeout=30)
+    elapsed = float((outp.strip() or '0').splitlines()[-1]) if outp.strip() else 0.0
+    _ok('W 释放后长条目落盘 rc=0', app.returncode == 0, (outp + errp).strip()[:120])
+    _ok('W 长条目确实等到根锁（≥0.5s）', elapsed >= 0.5, 'elapsed=%.3f' % elapsed)
+    _ok('W 条目已落子目录卷', '子目录长条目' in io.open(vol, encoding='utf-8').read())
 
 
 def main():
@@ -561,6 +740,108 @@ def main():
         io.open(vol, 'wb').write(orig_n)
         _base(work)
 
+        # R 并发 index：≥6 进程同时对同一账本 ⇒ 零误报、零丢更新、复跑全 0
+        # R Concurrent index: ≥6 processes on one ledger ⇒ no false positives, no lost updates,
+        #   every rerun 0. The sealed snapshot must be read inside the same critical section;
+        #   a read outside the lock (the mutant this case kills) makes late starters judge
+        #   fresh cursors against stale seals and report rc=3.
+        _stage_safeio(work)
+        child = os.path.join(work, '_concurrent_index.py')
+        with io.open(child, 'w', encoding='utf-8') as f:
+            f.write(_CHILD_INDEX)
+        base_rows = sum(1 for l in io.open(idf, encoding='utf-8') if l.strip()) - 1
+        add_n = 40
+        with io.open(vol, 'a', encoding='utf-8') as f:
+            for i in range(add_n):
+                f.write('[2026-11-13 15:00:%02d] [测试] [并发追加%02d] [皮特] 并发正文\n' % (i % 60, i))
+        barrier = os.path.join(work, 'go.flag')
+        procs = []
+        for i in range(8):
+            procs.append(subprocess.Popen(
+                [sys.executable, '-B', child, work, barrier],
+                cwd=work, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True))
+        time.sleep(0.4)
+        io.open(barrier, 'w').write('1')
+        outs = [p.communicate() for p in procs]
+        rcs = [p.returncode for p in procs]
+        texts = [o + e for o, e in outs]
+        bad = [(rc, (t.strip().splitlines() or [''])[-1][:80])
+               for rc, t in zip(rcs, texts) if rc != 0]
+        false_pos = [t for t in texts if '违例' in t]
+        _ok('R 8 进程并发 index 全 rc=0', not bad, '非零=%s' % bad)
+        _ok('R 零误报（无违例文案）', not false_pos,
+            '误报=%d' % len(false_pos))
+        rows_after = sum(1 for l in io.open(idf, encoding='utf-8') if l.strip()) - 1
+        _ok('R 零丢更新（%d → %d）' % (base_rows, base_rows + add_n),
+            rows_after == base_rows + add_n, 'rows=%d' % rows_after)
+        r = _run(work)
+        _ok('R 并发后复跑 rc=0', r.returncode == 0, 'rc=%d' % r.returncode)
+
+        # S rc=2 配置错：只报不写——封存件/游标/清单递归哈希不变
+        # S rc=2 config error: report only · sealed/cursor/manifest hashes unchanged
+        conf_path = os.path.join(work, 'daybook.conf')
+        conf_backup = io.open(conf_path, encoding='utf-8').read()
+        os.makedirs(os.path.join(work, '坏卷目录'))
+        io.open(conf_path, 'w', encoding='utf-8').write(
+            conf_backup.replace('[volumes]\n账=账卷.txt', '[volumes]\n账=账卷.txt\n坏=坏卷目录'))
+        idx_before = _snapshot(os.path.join(work, '索引'))
+        r = _run(work)
+        idx_after = _snapshot(os.path.join(work, '索引'))
+        _ok('S 配置错（卷指向目录）⇒ rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+        _ok('S rc=2 派生件零变化（递归·含内容）', idx_before == idx_after,
+            '差异=%s' % (_snap_diff(idx_before, idx_after),))
+        stamp_now = json.load(io.open(sp, encoding='utf-8'))
+        _ok('S rc=2 封存指纹仍在', isinstance(stamp_now.get('vol_seals'), dict)
+            and stamp_now['vol_seals'].get('账') is not None,
+            'vol_seals=%s' % sorted((stamp_now.get('vol_seals') or {}).keys()))
+        io.open(conf_path, 'w', encoding='utf-8').write(conf_backup)
+        os.rmdir(os.path.join(work, '坏卷目录'))
+
+        # T rc=3 违例：同样只报不写——清单与时戳零变化
+        # T rc=3 violation: report only · manifest and timestamp unchanged
+        orig_t = io.open(vol, 'rb').read()
+        idx_before = _snapshot(os.path.join(work, '索引'))
+        _tamper_mid(vol, 0.50)
+        r = _run(work)
+        idx_after = _snapshot(os.path.join(work, '索引'))
+        _ok('T 等长改写 ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
+        _ok('T rc=3 派生件零变化（含清单/封存时戳）', idx_before == idx_after,
+            '差异=%s' % (_snap_diff(idx_before, idx_after),))
+        io.open(vol, 'wb').write(orig_t)
+        _run(work)
+
+        # U rc=4 作者口径红：同样只报不写
+        # U rc=4 author-convention red: report only, nothing written
+        orig_u = io.open(vol, 'rb').read()
+        with io.open(vol, 'a', encoding='utf-8') as f:
+            f.write('[2026-11-13 16:00:00] [测试] [机器id作者] [ag-0123456789abcdef] 正文\n')
+        idx_before = _snapshot(os.path.join(work, '索引'))
+        r = _run(work)
+        idx_after = _snapshot(os.path.join(work, '索引'))
+        _ok('U 作者位机器 id ⇒ rc=4', r.returncode == 4, 'rc=%d' % r.returncode)
+        _ok('U rc=4 派生件零变化', idx_before == idx_after,
+            '差异=%s' % (_snap_diff(idx_before, idx_after),))
+        io.open(vol, 'wb').write(orig_u)
+        _run(work)
+
+        # R2/V/W 与静态检查：错峰并发、原子替换+无锁读者、子目录长条目锁根
+        _case_stagger(work)
+        _case_safeio(work)
+        _case_subdir(work)
+        safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
+                             encoding='utf-8').read()
+        _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',
+            'import msvcrt' not in safeio_src
+            and 'os.remove(lock_file)' not in safeio_src
+            and '_HAS_FCNTL' not in safeio_src)
+        daybook_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'daybook.py'),
+                              encoding='utf-8').read()
+        _ok('静态：派生件只有一个原子替换实现（daybook 不自己 os.replace）',
+            'def atomic_write' in safeio_src and 'os.replace(' not in daybook_src)
+        leftovers = [k for k in _snapshot(work) if k.endswith('.tmp')]
+        _ok('派生件无 .tmp 残留', not leftovers, '残留=%s' % leftovers)
+
         # P/Q 锁的进程间语义（跨 TMPDIR 互斥、删除外部件不影响）
         # P/Q cross-process lock semantics (exclusion across TMPDIRs; deleting external
         # artifacts changes nothing)
@@ -573,7 +854,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–Q 十七组用例全绿')
+    print('PASS: A–W 二十三组用例全绿')
     return 0
 
 

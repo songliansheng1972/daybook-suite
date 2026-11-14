@@ -13,22 +13,30 @@ Three primitives, zero dependencies (standard library only), minimal API:
 
 锁粒度：目录级——flock 账本根目录本身的 fd（O_RDONLY|O_DIRECTORY），全程不新建任何文件。
 同一账本内的所有路径都落到同一个目录 inode，故跨 TMPDIR、跨用户、跨 cron/launchd 都是同一把锁；
-锁不需要写权限（只读卷上的读路径也能取共享锁）；没有「锁文件被删」这回事。
+锁不需要写权限（只读卷上的读路径也能取到锁）；没有「锁文件被删」这回事。
 Lock granularity: directory-level — flock the ledger-root directory fd itself (O_RDONLY|O_DIRECTORY);
 no file is ever created. Every path of one ledger resolves to the same directory inode, so different
 TMPDIRs / users / cron jobs all contend on one lock. No write permission is needed (read paths on a
-read-only volume can still take a shared lock), and there is no lock file anyone could delete.
-降级：无 fcntl 平台（Windows）目录取不到 fd，退到目录内隐藏锁件 + msvcrt 锁（仅该平台）。
-Fallback: on platforms without fcntl (Windows) a directory fd cannot be opened, so a hidden lock
-file inside that directory plus msvcrt locking is used (that platform only).
+read-only volume can still lock), and there is no lock file anyone could delete.
+
+平台：本版只支持 POSIX（fcntl/flock）。Windows 分支已删除——旧实现会在账本内建
+`.safeio_lock` 并释放时删除，既违反「账本内零锁件」，也与发行包声明的 POSIX 平台不符。
+Platform: POSIX (fcntl/flock) only. The Windows branch is gone: it created `.safeio_lock` inside
+the ledger and removed it on release, breaking the "no lock artifact in the ledger" promise and
+contradicting the POSIX-only platform claim of the distribution.
+
+读者：`read_vol` 不取任何锁。卷是 append-only，派生件一律「同目录临时文件 + os.replace」
+原子换入，读者拿到的永远是一致快照，且不会被写者的临界区整段阻塞。
+Readers: `read_vol` takes no lock. Volumes are append-only and every derived artifact is swapped
+in atomically (temp file in the same directory + os.replace), so a reader always sees a
+consistent snapshot and is never blocked for the whole writer critical section.
 """
-import os, contextlib, threading
+import os, contextlib, threading, tempfile
 
 try:
     import fcntl
-    _HAS_FCNTL = True
-except ImportError:
-    _HAS_FCNTL = False
+except ImportError:                                     # pragma: no cover - POSIX only
+    fcntl = None
 
 # 同线程已持锁表：{锁文件绝对路径: [fd, 深度]}。
 # 读卷会在持锁的临界区内被调用（如 task_volume.transition 里 read_vol），
@@ -79,81 +87,69 @@ def locked(path, timeout=None, shared=False):
         finally:
             held[lp][1] -= 1
         return
-    if _HAS_FCNTL:
-        # 打开目录本身取 fd：不新建文件，不需要写权限；flock 绑在目录 inode 上。
-        # Open the directory itself: no file is created, no write permission is required,
-        # and the flock is bound to the directory inode.
-        fd = os.open(lp, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-        flag = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-        if timeout is not None:
-            import time
-            deadline = time.time() + timeout
-            flag |= fcntl.LOCK_NB
-            while True:
-                try:
-                    fcntl.flock(fd, flag)
-                    break
-                except (BlockingIOError, OSError):
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError('safeio: lock timeout for %s' % path)
-                    time.sleep(0.05)
-        else:
-            fcntl.flock(fd, flag)
-        held[lp] = [fd, 1]
-        try:
-            yield fd
-        finally:
-            held.pop(lp, None)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-            os.close(fd)
-    else:
-        # Windows：目录取不到可锁 fd，退到目录内隐藏锁件 + msvcrt（仅该平台）。
-        # Windows: a directory fd cannot be locked, so fall back to a hidden lock file in that
-        # directory with msvcrt (that platform only).
+    if fcntl is None:
+        raise RuntimeError('safeio: 本版仅支持 POSIX（fcntl/flock）；Windows 需另开单用命名互斥量')
+    # 打开目录本身取 fd：不新建文件，不需要写权限；flock 绑在目录 inode 上。
+    # Open the directory itself: no file is created, no write permission is required,
+    # and the flock is bound to the directory inode.
+    fd = os.open(lp, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    flag = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+    if timeout is not None:
         import time
-        import msvcrt
-        lock_file = os.path.join(lp, '.safeio_lock')
-        fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
-        if timeout is None:
-            timeout = 10
         deadline = time.time() + timeout
+        flag |= fcntl.LOCK_NB
         while True:
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                fcntl.flock(fd, flag)
                 break
-            except OSError:
+            except (BlockingIOError, OSError):
                 if time.time() >= deadline:
                     os.close(fd)
                     raise TimeoutError('safeio: lock timeout for %s' % path)
                 time.sleep(0.05)
-        held[lp] = [fd, 1]
+    else:
+        fcntl.flock(fd, flag)
+    held[lp] = [fd, 1]
+    try:
+        yield fd
+    finally:
+        held.pop(lp, None)
         try:
-            yield fd
-        finally:
-            held.pop(lp, None)
-            try:
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            except OSError:
-                pass
-            os.close(fd)
-            try:
-                os.remove(lock_file)
-            except OSError:
-                pass
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        os.close(fd)
 
 
-def atomic_append(path, data):
-    """持锁追加。O_APPEND + 单次 write。
-    Append while holding the lock. O_APPEND + single write.
-    用于索引 TSV 追加（修②）与长条目写入（修③）。
-    Used for index TSV appends (fix ②) and long-entry writes (fix ③)."""
+def atomic_write(path, data):
+    """原子替换写：同目录临时文件 + os.replace（★唯一实现，派生件一律走这里）。
+    Atomic replace: a temp file in the same directory + os.replace (★ the single implementation;
+    every derived artifact goes through it). Readers never see a half-written file."""
     if isinstance(data, str):
         data = data.encode('utf-8')
-    with locked(path):
+    d = os.path.dirname(os.path.abspath(path))
+    fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=d)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_append(path, data, root=None):
+    """持账本根锁追加。O_APPEND + 单次 write。
+    Append while holding the ledger-root lock. O_APPEND + single write.
+    root 给出账本根（子目录卷也争同一把锁）；缺省退到目标所在目录。
+    `root` names the ledger root (sub-directory volumes contend on the same lock);
+    without it the target's own directory is used."""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    with locked(root if root else path):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
         try:
             os.write(fd, data)
@@ -199,34 +195,28 @@ def sniff_bytes(raw):
 def read_vol(path):
     """读卷·自动检测编码（零依赖·不静默）。MCP/orch/基座读卷一律经此。
     Read a volume · auto-detect encoding (zero dependencies · no silent fallback). All MCP/orch/base volume reads go through this.
-    读侧持**共享锁**：与写侧（atomic_append / read_modify_write / 超 PIPE_BUF 的加锁写）互斥，
-    长条目写到一半时不会读到半条（撕裂）。
-    The reader takes a **shared lock**, mutually exclusive with writers (atomic_append /
-    read_modify_write / the locked path for entries over PIPE_BUF), so a half-written long entry is never observed.
+    读侧**不取锁**：写者持账本根排他锁串行，派生件靠原子替换换入，读者拿到的
+    永远是一致快照，也不会被 40 万条索引的写临界区整段阻塞。
+    The reader takes **no lock**: writers are serialized by the ledger-root exclusive lock and
+    derived artifacts are swapped in atomically, so a reader always sees a consistent snapshot
+    and is never blocked for the whole critical section of a 400k-entry index build.
     返回 (text, enc, why)。检测逻辑唯一在 sniff_bytes（#463 合一）。
     Returns (text, enc, why). The detection logic lives only in sniff_bytes (merged in #463)."""
-    with locked(path, shared=True):
-        with open(path, 'rb') as f:
-            raw = f.read()
+    with open(path, 'rb') as f:
+        raw = f.read()
     return sniff_bytes(raw)
 
 
-def read_modify_write(path, fn):
-    """持锁读-改-写。fn(old_bytes) -> new_bytes。
-    Locked read-modify-write. fn(old_bytes) -> new_bytes.
+def read_modify_write(path, fn, root=None):
+    """持账本根锁读-改-写。fn(old_bytes) -> new_bytes。写入走 atomic_write。
+    Locked (ledger root) read-modify-write. fn(old_bytes) -> new_bytes; the write is atomic.
     用于游标 json（修②）：读旧值→改→写回，全程持锁。
     Used for cursor json (fix ②): read the old value → modify → write back, holding the lock throughout."""
-    with locked(path):
+    with locked(root if root else path):
         if os.path.exists(path):
             with open(path, 'rb') as f:
                 old = f.read()
         else:
             old = b''
         new = fn(old)
-        if isinstance(new, str):
-            new = new.encode('utf-8')
-        # 原子写：先写临时文件再 rename（同分区原子） · atomic write: write a temp file then rename (atomic within the same partition)
-        tmp = path + '.tmp'
-        with open(tmp, 'wb') as f:
-            f.write(new)
-        os.replace(tmp, path)
+        atomic_write(path, new)

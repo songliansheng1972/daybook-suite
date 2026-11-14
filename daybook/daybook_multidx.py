@@ -285,10 +285,20 @@ def build_total_md(vol_rows, now, orders=('子', '史', '集')):
 
 
 def build(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
+    """多级目录入口：整段持账本根排他锁（与 index/append 串行）。
+    Multilevel entry: holds the ledger-root exclusive lock for the whole build
+    (serialized with index/append)."""
+    from safeio import locked as _safe_locked
+    with _safe_locked(root):
+        return _build_locked(conf, root, now=now, only_vol=only_vol, orders=orders)
+
+
+def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
     """读各卷平铺 TSV → 写三件。only_vol 指定时只出该卷目录（跳总目录）。
     Read each volume's flat TSV → write the three artifacts. With only_vol, write
     just that volume's catalogue (digest skipped).
     返回 (per_vol_counts, total)。Returns (per_vol_counts, total)."""
+    from safeio import atomic_write as _atomic_write
     now = now or datetime.now().strftime('%Y-%m-%d %H:%M')
     vols = conf.get('volumes', {})
     outdir = (conf.get('index', {}).get('out_dir', '') or '').strip()
@@ -314,13 +324,10 @@ def build(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
         _header, rows = read_tsv(idf)
         vol_rows[vol] = rows
         per[vol] = len(rows)
-        with io.open(os.path.join(mdir, '%s_catalog.md' % vol), 'w', encoding='utf-8') as f:
-            f.write(build_vol_md(vol, rows, now, l2name))
-        with io.open(os.path.join(mdir, '%s_catalog.tsv' % vol), 'w', encoding='utf-8') as f:
-            f.write(build_vol_tsv(vol, rows, l2name))
+        _atomic_write(os.path.join(mdir, '%s_catalog.md' % vol), build_vol_md(vol, rows, now, l2name))
+        _atomic_write(os.path.join(mdir, '%s_catalog.tsv' % vol), build_vol_tsv(vol, rows, l2name))
     if not only_vol:
-        with io.open(os.path.join(mdir, 'catalog.md'), 'w', encoding='utf-8') as f:
-            f.write(build_total_md(vol_rows, now, orders))
+        _atomic_write(os.path.join(mdir, 'catalog.md'), build_total_md(vol_rows, now, orders))
     return per, sum(per.values())
 
 

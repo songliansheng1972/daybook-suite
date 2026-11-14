@@ -573,7 +573,8 @@ class Hub:
                              % (eid, author, exc))
         _dba.append_one(self.ledger, kind, title, body, author=disp, to=to_ids,
                         msg_id=eid, re_ref=re_ref, sig=sig, now=now,
-                        author_id=author if AUTHOR_ID_RE.match(author or '') else None)
+                        author_id=author if AUTHOR_ID_RE.match(author or '') else None,
+                        root=self.root)
         return eid
 
     def _resolve_to(self, to):

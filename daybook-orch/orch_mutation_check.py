@@ -68,13 +68,25 @@ MUTATIONS = [
          """    return INBOX_VOL if root is None else _vp.resolve_volumes(root)['inbox']""",
          """    return INBOX_VOL"""),
     ]),
-    (4, 'read_vol 改回无锁读', [(
+    (4, '派生件原子替换改回两段非原子写', [(
         'safeio.py',
-        """    with locked(path, shared=True):
-        with open(path, 'rb') as f:
-            raw = f.read()""",
-        """    with open(path, 'rb') as f:
-        raw = f.read()""",
+        """    fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=d)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise""",
+        """    with open(path, 'wb') as f:  # MUTANT 非原子两段写
+        half = len(data) // 2
+        f.write(data[:half])
+        f.flush()
+        threading.Event().wait(0.05)
+        f.write(data[half:])""",
     )]),
     (6, 'digest 改回静默 0 条 / 互见失败改回空串', [
         ('orchestrator.py',

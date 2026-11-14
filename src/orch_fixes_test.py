@@ -244,27 +244,22 @@ def test_root_resolution():
 # ── 4. read_vol 共享锁 ─────────────────────────────────────────────
 def test_read_locking():
     print('== 4. read_vol：并发读写不撕裂 ==')
-    from safeio import read_vol, locked
+    from safeio import read_vol
+    from daybook_append import append_one
 
     root = _fresh_root('lock')
     path = os.path.join(root, 'vol.txt')
     try:
-        record = '[2026-11-14 00:00:00] [测] [长条] [x] ' + ('A' * 65536) + '\n'
         torn = []
         stop = threading.Event()
 
         def writer():
+            # 走产品长条目落盘路径：>PIPE_BUF ⇒ 同目录临时件 + os.replace（整文件原子换入），
+            # 读者不取锁也能拿到完整快照。
+            # Use the product's long-entry path: >PIPE_BUF ⇒ temp file + os.replace (whole-file
+            # atomic swap), so a lock-free reader still gets a complete snapshot.
             for _ in range(6):
-                with locked(path):          # 写侧持独占锁，分两段慢写（模拟长条目落盘窗口）
-                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-                    try:
-                        half = len(record.encode('utf-8')) // 2
-                        raw = record.encode('utf-8')
-                        os.write(fd, raw[:half])
-                        time.sleep(0.08)
-                        os.write(fd, raw[half:])
-                    finally:
-                        os.close(fd)
+                append_one(path, '测', '长条', 'A' * 65536, author='皮特', root=root)
             stop.set()
 
         def reader():
@@ -273,7 +268,7 @@ def test_read_locking():
                     text, _enc, _why = read_vol(path)
                 except FileNotFoundError:
                     continue
-                if text and not text.endswith('\n'):
+                if text and not text.endswith('\n\n'):
                     torn.append(text[-40:])
                 if len(torn) > 50:
                     break
@@ -282,10 +277,10 @@ def test_read_locking():
         tr = threading.Thread(target=reader)
         tw.start(); tr.start()
         tw.join(); tr.join()
-        check('共享锁读：撕裂 0 次', len(torn) == 0, 'torn=%d' % len(torn))
+        check('长条目原子写：撕裂 0 次', len(torn) == 0, 'torn=%d' % len(torn))
         text, _e, _w = read_vol(path)
         check('完整记录 6 条', text.count('[测]') == 6, 'count=%d' % text.count('[测]'))
-        print('  读数：撕裂 %d 次（无锁旧行为下应 >0）' % len(torn))
+        print('  读数：撕裂 %d 次（分两段慢写才会 >0）' % len(torn))
         return all(_results)
     finally:
         shutil.rmtree(root, ignore_errors=True)

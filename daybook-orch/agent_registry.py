@@ -80,8 +80,9 @@ class Registry:
     All writes append to 注册卷.txt; reads go through memory (fully loaded at startup).
     不改历史 = 吊销只追加吊销条目·不删原注册条目。
     History is never rewritten: revocation only appends a revocation entry · the original registration entry is not deleted."""
-    def __init__(self, path=None):
+    def __init__(self, path=None, root=None):
         self.path = path or os.path.join(HERE, '注册卷.txt')
+        self.root = root or os.path.dirname(os.path.abspath(self.path))
         self._agents = {}  # agent_id -> Agent · 内存索引 · in-memory index
         self._load()
 
@@ -161,7 +162,7 @@ class Registry:
         ref = self._write_secret(agent_id, secret)
         rec = '[%s] [注册] [%s] [%s] [%s]\n' % (_now(), agent_id, name, KEY_REF_PREFIX + ref)
         from safeio import atomic_append
-        atomic_append(self.path, rec)
+        atomic_append(self.path, rec, root=self.root)
         try:
             os.chmod(self.path, 0o600)            # 旧卷可能含内联密钥·一并收紧 / legacy volumes may hold inline secrets · tighten too
         except OSError:
@@ -176,7 +177,7 @@ class Registry:
             raise KeyError('agent %s 不存在' % agent_id)
         rec = '[%s] [吊销] [%s]\n' % (_now(), agent_id)
         from safeio import atomic_append
-        atomic_append(self.path, rec)
+        atomic_append(self.path, rec, root=self.root)
         self._agents[agent_id].revoked = True
 
     def lookup(self, agent_id):

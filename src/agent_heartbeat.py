@@ -33,10 +33,11 @@ def _now_ts():
 
 
 class Heartbeat:
-    def __init__(self, path=None, period=10, dead_after=3):
+    def __init__(self, path=None, period=10, dead_after=3, root=None):
         """period：心跳周期（秒）。dead_after：缺多少周期判定 dead。
         period: heartbeat period (in seconds). dead_after: how many missed periods count as dead."""
         self.path = path or os.path.join(HERE, '心跳卷.txt')
+        self.root = root or os.path.dirname(os.path.abspath(self.path))
         self.period = period
         self.dead_after = dead_after
         if not os.path.exists(self.path):
@@ -47,7 +48,7 @@ class Heartbeat:
         Agent reports its own heartbeat · append-only."""
         from safeio import atomic_append
         rec = '[%s] [心跳] [%s] alive\n' % (_now(), agent_id)
-        atomic_append(self.path, rec)
+        atomic_append(self.path, rec, root=self.root)
         return True
 
     def _last_beats(self):

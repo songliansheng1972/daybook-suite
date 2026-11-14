@@ -47,9 +47,10 @@ def _now_ts():
 
 
 class AgentLock:
-    def __init__(self, lock_dir=None, lease_vol=None):
+    def __init__(self, lock_dir=None, lease_vol=None, root=None):
         self.lock_dir = lock_dir or LOCK_DIR
         self.lease_vol = lease_vol or LEASE_VOL
+        self.root = root or os.path.dirname(os.path.abspath(self.lease_vol))
         if not os.path.isdir(self.lock_dir):
             os.makedirs(self.lock_dir, exist_ok=True)
         if not os.path.exists(self.lease_vol):
@@ -67,7 +68,7 @@ class AgentLock:
     def _log(self, lease_id, action, extra=''):
         from safeio import atomic_append
         rec = ('[%s] [租约] [%s] %s %s\n' % (_now(), lease_id, action, extra)).rstrip() + '\n'
-        atomic_append(self.lease_vol, rec)
+        atomic_append(self.lease_vol, rec, root=self.root)
 
     def acquire(self, resource, agent_id, blocking=False):
         """获取资源锁。返回 lease_id 或 None。

@@ -30,6 +30,7 @@ import os
 import runpy
 import shutil
 import sys
+import tempfile
 
 __all__ = ["main", "resolve_home"]
 
@@ -120,13 +121,22 @@ def _link_payload(home, payload, made, reassign):
         target = os.path.join(payload, name)
         if os.path.islink(link):
             if reassign and os.path.realpath(link) != os.path.realpath(target):
-                os.remove(link)
-                os.symlink(target, link)
+                try:
+                    os.remove(link)
+                    os.symlink(target, link)
+                except FileExistsError:
+                    pass          # 另一个并发进程刚补上同一条链 / a concurrent run just linked it
                 made.append(name)
             continue
         if os.path.exists(link):
             continue  # 用户自留的实体件：不动 / a real file kept by the user: leave it alone
-        os.symlink(target, link)
+        try:
+            os.symlink(target, link)
+        except FileExistsError:
+            # 并发首次启动：另一个进程已建同名链。产品要能扛住，不许 rc=1。
+            # Concurrent first run: another process already created it. The product must
+            # survive this — never rc=1.
+            continue
         made.append(name)
 
 
@@ -142,9 +152,34 @@ def _ensure_home(home, payload):
     os.makedirs(home, exist_ok=True)
     fresh = not os.path.exists(os.path.join(home, _CONF))
     if fresh:
-        shutil.copyfile(os.path.join(payload, _CONF), os.path.join(home, _CONF))
+        # 同目录临时件 + os.replace：并发首启时两个进程写同一个 conf 也只会有一个完整版本
+        # temp + os.replace: concurrent first runs writing the same conf still land one complete copy
+        fd, tmp = tempfile.mkstemp(prefix='.daybook.conf.', dir=home)
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                with open(os.path.join(payload, _CONF), 'rb') as src:
+                    f.write(src.read())
+            os.replace(tmp, os.path.join(home, _CONF))
+        except BaseException:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
     if fresh and not os.path.exists(os.path.join(home, _SAMPLE)):
-        shutil.copytree(os.path.join(payload, _SAMPLE), os.path.join(home, _SAMPLE))
+        # 先拷到本进程独占的临时目录，再整目录 rename：并发首启不会互相踩半成品
+        # Copy into a process-private temp dir first, then rename the directory: concurrent
+        # first runs never observe each other's half-copied tree.
+        tmpd = tempfile.mkdtemp(prefix='.daybook.sample.', dir=home)
+        try:
+            shutil.copytree(os.path.join(payload, _SAMPLE), os.path.join(tmpd, _SAMPLE))
+            try:
+                os.rename(os.path.join(tmpd, _SAMPLE), os.path.join(home, _SAMPLE))
+            except OSError:
+                if not os.path.exists(os.path.join(home, _SAMPLE)):
+                    raise
+        finally:
+            shutil.rmtree(tmpd, ignore_errors=True)
     made = []
     _link_payload(home, payload, made, reassign=True)
     for p in sibling_payloads():

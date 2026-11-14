@@ -282,6 +282,19 @@ def test_hook_parse(tmp):
     import re as _re
     old_re = _re.compile(r'^\[[^\]]+\]\s*\[([^\]]+)\]\s*\[([^\]]*)\](?:\s*\[([^\]]*)\])?\s*(对话原件/[^\s]+\.txt)')
     _ok('⑩3 变异：旧正则必不匹配（静默丢条可复现）', old_re.match(line) is None)
+    # ⑩4/⑩5 端到端：钩子追更必须把源条目的 [id=ag-…] 附注带到目标卷（作者位仍只写显示名）
+    # End to end: the hook must carry the source [id=ag-…] annotation into the target volume,
+    # while the author slot keeps the display name.
+    os.makedirs(os.path.join(d, '对话原件'))
+    _write(os.path.join(d, '对话原件', 'x.txt'), '这条要 决定 一件事。')
+    kw = os.path.join(d, 'kw.txt')
+    _write(kw, '[目标] [追更] 决定\n')
+    daybook_hook.run(dialog, kw, root=d)
+    target = io.open(os.path.join(d, '目标卷.txt'), encoding='utf-8').read()
+    _ok('⑩4 钩子追更条目带 [id=] 附注', '[汤姆]' in target and ('[id=%s]' % AID) in target,
+        target[:160])
+    _ok('⑩5 作者位仍是显示名（机器 id 只在附注）',
+        ('[%s]' % AID) not in target.replace('[id=%s]' % AID, ''), target[:160])
 
 
 # ── ⑪ 退出码口径写进 --help ──────────────────────────────────
@@ -435,6 +448,62 @@ def test_author_source(tmp):
     _ok('④10 index 集成：作者位机器 id ⇒ rc=4', r.returncode == 4, 'rc=%d' % r.returncode)
 
 
+# ── ⑬ 入口壳并发补链：6 进程同时对空运行目录首启，必须全 rc=0 ──
+def test_entry_shell_concurrency(tmp):
+    import time
+    src_shim = os.path.join(os.path.dirname(HERE), 'packaging', 'cli_shim.py')
+    if not os.path.exists(src_shim):
+        _ok('⑬0 packaging/cli_shim.py 存在', False, src_shim)
+        return
+    base = os.path.join(tmp, 'shell')
+    payload = os.path.join(base, 'payload')
+    os.makedirs(os.path.join(payload, 'sample'))
+    _write(os.path.join(payload, 'daybook.conf'), '[index]\nroot=\n')
+    _write(os.path.join(payload, 'sample', 'x.txt'), 'x\n')
+    _write(os.path.join(payload, 'entry.py'), "print('ok')\n")
+    for i in range(400):
+        _write(os.path.join(payload, 'mod%03d.py' % i), '# filler\n')
+    shim = os.path.join(base, 'shim.py')
+    text = io.open(src_shim, encoding='utf-8').read()
+    text = text.replace('@@DIST@@', 'daybook').replace('@@CMD@@', 'daybook').replace('@@ENTRY@@', 'entry.py')
+    _write(shim, text)
+    launcher = os.path.join(base, 'launch.py')
+    _write(launcher, (
+        "import os, sys, time, runpy\n"
+        "shim, home, barrier = sys.argv[1], sys.argv[2], sys.argv[3]\n"
+        "mod = runpy.run_path(shim, run_name='shimmod')\n"
+        "while not os.path.exists(barrier):\n"
+        "    time.sleep(0.001)\n"
+        "sys.argv = [shim, '--home=' + home]\n"
+        "sys.exit(mod['main']())\n"))
+    # 两轮×8 进程：空运行目录首启，全部同时补链。旧实现（无 FileExistsError 容忍）
+    # 每进程约 40% 概率 rc=1，两轮全绿概率 <0.1%，因此该用例对旧实现必红。
+    # Two rounds × 8 processes: concurrent first runs into empty homes. The old implementation
+    # (no FileExistsError tolerance) fails ~40% per process, so it goes red essentially always.
+    all_rcs, all_outs = [], []
+    home = os.path.join(base, 'home')
+    for rnd in range(2):
+        home = os.path.join(base, 'home%d' % rnd)
+        barrier = os.path.join(base, 'go%d.flag' % rnd)
+        procs = [subprocess.Popen([sys.executable, '-B', launcher, shim, home, barrier],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  universal_newlines=True) for _ in range(8)]
+        time.sleep(0.2)
+        io.open(barrier, 'w').write('1')
+        outs = [p.communicate() for p in procs]
+        all_outs.extend(outs)
+        all_rcs.extend(p.returncode for p in procs)
+    bad = [(rc, (o + e).strip().splitlines()[-1:] or [''])
+           for (o, e), rc in zip(all_outs, all_rcs) if rc != 0]
+    _ok('⑬1 8 进程×2 轮并发首启全 rc=0（补链不互相踩）', not bad, '非零=%s' % bad[:4])
+    _ok('⑬2 无 Traceback', not any('Traceback' in (o + e) for o, e in all_outs))
+    _ok('⑬3 conf/sample 就位', os.path.isfile(os.path.join(home, 'daybook.conf'))
+        and os.path.isdir(os.path.join(home, 'sample')))
+    _ok('⑬4 产品件已链入', os.path.islink(os.path.join(home, 'mod000.py')))
+    _ok('⑬5 无残留临时件',
+        not [n for n in os.listdir(home) if n.startswith('.daybook.')])
+
+
 def main():
     tmp = tempfile.mkdtemp(prefix='daybook_fix_')
     try:
@@ -450,6 +519,7 @@ def main():
         test_help_exit_codes(tmp)
         test_author_cli_backdoor(tmp)
         test_author_source(tmp)
+        test_entry_shell_concurrency(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print('  共 %d 项，FAIL %d 项' % (CHECKS[0], len(FAILS)))

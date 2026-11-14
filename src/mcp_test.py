@@ -221,8 +221,9 @@ def test_daybook_index(tmp_root):
     text = res.get('content', [{}])[0].get('text', '')
     # 签名只证明调用者是谁，不证明有人看过这卷：MCP 遇证据缺失必须拒认基线
     # A signature proves who called, not that anyone reviewed the volume: MCP must refuse
-    if not _ok('7.2 证据缺失时 MCP 拒认基线（rc=5·isError）',
-               res.get('isError') is True and 'rc=5' in text, text[:100]):
+    if not _ok('7.2 证据缺失时 MCP 拒认基线（rc=5·isError·按类别取文案）',
+               res.get('isError') is True and 'rc=5' in text
+               and '证据缺失' in text and '参数错' not in text, text[:100]):
         return False
     if not _ok('7.3 未写回索引（不自动重建）',
                not os.path.exists(os.path.join(tmp_root, '索引', 'index_测试MCP.tsv'))):
@@ -254,7 +255,9 @@ def test_daybook_index(tmp_root):
                                'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
     res = out[0].get('result', {})
     text = res.get('content', [{}])[0].get('text', '')
-    ok3 = _ok('7.6 违例 ⇒ MCP isError + rc=3', res.get('isError') is True and 'rc=3' in text,
+    ok3 = _ok('7.6 违例 ⇒ MCP isError + rc=3（不套参数错）',
+              res.get('isError') is True and 'rc=3' in text
+              and 'append-only 违例' in text and '参数错' not in text,
               text[:100])
     ok4 = _ok('7.7 违例不写回游标',
               (open(cur_path, 'rb').read() if os.path.exists(cur_path) else b'') == cur_before)

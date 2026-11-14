@@ -119,7 +119,7 @@ def _append_inbox(msg, direction='收', root=None):
         _now(), direction,
         msg.get('from', '?'), msg.get('to', '?'),
         msg.get('type', '?'), msg.get('content', '').rstrip('\n'))
-    atomic_append(path, rec)
+    atomic_append(path, rec, root=root)
 
 
 class _Handler(socketserver.BaseRequestHandler):

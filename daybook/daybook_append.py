@@ -76,6 +76,20 @@ def classify_author(author):
     return '显示名'
 
 
+def head_author(line):
+    """从条目头取 (作者位显示名, 注册表 id 附注或 None)。
+    Parse an entry head into (author display name, registry-id annotation or None).
+    ★ 唯一解析入口：钩子/机检都走这里，`[id=ag-…]` 不会再被丢掉。
+    ★ The single parser: both the hook and the consistency check go through it, so the
+      `[id=ag-…]` annotation can never be dropped again."""
+    tokens = _head_tokens(line)
+    if tokens and ENTRY_NO_RE.match(tokens[0]):
+        tokens = tokens[1:]
+    author = tokens[3] if len(tokens) > 3 else ''
+    m = re.search(r'\[id=(ag-[0-9a-f]{16})\]', line)
+    return author, (m.group(1) if m else None)
+
+
 def check_author_consistency(path, head_regex=None):
     """机检：作者位必须是显示名；出现机器 id、或同卷混两种形态即报红。
     Machine check: the author slot must hold a display name; a machine id, or two
@@ -100,7 +114,7 @@ def check_author_consistency(path, head_regex=None):
                     tokens = tokens[1:]
                 if len(tokens) < 4:
                     continue          # 旧三段条目无作者位 · legacy 3-part head has no author slot
-                author = tokens[3]
+                author, _aid = head_author(line)
                 entries.append((ln, author, classify_author(author)))
     except OSError as exc:
         return False, {'kinds': ['读失败'], 'samples': [(0, str(exc), '读失败')],
@@ -132,7 +146,7 @@ def get_pipe_buf(path):
 
 def append_one(path, kind, title, msg, author='未标', to=None,
                msg_id=None, re_ref=None, sig=None, now=None, author_id=None,
-               unregistered=False):
+               unregistered=False, root=None):
     """原子追加一条（**唯一落盘入口**：CLI 与 MCP 共用）。to 为收件人列表或字符串·写入 [致=...] 段·不填即广播。
     Atomically append one entry (**the single landing entry**: shared by the CLI and the MCP). `to` is a recipient list or string · writes a [致=...] segment · broadcasts when omitted.
     格式：[时间] [类] [标题] [作者显示名] [id=ag-…] [未注册] [id=<条号>] [re=…] [sig=…] [致=汤姆,老宋] 正文
@@ -152,8 +166,9 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     now: timestamp supplied by the caller (the signature must cover the written time,
          avoiding a mismatch between two clock reads).
 
-    多写者并发安全：O_APPEND + 单次 write ≤ PIPE_BUF ⇒ POSIX 原子。
-    Multi-writer safe: O_APPEND + single write ≤ PIPE_BUF ⇒ POSIX atomic.
+    多写者并发安全：O_APPEND + 单次 write ≤ PIPE_BUF ⇒ POSIX 原子；且所有写者先取账本根排他锁。
+    Multi-writer safe: O_APPEND + single write ≤ PIPE_BUF ⇒ POSIX atomic; every writer also takes
+    the ledger-root exclusive lock first.
     作者 ID 红线：必填·可审可验可追。
     Author ID iron rule: required · auditable, verifiable and traceable.
     收件人寻址（F1·跨 AI 消息平台）：to 字段·逗号分隔多收件人。
@@ -182,22 +197,23 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     body = msg.rstrip('\n')
     rec = head + body + tail
     b = rec.encode('utf-8')
+    # 所有账本写路径统一锁账本根（子目录卷、软链卷也争同一把锁）
+    # Every ledger write path locks the ledger root (sub-directory and symlinked volumes contend too)
+    ledger_root = root or os.path.dirname(os.path.abspath(path))
+    from safeio import atomic_append, atomic_write, locked
     if len(b) > limit:
-        # W-75 修③：超 PIPE_BUF 不再拒写，走 safeio.locked 加锁路径 · W-75 fix ③: over PIPE_BUF is no longer rejected; go through the safeio.locked path
+        # W-75 修③：超 PIPE_BUF 走账本根排他锁 + 整文件原子换入（读者不取锁也不撕裂）
+        # W-75 fix ③: over PIPE_BUF takes the ledger-root exclusive lock and swaps the whole
+        # file in atomically, so a lock-free reader never observes a torn entry.
         sys.stderr.write('★ 超限 %d 字节·走加锁写入路径\n' % len(b))
-        from safeio import locked as _safe_locked
-        with _safe_locked(path):
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-            try:
-                os.write(fd, b)
-            finally:
-                os.close(fd)
+        with locked(ledger_root):
+            old = b''
+            if os.path.exists(path):
+                with open(path, 'rb') as f:
+                    old = f.read()
+            atomic_write(path, old + b)
         return 0
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    try:
-        os.write(fd, b)           # ★ 单次 write，O_APPEND ⇒ 原子 · ★ single write, O_APPEND ⇒ atomic
-    finally:
-        os.close(fd)
+    atomic_append(path, b, root=ledger_root)
     return 0
 
 
