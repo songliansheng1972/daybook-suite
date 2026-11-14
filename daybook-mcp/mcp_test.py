@@ -262,7 +262,35 @@ def test_daybook_index(tmp_root):
     ok4 = _ok('7.7 违例不写回游标',
               (open(cur_path, 'rb').read() if os.path.exists(cur_path) else b'') == cur_before)
     open(vol, 'wb').write(orig)
-    return ok3 and ok4
+    # 7.8/7.9 作者口径红（rc=4）不是「账本不可信」：照写，文案与审计都要说「已写回·只报不拦」
+    # 7.8/7.9 author-convention red (rc=4) is not "untrusted ledger": the run writes, and both
+    # the text and the audit say "written back · report only".
+    with open(vol, 'a', encoding='utf-8') as f:
+        f.write('\n[2026-11-14 12:00] [测试] [机器id作者] [ag-0123456789abcdef] 正文\n\n')
+    ts = int(time.time())
+    sig = _sign(secret, 'reindex:%d' % ts)
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
+                    'params': {'name': 'daybook_index',
+                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
+    res = out[0].get('result', {})
+    text = res.get('content', [{}])[0].get('text', '')
+    ok5 = _ok('7.8 作者红 ⇒ isError + rc=4 且文案「已写回·只报不拦」',
+              res.get('isError') is True and 'rc=4' in text
+              and '已写回' in text and '只报不拦' in text and '参数错' not in text,
+              text[:120])
+    audit = ''
+    audit_path = os.path.join(tmp_root, 'MCP审计卷.txt')
+    if os.path.exists(audit_path):
+        audit = open(audit_path, encoding='utf-8').read()
+    ok6 = _ok('7.9 审计记 [FAIL] 且含「已写回·作者口径红」',
+              '[FAIL]' in audit and '已写回' in audit and '作者口径红' in audit,
+              ' | '.join([l for l in audit.splitlines() if 'index' in l][-1:]))
+    open(vol, 'wb').write(orig)
+    # 清掉本用例写出的派生件，后续用例从干净账本重建（否则 4 条索引与 3 条原文会互相判违例）
+    # Drop derived artifacts written here so later cases rebuild from a clean ledger.
+    for _d in ('开发卷', '索引'):
+        shutil.rmtree(os.path.join(tmp_root, _d), ignore_errors=True)
+    return ok3 and ok4 and ok5 and ok6
 
 
 def test_daybook_query(tmp_root):

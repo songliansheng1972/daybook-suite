@@ -155,9 +155,10 @@ def entry_payload(now, kind, title, author, to, eid, re_ref, body):
 
 
 def is_field_seg(seg):
-    """该 [xxx] 段是否是结构字段（id=/re=/sig=/致=/thread=），而非作者。
-    Whether a [xxx] segment is a structural field (id=/re=/sig=/致=/thread=) rather than an author."""
-    return any(seg.startswith(p) for p in ENTRY_FIELD_PREFIX)
+    """该 [xxx] 段是否是结构字段（id=/re=/sig=/致=/thread=）或 [未注册]，而非作者。
+    Whether a [xxx] segment is a structural field (id=/re=/sig=/致=/thread=) or [未注册]
+    rather than an author."""
+    return seg == '未注册' or any(seg.startswith(p) for p in ENTRY_FIELD_PREFIX)
 
 
 def entry_body(e):
@@ -489,9 +490,17 @@ def parse_ledger(path):
                     sig = _s[4:]
                 elif not author and not is_field_seg(_s):
                     author = _s
+            # 作者位/附注统一走 daybook_append.head_author（唯一解析入口）：
+            # [id=ag-…] 与 [未注册] 一起带回，orch 不再自己切段判作者。
+            # Author slot/annotations go through daybook_append.head_author (single parser),
+            # so both [id=ag-…] and [未注册] come back together.
+            _author, _aid, _unreg = _dba.head_author(line)
+            author = _author or author
+            author_id = author_id or _aid
             e = {'time': m.group(1), 'kind': kind, 'title': title,
                  'author': author, 'author_id': author_id, 'to': to, 'id': eid,
-                 're': re_ref, 'sig': sig, 'inline': inline, 'body': []}
+                 're': re_ref, 'sig': sig, 'unregistered': _unreg,
+                 'inline': inline, 'body': []}
             cur = e
         elif cur is not None:
             cur['body'].append(line)
@@ -519,7 +528,7 @@ class Hub:
             if parent and not os.path.isdir(parent):
                 os.makedirs(parent, exist_ok=True)
         self.reg = _reg.Registry(self.vols['registry'])
-        self.tv = _tv.TaskVolume(self.vols['tasks'])
+        self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root)
         self.hb = _hb.Heartbeat(self.vols['heartbeat'])
         self.lock = _lock.AgentLock(self.vols['locks'], self.vols['leases'])
         self.ledger = self.vols['ledger']

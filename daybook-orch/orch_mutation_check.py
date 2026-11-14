@@ -74,6 +74,8 @@ MUTATIONS = [
     try:
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -184,6 +186,16 @@ MUTATIONS = [
                 agents.add(agent_id)
         return [a for a in agents if not self.is_alive(a)]"""),
     ]),
+    (13, '作者位不走 head_author（丢掉 [未注册]）', [(
+        'orchestrator.py',
+        """            _author, _aid, _unreg = _dba.head_author(line)
+            author = _author or author
+            author_id = author_id or _aid""",
+        """            _author, _aid, _unreg = _dba.head_author(line)
+            author = _author or author
+            author_id = author_id or _aid
+            _unreg = False""",
+    )]),
 ]
 
 

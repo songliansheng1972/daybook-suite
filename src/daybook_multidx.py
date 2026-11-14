@@ -36,6 +36,7 @@ Input: the flat index TSV per volume (`<index_prefix><volume>.tsv`, produced by
 """
 import argparse
 import io
+import json
 import os
 import re
 import sys
@@ -168,8 +169,14 @@ def read_tsv(path):
     rows are dropped. Header names are canonicalised, so legacy Chinese headers still work."""
     if not os.path.exists(path):
         return [], []
-    with io.open(path, encoding='utf-8') as f:
-        lines = [l.rstrip('\n') for l in f]
+    with open(path, 'rb') as f:
+        raw = f.read()
+    text = raw.decode('utf-8', 'replace')
+    lines = text.split('\n')
+    if lines and lines[-1] != '':
+        # 末尾无换行 = 写者崩溃留下的半行：丢弃该段，其余照读
+        # No trailing newline = a half-written last line from a crash: drop it, read the rest.
+        lines = lines[:-1]
     lines = [l for l in lines if l.strip()]
     if not lines:
         return [], []
@@ -212,14 +219,18 @@ def build_vol_md(vol, rows, now, l2name):
     return '\n'.join(out) + '\n'
 
 
+def _tsv_row(vol, r, l2name):
+    return '\t'.join([
+        vol, _t(_f(r, l2name)), _t(_f(r, 'line')), _t(_f(r, 'time')),
+        _t(_f(r, 'category')), _t(_f(r, 'author')),
+        _t(_f(r, 'title')).replace('\t', ' ')])
+
+
 def build_vol_tsv(vol, rows, l2name):
     """单卷机读 TSV（表头英文）。One volume, machine-readable TSV (English header)."""
     buf = ['volume\tlevel2\tline\ttime\tcategory\tauthor\ttitle']
     for v, r in sorted(((vol, r) for r in rows), key=lambda vr: _sort_key(vr, False)):
-        buf.append('\t'.join([
-            vol, _t(_f(r, l2name)), _t(_f(r, 'line')), _t(_f(r, 'time')),
-            _t(_f(r, 'category')), _t(_f(r, 'author')),
-            _t(_f(r, 'title')).replace('\t', ' ')]))
+        buf.append(_tsv_row(v, r, l2name))
     return '\n'.join(buf) + '\n'
 
 
@@ -313,6 +324,11 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
     if not os.path.isdir(mdir):
         os.makedirs(mdir)
 
+    state_path = os.path.join(mdir, '.multilevel_state.json')
+    try:
+        state = json.load(io.open(state_path, encoding='utf-8')) if os.path.exists(state_path) else {}
+    except Exception:
+        state = {}
     vol_rows = OrderedDict()
     per = OrderedDict()
     for vol in vols:
@@ -325,9 +341,24 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
         vol_rows[vol] = rows
         per[vol] = len(rows)
         _atomic_write(os.path.join(mdir, '%s_catalog.md' % vol), build_vol_md(vol, rows, now, l2name))
-        _atomic_write(os.path.join(mdir, '%s_catalog.tsv' % vol), build_vol_tsv(vol, rows, l2name))
+        # 机读目录是只追加型：锁内原位追加新行（O(1)），崩溃半行先截断；Markdown 是摘要，仍原子替换。
+        # The machine-readable catalogue is append-type: append the new rows in place under the
+        # lock (O(1)), truncating a crashed half-line first; the Markdown digest stays atomic.
+        tpath = os.path.join(mdir, '%s_catalog.tsv' % vol)
+        prev = state.get(vol) if isinstance(state, dict) else None
+        k = prev.get('rows') if isinstance(prev, dict) else None
+        if isinstance(k, int) and 0 <= k <= len(rows) and os.path.exists(tpath):
+            from safeio import repair_partial_tail
+            repair_partial_tail(tpath)
+            if len(rows) > k:
+                with open(tpath, 'ab') as f:
+                    f.write(('\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n').encode('utf-8'))
+        else:
+            _atomic_write(tpath, build_vol_tsv(vol, rows, l2name))
+        state[vol] = {'rows': len(rows)}
     if not only_vol:
         _atomic_write(os.path.join(mdir, 'catalog.md'), build_total_md(vol_rows, now, orders))
+    _atomic_write(state_path, json.dumps(state, ensure_ascii=False, sort_keys=True))
     return per, sum(per.values())
 
 

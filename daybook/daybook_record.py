@@ -29,16 +29,11 @@ def record(role, title, content, stamp=None, update_index=True):
     archive_path = os.path.join(archive_dir, name)
     relative_path = os.path.relpath(archive_path, HERE)
 
-    # 每个原件都是独立的 UTF-8 产物；经临时文件写入，
-    # 使中断的写入不会留下写了一半的最终产物。
-    # Each original is a separate UTF-8 artifact; write through a temporary
-    # file so an interrupted write cannot leave a half-written final artifact.
-    temporary_path = archive_path + '.tmp'
-    with open(temporary_path, 'xb') as output:
-        output.write(content)
-        output.flush()
-        os.fsync(output.fileno())
-    os.replace(temporary_path, archive_path)
+    # 每个原件都是独立的 UTF-8 产物；统一走 safeio.atomic_write（唯一原子替换实现）。
+    # Each original is a separate UTF-8 artifact; it goes through safeio.atomic_write
+    # (the single atomic-replace implementation).
+    from safeio import atomic_write
+    atomic_write(archive_path, content)
 
     entry_title = '%s %s' % (role, stamp)
     reference = '%s\nSHA256: %s' % (relative_path, digest)

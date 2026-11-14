@@ -132,6 +132,8 @@ def atomic_write(path, data):
     try:
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -139,6 +141,38 @@ def atomic_write(path, data):
         except OSError:
             pass
         raise
+
+
+def repair_partial_tail(path):
+    """锁内调用：末尾无换行即视为崩溃留下的半行，截到最后一个换行处。
+    返回被丢弃的字节数（0 表示完整）。非追加型派生件不走这里。
+    Called under the lock: a file whose last byte is not a newline ends in a half-written
+    line from a crash; truncate back to the last newline. Returns bytes dropped (0 = intact).
+    Only append-type artifacts use this; non-append artifacts keep atomic replacement."""
+    if not os.path.exists(path):
+        return 0
+    with open(path, 'r+b') as f:
+        f.seek(0, os.SEEK_END)
+        end = f.tell()
+        if end == 0:
+            return 0
+        f.seek(end - 1)
+        if f.read(1) == b'\n':
+            return 0
+        pos = end
+        keep = 0
+        while pos > 0:
+            step = min(1 << 16, pos)
+            f.seek(pos - step)
+            chunk = f.read(step)
+            idx = chunk.rfind(b'\n')
+            if idx >= 0:
+                keep = pos - step + idx + 1
+                break
+            pos -= step
+        f.truncate(keep)
+        return end - keep
+
 
 
 def atomic_append(path, data, root=None):

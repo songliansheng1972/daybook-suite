@@ -447,12 +447,15 @@ def _txt_lines(rows):
             r[5] if len(r) > 5 else '')
 
 
-def _run_ops(ops):
-    """执行 build 暂存的落盘动作（只有 rc=0 时才会被调用）。
-    Execute the writes staged by build (only ever called when the run's exit code is 0).
-    ★ 所有文件写入都经 safeio.atomic_write（同目录临时文件 + os.replace），读者不取写锁。
-    ★ Every file write goes through safeio.atomic_write (temp + os.replace); readers take no lock."""
-    from safeio import atomic_write as _atomic_write
+def _run_ops(ops, report=None):
+    """执行 build 暂存的落盘动作（只有账本可信时才会被调用）。
+    Execute the writes staged by build (only ever called when the ledger is trustworthy).
+    非追加型派生件走 safeio.atomic_write（同目录临时文件 + os.replace），读者不取写锁；
+    追加型（索引 TSV/TXT）在账本根锁内原位追加，崩溃半行先截断再续写（O(1)，不重写全文件）。
+    Non-append artifacts use safeio.atomic_write (temp + os.replace); append-type artifacts
+    (index TSV/TXT) are appended in place under the ledger-root lock, with any crash tail
+    truncated first (O(1); the whole file is never rewritten)."""
+    from safeio import atomic_write as _atomic_write, repair_partial_tail
     for op in ops:
         kind = op[0]
         if kind == 'purge':
@@ -484,18 +487,19 @@ def _run_ops(ops):
                         cols[5] if len(cols) > 5 else ''))
             _atomic_write(itxt, ''.join(buf))
         elif kind == 'append':
-            _idf, rows, itxt = op[1], op[2], op[3]
-            old = b''
-            if os.path.exists(_idf):
-                with open(_idf, 'rb') as f:
-                    old = f.read()
+            _idf, rows, itxt, vol = op[1], op[2], op[3], op[4]
+            _dropped = repair_partial_tail(_idf)
+            if _dropped and report is not None:
+                report.append((vol, '★ 索引尾部半行（崩溃残留）已截断 %d 字节·续写（不进判据、不退 3）'
+                               % _dropped))
             data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
-            _atomic_write(_idf, old + data.encode('utf-8'))
-            told = b''
-            if os.path.exists(itxt):
-                with open(itxt, 'rb') as f:
-                    told = f.read()
-            _atomic_write(itxt, told + ''.join(_txt_lines(rows)).encode('utf-8'))
+            with open(_idf, 'ab') as f:
+                f.write(data.encode('utf-8'))
+            _tdropped = repair_partial_tail(itxt)
+            if _tdropped and report is not None:
+                report.append((vol, '★ 索引 TXT 尾部半行已截断 %d 字节·续写' % _tdropped))
+            with open(itxt, 'ab') as f:
+                f.write(''.join(_txt_lines(rows)).encode('utf-8'))
         elif kind == 'rewrite':
             _idf, fields, rows, itxt, vol = op[1], op[2], op[3], op[4], op[5]
             data = '\t'.join(fields) + '\n' + ''.join(
@@ -526,6 +530,8 @@ def build(conf, root='.', baseline=False, dry=False):
     CONFIG_ERRORS.clear()
     EVIDENCE_MISSING.clear()
     blocked = set()     # 证据缺失的卷：本轮不写回索引/游标/封存 · evidence-missing volumes: no writes
+    evidence_broken = set()  # 证据链断过的卷（含认基线轮）：不得再用残留封存判违例
+                             # volumes whose evidence chain broke (incl. baseline runs)
     RULE_WARN.clear()
     _RULE_WARN_SEEN.clear()
     vols = conf.get('volumes', {})
@@ -568,6 +574,14 @@ def build(conf, root='.', baseline=False, dry=False):
         seals = seals if isinstance(seals, dict) else {}
         new_seals = dict(seals)   # 未写回的卷保留旧封存（配置错/跳过不得抹掉证据）
                                   # volumes that are not written back keep their old seal
+        # 作者机检缓存：只扫新增量（40 万条单条追加不得退化成全卷重解析）。
+        # Author-check cache: scan only the delta (a single append on a 400k volume must
+        # not degrade into re-parsing the whole volume).
+        author_seed = old_stamp.get('author_scan') if isinstance(old_stamp, dict) else None
+        author_seed = author_seed if isinstance(author_seed, dict) else {}
+        author_cache = {}
+        head_rx = conf['entries'].get('head_regex', '') or None
+        from daybook_append import scan_author_cache
         gated = False
         purged = []
         # 所有落盘都先记入 ops，末尾按「本轮退出码是否为 0」一次性提交：
@@ -576,6 +590,9 @@ def build(conf, root='.', baseline=False, dry=False):
         # code is 0: a non-zero run writes no derived artifact or timestamp and deletes
         # nothing — one predicate, one entrance.
         ops = []
+        cursor_ops = []   # 游标最后写：崩溃后表现为「索引新于游标」（可追赶），不是违例
+                          # cursor is written last: after a crash the index is newer than the
+                          # cursor (catch-up), never a violation
 
         # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
         # ── Criterion drift gate: a changed criterion forces a full rescan ──
@@ -630,6 +647,11 @@ def build(conf, root='.', baseline=False, dry=False):
                                      # must not rebuild tampering into a fresh baseline
 
             def _evidence(msg):
+                # 证据链断了的卷：即使本轮是认基线，也不得再用「残留封存 vs 内容」判违例。
+                # 5 的语义就是「无法判定」，人认基线是这条链唯一的出口。
+                # Evidence chain broken: even a baseline run must not re-judge a violation
+                # from a surviving seal vs content; accepting a baseline is the only exit.
+                evidence_broken.add(vol)
                 if baseline:
                     # 认基线这一轮就是来重建的：不再报「证据缺失」，也不必提示认基线
                     # A baseline run exists to rebuild: do not report missing evidence
@@ -638,6 +660,26 @@ def build(conf, root='.', baseline=False, dry=False):
                 EVIDENCE_MISSING.append((vol, msg))
                 blocked.add(vol)     # 证据缺失 ⇒ 本轮不写回派生证据，状态保持 5
                                      # evidence lost ⇒ write nothing back; the state stays 5
+
+            def _scan_authors(size_now, full_hash, verified):
+                """记录本卷作者机检缓存：verified={已验前缀字节数: 哈希}，命中则只扫增量。
+                Record this volume's author-check cache; `verified` maps a verified prefix
+                length to its hash, so a hit scans only the delta."""
+                c = author_seed.get(vol)
+                start, seed = 0, None
+                if isinstance(c, dict) and c.get('size') in verified \
+                        and c.get('hash') == verified.get(c.get('size')):
+                    start, seed = int(c['size']), c
+                try:
+                    cache = scan_author_cache(p, head_rx, start_byte=start, seed=seed)
+                except OSError:
+                    return
+                from daybook_append import author_verdict
+                if author_verdict(cache)[0]:
+                    cache['samples'] = []   # 绿卷不留样本：缓存只存判定所需最小集
+                cache['size'] = size_now
+                cache['hash'] = full_hash
+                author_cache[vol] = cache
 
             # ── 派生件三态：真未变 / 派生件丢失（重建并报告）/ 内容不符（违例）──
             # ── Three states: genuinely unchanged / derived artifacts lost (rebuild + report)
@@ -674,12 +716,15 @@ def build(conf, root='.', baseline=False, dry=False):
                         report.append((vol, '★ 旧游标格式（第 %s 代）·视为过期·全量重扫'
                                        % (cur.get('fmt') if cur.get('fmt') is not None else '无标记')))
                     cur = None
-            # 两份派生件互相印证：游标与封存指纹不符 ⇒ 游标被改写过
-            # Cross-check the two derived artifacts: cursor vs sealed fingerprint mismatch ⇒ cursor rewritten
+            # 两份派生件互相印证：游标与封存指纹不符 ⇒ 这是「可追赶」信号，自动重扫；
+            # 违例只由账本自身的 size/哈希证据触发，派生件不一致不得退 3，也不得删证据。
+            # Cursor vs seal mismatch ⇒ a catch-up signal, auto rescan. Violations come only
+            # from the ledger's own size/hash evidence; derived inconsistency never exits 3
+            # and never deletes evidence.
             if cur is not None and seals.get(vol) is not None:
                 seal = seals[vol]
                 if seal.get('content_hash') != cur.get('content_hash') or seal.get('size') != cur.get('size'):
-                    _violate('★ 派生件互相矛盾（游标与封存指纹不符）·游标可能被改写·全重扫')
+                    report.append((vol, '★ 派生件不一致（游标与封存指纹不符）·自动重扫（不判违例）'))
                     cur = None
 
             # ── 索引缺失但游标/封存还在：仍验哈希（同长比全卷、变长比旧前缀），不符即违例 ──
@@ -693,17 +738,29 @@ def build(conf, root='.', baseline=False, dry=False):
                     if seals.get(vol) is not None and seals[vol] is not ref:
                         ref_hashes.append(seals[vol].get('content_hash'))
                     if content_hash not in ref_hashes:
-                        _violate('★ 索引缺失但全卷哈希与游标/封存不符·等长改写·append-only 违例·全重扫')
+                        if seals.get(vol) is not None:
+                            _violate('★ 索引缺失但全卷哈希与封存不符·等长改写·append-only 违例·全重扫')
+                        else:
+                            report.append((vol, '★ 索引缺失且仅游标可参考（派生件不一致）·自动重扫（不判违例）'))
+                            cur = None
                     else:
                         report.append((vol, '索引缺失·游标/封存指纹一致·待认基线后重建'))
                 elif size > (ref.get('size') or 0):
                     _content_hash, pref_hash = _hash_vol(p, prefix_limit=ref['size'])
                     if pref_hash != ref.get('content_hash'):
-                        _violate('★ 索引缺失且卷变长但旧前缀哈希不符·append-only 违例·全重扫')
+                        if seals.get(vol) is not None:
+                            _violate('★ 索引缺失且卷变长但旧前缀哈希不符·append-only 违例·全重扫')
+                        else:
+                            report.append((vol, '★ 索引缺失且仅游标可参考（派生件不一致）·自动重扫（不判违例）'))
+                            cur = None
                     else:
                         report.append((vol, '索引缺失·卷变长但旧前缀哈希一致·待认基线后重建'))
                 elif size < (ref.get('size') or 0):
-                    _violate('★ 索引缺失但卷变短·append-only 违例·全重扫')
+                    if seals.get(vol) is not None:
+                        _violate('★ 索引缺失但卷变短·append-only 违例·全重扫')
+                    else:
+                        report.append((vol, '★ 索引缺失且仅游标可参考（派生件不一致）·自动重扫（不判违例）'))
+                        cur = None
 
             # ── 情形一：字节数与游标相同 ⇒ 必验全卷哈希（mtime 可被 os.utime 恢复，不作判据）──
             # ── Case 1: same size as the cursor ⇒ verify the whole-file hash (mtime is forgeable) ──
@@ -711,6 +768,7 @@ def build(conf, root='.', baseline=False, dry=False):
             # Evidence-missing volumes write nothing back (unless a baseline is accepted);
             # otherwise the write-back would launder the 5 away.
             write_ok = (not dry) and (baseline or gated or vol not in blocked)
+            resume_verified = {}   # 本卷已验证的前缀（字节数→哈希），供作者机检只扫增量
             if cur and index_present and cur.get('size') == size:
                 content_hash, _ = _hash_vol(p)
                 if content_hash == cur.get('content_hash'):
@@ -719,7 +777,7 @@ def build(conf, root='.', baseline=False, dry=False):
                         report.append((vol, '未变·跳过（全卷哈希一致·mtime 已变化，仅记入游标）'
                                        + ('' if write_ok else '·证据缺失·未写回')))
                         if write_ok:
-                            ops.append(('cursor', cp, _cursor_obj(
+                            cursor_ops.append(('cursor', cp, _cursor_obj(
                                 size, mt, size, cur.get('n', 0), cur.get('last_lineno', 0),
                                 cur.get('enc', '?'), content_hash)))
                     else:
@@ -737,8 +795,21 @@ def build(conf, root='.', baseline=False, dry=False):
                     if write_ok:
                         new_seals[vol] = {'size': size, 'content_hash': content_hash,
                                           'n': cur.get('n', 0)}
+                    _scan_authors(size, content_hash, {size: content_hash})
                     continue
-                _violate('★ 等长改写（字节数未变·全卷哈希不符）·append-only 违例·全重扫')
+                # 与游标哈希不符：若封存指纹与当前内容一致 ⇒ 是游标被改写（派生件不一致），
+                # 自动重扫；只有封存与内容也不符（账本自身的哈希证据）才判违例。
+                # Mismatch with the cursor: if the seal matches the current bytes the cursor was
+                # rewritten (derived inconsistency) ⇒ rescan; a violation needs the seal to
+                # disagree with the ledger's own hash evidence.
+                _seal = seals.get(vol)
+                if _seal is not None and _seal.get('size') == size \
+                        and _seal.get('content_hash') == content_hash:
+                    report.append((vol, '★ 派生件不一致（游标被改写·内容与封存一致）·自动重扫（不判违例）'))
+                    cur = None
+                else:
+                    _violate('★ 等长改写（字节数未变·全卷哈希不符）·append-only 违例·全重扫')
+
 
             # ── 情形二：只追加 ⇒ 已知前缀验哈希 ＋ 读尾部 ＋ 追加写索引 ──
             # ── Case 2: pure append ⇒ verify the known prefix hash + tail-read + append to the index ──
@@ -747,18 +818,26 @@ def build(conf, root='.', baseline=False, dry=False):
                 n_old_b = cur.get('resume_byte')
                 if pref_hash != cur.get('content_hash'):
                     content_hash = None
-                    _violate('★ 旧部分被改（前缀全卷哈希不符）·append-only 违例·全重扫')
+                    _seal = seals.get(vol)
+                    if _seal is not None and _seal.get('size') == cur.get('size') \
+                            and _seal.get('content_hash') == pref_hash:
+                        report.append((vol, '★ 派生件不一致（游标前缀哈希陈旧·封存一致）·自动重扫（不判违例）'))
+                        cur = None
+                    else:
+                        _violate('★ 旧部分被改（前缀全卷哈希不符）·append-only 违例·全重扫')
                 elif not isinstance(n_old_b, int) or not 0 <= n_old_b <= size:
                     content_hash = None
-                    _violate('★ 游标 resume_byte 越界（%r）·append-only 违例·全重扫' % (n_old_b,))
+                    report.append((vol, '★ 游标 resume_byte 不可信（派生件不一致）·自动重扫（不判违例）'))
+                    cur = None
                 else:
                     with open(p, 'rb') as f:
                         f.seek(n_old_b); tail = f.read()
                     n_idx = _count_index_rows(idf_use)
                     if n_idx != cur.get('n', -1):
                         content_hash = None
-                        _violate('★ 索引行数与游标不符（索引 %d 行 / 游标 %r）·append-only 违例·全重扫'
-                                 % (n_idx, cur.get('n')))
+                        report.append((vol, '★ 索引行数与游标不符（索引 %d 行 / 游标 %r）'
+                                       '·派生件需追赶·自动重扫（不判违例）' % (n_idx, cur.get('n'))))
+                        cur = None
                     else:
                         enc = cur.get('enc')
                         if not enc:
@@ -771,17 +850,52 @@ def build(conf, root='.', baseline=False, dry=False):
                         base_ln = cur.get('last_lineno', 0)                # ★ 从游标读旧最后一行行号 / resume line number
                         rows, final_ln = _parse(txt, heads, fields, rules, tag, vol, base_ln)
                         mode = 'append'; n_old = n_idx
+                        resume_verified = {cur['size']: pref_hash}
                         report.append((vol, '只追加·验已知前缀哈希·读尾部 %d 字节·索引 append %d 行'
                                        % (len(tail), len(rows))))
                         ENC_REPORT.append((vol, enc, '尾部续读·按游标编码'))
 
             elif cur and size < cur.get('size'):
-                _violate('★ 卷变短（%d → %d 字节）·append-only 违例·全重扫' % (cur['size'], size))
+                _seal = seals.get(vol)
+                _cur_hash = None
+                if _seal is not None and _seal.get('size') == size:
+                    _cur_hash, _ = _hash_vol(p)
+                if _seal is not None and _seal.get('size') == size \
+                        and _seal.get('content_hash') == _cur_hash:
+                    report.append((vol, '★ 派生件不一致（游标比卷长·内容与封存一致）·自动重扫（不判违例）'))
+                    cur = None
+                else:
+                    _violate('★ 卷变短（%d → %d 字节）·append-only 违例·全重扫' % (cur['size'], size))
 
             # ── 情形三：全量 ── / ── Case 3: full rescan ──
             if mode == 'full':
                 raw = open(p, 'rb').read()
                 content_hash = hashlib.sha256(raw).hexdigest()
+                # 全扫也拿封存指纹对一次账本自身证据：派生件不一致触发的重扫不得把篡改洗白
+                # A full rescan also checks the sealed fingerprint: a rescan triggered by derived
+                # inconsistency must never launder a content rewrite.
+                # 已判证据缺失/已判违例的卷不再二次判违例：证据链断了就是 5，
+                # 不得因为封存还在就把「证据缺失」改判成「违例」，也不得重复刷违例文案。
+                # A volume already judged evidence-missing or violated is not re-judged here:
+                # a broken evidence chain stays 5; the surviving seal must not turn it into 3.
+                # 只按「可证明的改写」判：等长比全卷哈希、变长比封存长度的前缀哈希、变短即违例。
+                # 变长且前缀一致 = 纯追加之后的追赶重扫（如「索引新于游标」的崩溃恢复），
+                # 不是违例，不得退 3。
+                # Judge only provable rewrites: equal size ⇒ whole-file hash; grown ⇒ prefix hash
+                # of the sealed length (a matching prefix is a catch-up rescan, never 3);
+                # shrunk ⇒ violation.
+                _seal = seals.get(vol)
+                if vol not in blocked and vol not in evidence_broken and _seal is not None:
+                    _s_size = _seal.get('size') or 0
+                    if _s_size == size:
+                        _bad = _seal.get('content_hash') != content_hash
+                    elif size > _s_size:
+                        _, _p_hash = _hash_vol(p, prefix_limit=_s_size)
+                        _bad = _p_hash != _seal.get('content_hash')
+                    else:
+                        _bad = True
+                    if _bad:
+                        _violate('★ 全卷哈希与封存指纹不符·append-only 违例·全重扫')
                 txt, enc, why = sniff(raw)
                 rows, final_ln = _parse(txt, heads, fields, rules, tag, vol, 0)
                 if not any(r[0] == vol for r in report):
@@ -794,7 +908,7 @@ def build(conf, root='.', baseline=False, dry=False):
             write_ok = write_ok and vol not in blocked
             if mode == 'append' and write_ok:
                 itxt = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
-                ops.append(('append', idf, rows, itxt))
+                ops.append(('append', idf, rows, itxt, vol))
                 n_total = n_old + len(rows)
             else:
                 if write_ok:
@@ -803,8 +917,9 @@ def build(conf, root='.', baseline=False, dry=False):
                 n_total = len(rows)
             per[vol] = n_total; total += n_total
             if write_ok:
-                ops.append(('cursor', cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash)))
+                cursor_ops.append(('cursor', cp, _cursor_obj(size, mt, size, n_total, final_ln, enc, content_hash)))
                 new_seals[vol] = {'size': size, 'content_hash': content_hash, 'n': n_total}
+            _scan_authors(size, content_hash, resume_verified)
             # 未写回的卷保留旧封存（new_seals 已由 seals 起底）
             # Volumes not written back keep their old seal (new_seals starts as a copy of seals)
 
@@ -815,13 +930,18 @@ def build(conf, root='.', baseline=False, dry=False):
         if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
         if VIOLATIONS: codes.append(EXIT_VIOLATION)
         if EVIDENCE_MISSING: codes.append(EXIT_EVIDENCE)
-        AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True)
+        AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True, cache=author_cache)
         if AUTHOR_RED and not baseline:
             codes.append(EXIT_AUTHOR)
         rc = worst_exit(codes)
-        if (not dry) and rc == 0:
+        # 不可信即零落盘：配置错(2)/违例(3)/证据缺失(5) ⇒ 派生件与时戳一个不写；
+        # 作者红(4) 不是账本不可信，照写（文案另报红）。
+        # Zero write when the ledger is untrustworthy: config error / violation / lost evidence
+        # write nothing; an author-convention red is not untrusted data, so the run still writes.
+        untrusted = bool(CONFIG_ERRORS or VIOLATIONS or EVIDENCE_MISSING)
+        if (not dry) and not untrusted:
             os.makedirs(outdir, exist_ok=True)
-            _run_ops(ops)
+            _run_ops(ops, report)
             from safeio import atomic_write as _atomic_write
             man = ['# 卷首清单 / Volume manifest\n',
                    '# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
@@ -866,7 +986,11 @@ def build(conf, root='.', baseline=False, dry=False):
                  'cursor_fmt': CURSOR_FMT,
                  'head_regex': conf.get('entries', {}).get('head_regex', ''),
                  'vol_seals': new_seals,
+                 'author_scan': author_cache,
                  '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
+            # 提交顺序：TSV→TXT→清单→时戳→游标（游标最后）
+            # Commit order: TSV → TXT → manifest → stamp → cursor (cursor last)
+            _run_ops(cursor_ops)
         return per, total, report
 
 
@@ -882,9 +1006,18 @@ def _read_json(path):
 
 
 def _count_index_rows(idf):
-    """数索引数据行（不含表头）。Count index data rows (header excluded)."""
-    with io.open(idf, encoding='utf-8') as f:
-        return sum(1 for l in f if l.strip()) - 1
+    """数索引数据行（不含表头）。按 \\n 计数走 C 层，40 万行也不在 Python 里逐行遍历；
+    末尾无换行的半行不计入（与 read_tsv 的丢弃规则一致）。
+    Count index data rows (header excluded) by counting \\n in C; a trailing half line
+    without a newline is not counted (same rule as read_tsv)."""
+    n = 0
+    with open(idf, 'rb') as f:
+        while True:
+            b = f.read(1 << 20)
+            if not b:
+                break
+            n += b.count(b'\n')
+    return max(0, n - 1)
 
 
 def _parse(txt, heads, fields, rules, tag, vol, base_ln):
@@ -990,6 +1123,19 @@ def hash_volumes(paths):
         h.update(full.encode())
     return h.hexdigest()[:12]
 
+
+def _complete_lines(f):
+    """逐行读，丢弃末尾无换行的半行（写者崩溃残留）。读者不取锁，靠这条纪律拿一致前缀。
+    Yield complete lines only, dropping a trailing line with no newline (crash residue)."""
+    line = f.readline()
+    while line:
+        nxt = f.readline()
+        if not nxt and not line.endswith('\n'):
+            return
+        yield line
+        line = nxt
+
+
 def query(conf, root, args):
     """按字段精确查询条目原文。E-11 daybook 上下文工具。
     Exact field query over the index — the E-11 daybook context tool.
@@ -1058,7 +1204,7 @@ def query(conf, root, args):
                 # 缺字段则本卷跳过 / skip this volume if a field is missing
                 if len(filter_idx) != len(filters):
                     continue
-                for line in f:
+                for line in _complete_lines(f):
                     # 快速 split + 长度校验 / fast split + length check
                     cells = line.rstrip('\n').split('\t')
                     if len(cells) < len(header): continue
@@ -1146,14 +1292,17 @@ def query(conf, root, args):
     return '\n'.join(out)
 
 
-def check_authors(conf, root='.'):
+def check_authors(conf, root='.', cache=None):
     """机检：作者位必须是显示名；机器 id 或同卷混两种形态即红；配置卷不存在也红。
     Machine check: the author slot must hold a display name; a machine id, mixed conventions,
     or a missing configured volume is red.
     返回 [(卷, 路径, ok, detail)]。
-    Returns [(volume, path, ok, detail)]."""
-    from daybook_append import check_author_consistency
+    Returns [(volume, path, ok, detail)].
+    cache：build 本轮已算好的增量扫描缓存（卷名→cache）；命中且尺寸一致就不再重扫。
+    cache: this build's incremental scan (volume → cache); a size-consistent hit is reused."""
+    from daybook_append import check_author_consistency, author_verdict
     head_rx = conf.get('entries', {}).get('head_regex', '') or None
+    cache = cache if isinstance(cache, dict) else {}
     rows = []
     for vol, path in conf.get('volumes', {}).items():
         p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -1166,16 +1315,26 @@ def check_authors(conf, root='.'):
                          {'kinds': ['卷缺失'], 'samples': [],
                           'summary': '配置卷不存在（不是「无条目」）'}))
             continue
-        ok, detail = check_author_consistency(p, head_regex=head_rx)
+        c = cache.get(vol)
+        if isinstance(c, dict) and c.get('hash') is not None \
+                and c.get('size') == os.path.getsize(p):
+            ok, detail = author_verdict(c)
+        else:
+            ok, detail = check_author_consistency(p, head_regex=head_rx)
         rows.append((vol, p, ok, detail))
     return rows
 
 
-def _report_authors(conf, root, quiet_green=False):
+def _report_authors(conf, root, quiet_green=False, cache=None):
     """打印作者口径机检结果；返 True=有卷报红。
-    Print the author-convention check; returns True when any volume is red."""
+    给出 cache（build 本轮的增量扫描结果）时直接复用，避免单条追加后全卷重解析。
+    Print the author-convention check; returns True when any volume is red.
+    With `cache` (this build's incremental scan) the verdict is reused, so a single
+    append never re-parses the whole volume."""
+    from daybook_append import author_verdict
+    cache = cache if isinstance(cache, dict) else {}
     red = False
-    for vol, p, ok, detail in check_authors(conf, root):
+    for vol, p, ok, detail in check_authors(conf, root, cache=cache):
         if ok:
             if not quiet_green:
                 print('  作者口径 %s: 一致（%s）' % (vol, detail.get('summary', '')), flush=True)
@@ -1276,6 +1435,7 @@ def main():
         # 机检在 build 内只跑一次（写入门也用同一结果），这里只读取，不重复扫卷。
         # The check runs once inside build (the write gate uses the same result); read it here.
         if AUTHOR_RED:
+            sys.stderr.write('★ 已写回·作者口径红·只报不拦（作者位出现机器 id 或同卷混用）\n')
             codes.append(EXIT_AUTHOR)
         rc = worst_exit(codes)
         if rc:

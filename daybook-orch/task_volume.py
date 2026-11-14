@@ -57,8 +57,11 @@ def _now():
 class TaskVolume:
     """任务状态卷·append-only。
     Task status volume · append-only."""
-    def __init__(self, path=None):
+    def __init__(self, path=None, root=None):
         self.path = path or os.path.join(HERE, '任务卷.txt')
+        # 账本根一律显式给出（realpath 归一）；不再回退到卷所在目录
+        # The ledger root is always explicit (realpath-normalised); no fallback to the volume dir.
+        self.root = os.path.realpath(root or HERE)
         if not os.path.exists(self.path):
             open(self.path, 'a', encoding='utf-8').close()
 
@@ -100,7 +103,7 @@ class TaskVolume:
         """创建任务·状态=待办。返回 task_id。
         Create a task · state=待办. Returns task_id."""
         from safeio import locked
-        with locked(self.path):
+        with locked(self.root):
             tid = self._next_tid()
             rec = '[%s] [任务] [%s] [待办] [%s] %s\n' % (_now(), tid, agent_id, content.rstrip('\n'))
             with open(self.path, 'a', encoding='utf-8') as f:
@@ -113,7 +116,7 @@ class TaskVolume:
         if new_state not in ALL_STATES:
             raise ValueError('非法状态：%s' % new_state)
         from safeio import locked
-        with locked(self.path):
+        with locked(self.root):
             tasks = self._read_all()
             hist = tasks.get(tid)
             if not hist:

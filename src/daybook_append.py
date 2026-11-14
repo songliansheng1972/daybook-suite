@@ -33,6 +33,8 @@ Author ID iron rule: every entry must carry an author, auditable, verifiable and
 """
 import io, os, re, sys, time
 
+HERE = os.path.dirname(os.path.abspath(__file__))   # 脚本所在＝部署账本根 / script dir = ledger root in deployment
+
 FALLBACK_LIMIT = 4096          # POSIX PIPE_BUF 之保守值（探测失败兜底）· conservative POSIX PIPE_BUF value (fallback on probe failure)
 PROMPT_TEMPLATE = '★ 本条超 {limit} 字节：POSIX 只保证 ≤ PIPE_BUF 之单次 write 原子。请拆条或改用加锁写入。\n'
 
@@ -77,17 +79,76 @@ def classify_author(author):
 
 
 def head_author(line):
-    """从条目头取 (作者位显示名, 注册表 id 附注或 None)。
-    Parse an entry head into (author display name, registry-id annotation or None).
-    ★ 唯一解析入口：钩子/机检都走这里，`[id=ag-…]` 不会再被丢掉。
-    ★ The single parser: both the hook and the consistency check go through it, so the
-      `[id=ag-…]` annotation can never be dropped again."""
+    """从条目头取 (作者位显示名, 注册表 id 附注或 None, 是否带 [未注册])。
+    Parse an entry head into (author display name, registry-id annotation or None,
+    unregistered flag).
+    ★ 唯一解析入口：钩子/机检都走这里，`[id=ag-…]` 与 `[未注册]` 都不会再被丢掉。
+    ★ The single parser: both the hook and the consistency check go through it, so neither
+      the `[id=ag-…]` nor the `[未注册]` annotation can ever be dropped again."""
     tokens = _head_tokens(line)
     if tokens and ENTRY_NO_RE.match(tokens[0]):
         tokens = tokens[1:]
     author = tokens[3] if len(tokens) > 3 else ''
     m = re.search(r'\[id=(ag-[0-9a-f]{16})\]', line)
-    return author, (m.group(1) if m else None)
+    return author, (m.group(1) if m else None), ('[未注册]' in line)
+
+
+def scan_author_cache(path, head_regex=None, start_byte=0, seed=None):
+    """扫条目头作者位，返回可复用的缓存（kinds/n/lines/samples）。
+    给出 seed（前缀已扫结果）且 start_byte 落在换行边界时，只扫新增部分——
+    单条追加后的机检因此与卷长无关，不再每跑一遍全卷重解析。
+    Scan entry-head author slots into a reusable cache (kinds/n/lines/samples).
+    With a `seed` (the prefix already scanned) and `start_byte` on a line boundary,
+    only the delta is scanned, so the post-append check no longer re-parses the
+    whole volume on every run."""
+    head_re = re.compile(head_regex) if head_regex else DEFAULT_HEAD_RE
+    if seed:
+        kinds = set(seed.get('kinds') or [])
+        samples = list(seed.get('samples') or [])
+        n = int(seed.get('n') or 0)
+        lines = int(seed.get('lines') or 0)
+    else:
+        kinds, samples, n, lines = set(), [], 0, 0
+    with open(path, 'rb') as fb:
+        if start_byte:
+            fb.seek(max(0, start_byte - 1))
+            if fb.read(1) != b'\n':
+                start_byte = 0          # 不在行边界：前缀不可信，整卷重扫
+                kinds, samples, n, lines = set(), [], 0, 0
+        fb.seek(start_byte)
+        text = fb.read().decode('utf-8', 'replace')
+    for line in text.splitlines():
+        lines += 1
+        if not head_re.match(line):
+            continue          # 非条目头（含正文行）· not an entry head (body lines included)
+        tokens = _head_tokens(line)
+        if tokens and ENTRY_NO_RE.match(tokens[0]):
+            tokens = tokens[1:]
+        if len(tokens) < 4:
+            continue          # 旧三段条目无作者位 · legacy 3-part head has no author slot
+        author, _aid, _unreg = head_author(line)
+        kind = classify_author(author)
+        kinds.add(kind)
+        n += 1
+        if len(samples) < 200:
+            samples.append([lines, author, kind])
+    return {'kinds': sorted(kinds), 'n': n, 'lines': lines, 'samples': samples}
+
+
+def author_verdict(cache):
+    """把扫描缓存转成 (ok, detail)。
+    Turn a scan cache into (ok, detail)."""
+    kinds = list(cache.get('kinds') or [])
+    samples = list(cache.get('samples') or [])
+    n = int(cache.get('n') or 0)
+    if '机器id' in kinds:
+        return False, {'kinds': kinds, 'samples': samples,
+                       'summary': '作者位出现机器 id（应为显示名）'}
+    if len(kinds) <= 1:
+        return True, {'kinds': kinds, 'samples': [],
+                      'summary': '%s × %d 条' % (kinds[0] if kinds else '无条目', n)}
+    return False, {'kinds': kinds, 'samples': samples,
+                   'summary': '%s 混用' % '＋'.join(kinds)}
 
 
 def check_author_consistency(path, head_regex=None):
@@ -101,33 +162,11 @@ def check_author_consistency(path, head_regex=None):
     are never mistaken for entries.
     旧三段条目无作者位，不参与判定。
     Legacy 3-part heads have no author slot and take no part in the verdict."""
-    head_re = re.compile(head_regex) if head_regex else DEFAULT_HEAD_RE
-    entries = []
     try:
-        with io.open(path, encoding='utf-8', errors='replace') as f:
-            for ln, line in enumerate(f, 1):
-                line = line.rstrip('\n')
-                if not head_re.match(line):
-                    continue          # 非条目头（含正文行）· not an entry head (body lines included)
-                tokens = _head_tokens(line)
-                if tokens and ENTRY_NO_RE.match(tokens[0]):
-                    tokens = tokens[1:]
-                if len(tokens) < 4:
-                    continue          # 旧三段条目无作者位 · legacy 3-part head has no author slot
-                author, _aid = head_author(line)
-                entries.append((ln, author, classify_author(author)))
+        return author_verdict(scan_author_cache(path, head_regex))
     except OSError as exc:
         return False, {'kinds': ['读失败'], 'samples': [(0, str(exc), '读失败')],
                        'summary': '读失败'}
-    kinds = sorted({c for _ln, _a, c in entries})
-    if '机器id' in kinds:
-        return False, {'kinds': kinds, 'samples': entries[:200],
-                       'summary': '作者位出现机器 id（应为显示名）'}
-    if len(kinds) <= 1:
-        return True, {'kinds': kinds, 'samples': [],
-                      'summary': '%s × %d 条' % (kinds[0] if kinds else '无条目', len(entries))}
-    return False, {'kinds': kinds, 'samples': entries[:200],
-                   'summary': '%s 混用' % '＋'.join(kinds)}
 
 
 def get_pipe_buf(path):
@@ -333,7 +372,8 @@ def main():
         sys.stderr.write('%s\n' % exc)
         return 2
     return append_one(path, kind, title, msg, author_slot,
-                      author_id=author_id, unregistered=unregistered)
+                      author_id=author_id, unregistered=unregistered,
+                      root=os.path.realpath(os.environ.get('DAYBOOK_ROOT') or HERE))
 
 
 if __name__ == '__main__':

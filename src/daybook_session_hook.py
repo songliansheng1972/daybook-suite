@@ -36,12 +36,8 @@ def local_stamp(value):
 
 
 def atomic_json(path, value):
-    temporary = path + '.tmp'
-    with open(temporary, 'w', encoding='utf-8') as output:
-        json.dump(value, output, ensure_ascii=False, sort_keys=True)
-        output.flush()
-        os.fsync(output.fileno())
-    os.replace(temporary, path)
+    from safeio import atomic_write
+    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True))
 
 
 def scan_code():

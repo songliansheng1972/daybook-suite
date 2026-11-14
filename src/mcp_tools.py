@@ -913,9 +913,14 @@ def call_tool(name, args, agent_id=None, signature=None):
             if not vol_path:
                 raise ValueError('卷 %r 不在 daybook.conf 卷表' % vol)
             full_path = vol_path if os.path.isabs(vol_path) else os.path.join(_root(), vol_path)
-            size = os.path.getsize(full_path)
-            _record_signature('daybook_mark_read', agent_id, signature, payload, volume=vol)
-            _write_cursor(agent_id, vol, size)
+            # 读 size 与写游标在同一把账本根锁内：并发 mark_read 不会用旧 size 覆盖新游标
+            # Read size and write the cursor under the same ledger-root lock: a concurrent
+            # mark_read can no longer overwrite a newer cursor with a stale size.
+            from safeio import locked
+            with locked(_root()):
+                size = os.path.getsize(full_path)
+                _record_signature('daybook_mark_read', agent_id, signature, payload, volume=vol)
+                _write_cursor(agent_id, vol, size)
             _audit('mark_read', agent_id, 'vol=%s → resume_byte=%d' % (vol, size))
             return _tool_ok('已读推进到 %s 末尾（resume_byte=%d）' % (vol, size))
 
@@ -1021,9 +1026,11 @@ def call_tool(name, args, agent_id=None, signature=None):
                                       len(_db.EVIDENCE_MISSING),
                                       '；'.join('%s: %s' % (v, w) for v, w in _db.EVIDENCE_MISSING)))
                 if _db.EXIT_AUTHOR in codes:
-                    detail.append('作者口径红（只报不拦，不阻断）')
+                    detail.append('已写回·作者口径红·只报不拦')
                 if rc == _db.EXIT_VIOLATION:
                     _audit('index', agent_id, '违例·拒绝写回 → rc=3', ok=False)
+                elif rc == _db.EXIT_AUTHOR:
+                    _audit('index', agent_id, '已写回·作者口径红·只报不拦 → rc=4', ok=False)
                 raise _LedgerRefusal(rc, '｜'.join(detail))
             summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total
             _audit('index', agent_id, '→ %d 条' % total)

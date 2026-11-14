@@ -119,9 +119,9 @@ def parse_dialog(dialog_path, root='.'):
             pm = re.search(r'(对话原件/[^\s]+\.txt)', line)
             toks = _head_tokens(line)
             if pm and len(toks) >= 3:
-                author, author_id = head_author(line)
+                author, author_id, unregistered = head_author(line)
                 cur_meta = (toks[1], toks[2],
-                            author if author else '未标', pm.group(1), author_id)
+                            author if author else '未标', pm.group(1), author_id, unregistered)
             else:
                 cur_meta = None
         elif cur_line is not None:
@@ -176,7 +176,7 @@ def run(dialog_path, kw_path, root='.'):
         if not meta:
             mark_processed(record_path, ln)
             continue
-        kind, title, author, orig_path, author_id = meta
+        kind, title, author, orig_path, author_id, unregistered = meta
         full_orig = os.path.join(root, orig_path)
         if not os.path.exists(full_orig):
             print('  ★ 原件不存在：%s' % orig_path)
@@ -193,7 +193,8 @@ def run(dialog_path, kw_path, root='.'):
         msg = 'HOOK-A 追更·来源 对话卷 行=%d·原件=%s·命中「%s」\n%s' % (
             ln, orig_path, kw, orig_text.rstrip()[:100])  # 截 100 字防超 512B · truncate to 100 chars to stay under 512B
         rc = append_one(target_path, target_kind, 'HOOK-A 追更', msg,
-                        author=author, author_id=author_id, root=root)
+                        author=author, author_id=author_id,
+                        unregistered=unregistered, root=root)
         if rc == 0:
             mark_processed(record_path, ln)
             n_hit += 1

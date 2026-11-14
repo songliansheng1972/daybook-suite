@@ -23,9 +23,10 @@ Cases
   N 索引缺失且卷变长、旧前缀被改                 ⇒ rc=3（不能因「卷变大」跳过前缀校验）
   O 违例态认基线                                ⇒ rc=3，三件派生件零变化（不替人认下篡改）
   R ≥8 进程并发 index                           ⇒ 零误报、零丢更新、复跑全 0（封存快照锁内只读一次）
-  S 配置错（卷指向目录）                        ⇒ rc=2 且派生件递归哈希零变化（不删封存指纹）
-  T rc=3 违例                                   ⇒ 清单/封存时戳零变化（非 0 不写派生件）
-  U rc=4 作者口径红                             ⇒ 同样零变化（非 0 不写派生件）
+  S 配置错（卷指向目录）                        ⇒ rc=2 且派生件递归哈希零变化（不可信即零落盘）
+  T rc=3 违例                                   ⇒ 清单/封存时戳零变化（不可信即零落盘）
+  V5 rc=5 证据缺失                              ⇒ 同样零变化（不可信即零落盘）
+  U rc=4 作者口径红                             ⇒ 照写且文案「已写回·只报不拦」（不是不可信）
   R2 两进程 20ms 错峰并发 index                 ⇒ 两侧 rc=0（一「只追加」一「未变」）
   V safeio 原子替换/无锁读者                    ⇒ atomic_write 走 os.replace，read_vol 不取锁
   W 子目录卷 + 长条目 append                    ⇒ 与 index 争同一把账本根锁（不被子目录锁旁路）
@@ -38,7 +39,8 @@ Cases
     DAYBOOK_SRC=/tmp/mutant/daybook.py python3 ledger_guard_test.py
   封存快照的变异：把 build() 里的 old_stamp = _read_json(...) 挪回 with 之前（锁外读）
   ⇒ R 必红（迟到进程拿旧封存比新游标，误报 rc=3）。
-  写入门变异：把 rc == 0 的提交条件改成恒真 ⇒ S/T/U 必红。
+  写入门变异①：把「不可信不落盘」改成恒写 ⇒ S/T/V5 必红。
+  写入门变异②：把提交条件改回 rc==0 ⇒ U 必红（作者红也被卷进零落盘）。
   锁的变异同理：把 safeio 的目录 flock 改回「目录内锁文件」⇒ A、B 必红；
   改回「临时目录按 realpath 命名的锁文件」⇒ P、Q 必红。
 
@@ -480,6 +482,178 @@ def _case_subdir(tmp):
     _ok('W 长条目确实等到根锁（≥0.5s）', elapsed >= 0.5, 'elapsed=%.3f' % elapsed)
     _ok('W 条目已落子目录卷', '子目录长条目' in io.open(vol, encoding='utf-8').read())
 
+    # W-CLI：走真实 CLI 入口（不显式传 root），仍必须争同一把账本根锁
+    # W-CLI: the real CLI entry (no explicit root argument) must still contend on the root lock.
+    try:
+        os.remove(os.path.join(d, 'release.flag'))
+    except OSError:
+        pass
+    try:
+        os.remove(os.path.join(d, 'held.flag'))   # 上一轮的持锁凭据必须清掉，否则误判「已持锁」
+    except OSError:
+        pass
+    holder = subprocess.Popen([sys.executable, '-B', '-c', _CHILD_HOLD, d, d],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    held = os.path.join(d, 'held.flag')
+    for _ in range(200):
+        if os.path.exists(held):
+            break
+        time.sleep(0.02)
+    _ok('W-CLI 持根锁进程已进临界区', os.path.exists(held))
+    env = dict(os.environ, DAYBOOK_ROOT=d)
+    t0 = time.time()
+    app = subprocess.Popen([sys.executable, '-B',
+                            os.path.join(os.path.dirname(SRC_BIN), 'daybook_append.py'),
+                            vol, '聊', '子目录CLI长条', '皮特', '长' * 2000],
+                           cwd=os.path.dirname(SRC_BIN), env=env,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+    time.sleep(0.6)
+    still = app.poll() is None
+    io.open(os.path.join(d, 'release.flag'), 'w').write('1')
+    o, e = app.communicate(timeout=30)
+    holder.communicate(timeout=30)
+    elapsed = time.time() - t0
+    _ok('W-CLI 真实入口被根锁挡住（未提前返回）', still, (o + e)[:100])
+    _ok('W-CLI 释放后落盘 rc=0 且等待 ≥0.5s',
+        app.returncode == 0 and elapsed >= 0.5,
+        'rc=%d elapsed=%.3f %s' % (app.returncode, elapsed, e.strip()[:80]))
+    _ok('W-CLI 条目已落子目录卷', '子目录CLI长条' in io.open(vol, encoding='utf-8').read())
+
+
+def _case_partial_commit(tmp):
+    """X 提交中途失败（TSV 已新、游标仍旧）⇒ 下一跑自动重扫 rc=0，baseline 不被拒。
+    X A crash between TSV and cursor (index newer than cursor) must be a catch-up, never rc=3;
+    a following baseline must be accepted."""
+    d = os.path.join(tmp, 'partial')
+    os.makedirs(d)
+    here = os.path.dirname(SRC_BIN)
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+        shutil.copy2(os.path.join(here, name), os.path.join(d, name))
+    with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
+        f.write(CONF)
+    vol = os.path.join(d, '账卷.txt')
+    with io.open(vol, 'w', encoding='utf-8') as f:
+        for i in range(5):
+            f.write('[2026-11-13 10:00:00] [测试] [条目%02d] [皮特] 正文\n' % i)
+    def run(cmd='index'):
+        return subprocess.run([sys.executable, '-B', 'daybook.py', cmd], cwd=d,
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    _ok('X0 认基线 rc=0', run('baseline').returncode == 0)
+    with io.open(vol, 'a', encoding='utf-8') as f:
+        f.write('[2026-11-13 10:00:09] [测试] [新增] [皮特] 正文\n')
+    idf = os.path.join(d, '索引', 'index_账.tsv')
+    with io.open(idf, 'a', encoding='utf-8') as f:   # 模拟 TSV 已落、游标未落
+        f.write('账\t6\t2026-11-13 10:00:09\t测试\t新增\t皮特\n')
+    r = run()
+    txt = r.stdout + r.stderr
+    _ok('X1 索引新于游标 ⇒ 自动重扫 rc=0（不判违例）', r.returncode == 0,
+        'rc=%d %s' % (r.returncode, txt.strip().splitlines()[-1:]))
+    _ok('X2 文案不出现 append-only 违例', 'append-only 违例' not in txt, txt[-120:])
+    _ok('X3 baseline 不被拒 rc=0', run('baseline').returncode == 0)
+    _ok('X4 索引行数追平（6 行）',
+        sum(1 for l in io.open(idf, encoding='utf-8') if l.strip()) - 1 == 6)
+
+
+_CHILD_TAIL = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+p = sys.argv[2]
+import daybook_multidx
+_h, rows = daybook_multidx.read_tsv(p)
+assert len(rows) == 1, 'read_tsv 未丢弃末尾半行: %d' % len(rows)
+import daybook
+with open(p, encoding='utf-8') as f:
+    lines = list(daybook._complete_lines(f))
+assert len(lines) == 2, 'query 读行未丢弃半行: %d' % len(lines)
+print('OK')
+'''
+
+_CHILD_TRUNC = r'''
+import os, sys, json
+sys.path.insert(0, sys.argv[1])
+p, tp = sys.argv[2], sys.argv[3]
+import daybook
+rep = []
+daybook._run_ops([('append', p, [['账', '2', 't', '测试', 'x', '皮特']], tp, '账')], rep)
+data = open(p, 'rb').read()
+assert data.endswith(b'\n'), '截断后续写仍以半行结尾'
+assert not data.endswith('半'.encode('utf-8')), '半行未被截断'
+assert '截断' in json.dumps(rep, ensure_ascii=False), '未报告截断'
+print('OK')
+'''
+
+
+def _case_append(tmp):
+    """Y 追加型派生件 O(1) 原位追加：40 万条基线下单条追加，inode 不变、行数 +1。
+    Y Append-type artifacts are O(1) in place: with a 400k baseline a single append keeps the
+    inode (no full rewrite) and adds exactly one row."""
+    d = os.path.join(tmp, 'append')
+    os.makedirs(d)
+    here = os.path.dirname(SRC_BIN)
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py'):
+        shutil.copy2(os.path.join(here, name), os.path.join(d, name))
+    with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
+        f.write(CONF)
+    vol = os.path.join(d, '账卷.txt')
+    n = 400000
+    with io.open(vol, 'w', encoding='utf-8') as f:
+        for i in range(n):
+            f.write('[2026-11-13 10:00:00] [测试] [条目%06d] [皮特] 正文\n' % i)
+    t0 = time.time()
+    r = subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'], cwd=d,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    t_base = time.time() - t0
+    _ok('Y0 40 万条认基线 rc=0', r.returncode == 0, 'rc=%d %.2fs' % (r.returncode, t_base))
+    idf = os.path.join(d, '索引', 'index_账.tsv')
+    ino = os.stat(idf).st_ino
+    with io.open(vol, 'a', encoding='utf-8') as f:
+        f.write('[2026-11-13 10:00:01] [测试] [单条追加] [皮特] 正文\n')
+    t0 = time.time()
+    r = subprocess.run([sys.executable, '-B', 'daybook.py', 'index'], cwd=d,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    t_add = time.time() - t0
+    nrows = sum(1 for l in io.open(idf, encoding='utf-8') if l.strip()) - 1
+    _ok('Y1 单条追加 rc=0 且行数 %d→%d' % (n, n + 1), r.returncode == 0 and nrows == n + 1,
+        'rc=%d rows=%d' % (r.returncode, nrows))
+    _ok('Y2 原位追加（inode 不变·未全量重写）', os.stat(idf).st_ino == ino,
+        'ino %s → %s' % (ino, os.stat(idf).st_ino))
+    print('  [数据] 40 万条：基线 %.2fs，单条追加 %.2fs；5M 外推 ≈ %.2fs（O(1) 追加，与卷长无关）'
+          % (t_base, t_add, t_add))
+
+
+def _case_tail(tmp):
+    """Z 崩溃尾部半行：读者丢弃、写者截断续写。两条都要能自证。
+    Z Crashed tail: readers drop the half line; writers truncate then continue."""
+    d = os.path.join(tmp, 'tail')
+    os.makedirs(d)
+    p = os.path.join(d, 'x.tsv')
+    tp = os.path.join(d, 'x.txt')
+    with open(p, 'wb') as f:
+        f.write('volume\tline\ttime\tcategory\ttitle\tauthor\n'.encode('utf-8'))
+        f.write('账\t1\tt\t测试\th\t皮特\n'.encode('utf-8'))
+        f.write('账\t2\tt\t测试\t半'.encode('utf-8'))    # 半行，无换行
+    r = subprocess.run([sys.executable, '-B', '-c', _CHILD_TAIL,
+                        os.path.dirname(SRC_BIN), p],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('Z1 读者丢弃末尾半行（read_tsv + query）',
+        r.returncode == 0 and r.stdout.strip() == 'OK',
+        (r.stdout.strip() or r.stderr.strip())[:160])
+    with open(p, 'ab') as f:
+        f.write(b'\xe5\x8d\x8a')                         # 再留一个半行
+    r = subprocess.run([sys.executable, '-B', '-c', _CHILD_TRUNC,
+                        os.path.dirname(SRC_BIN), p, tp],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('Z2 崩溃半行：截断后原位续写并报告',
+        r.returncode == 0 and r.stdout.strip() == 'OK',
+        (r.stdout.strip() or r.stderr.strip())[:200])
+
 
 def main():
     if not os.path.exists(SRC_BIN):
@@ -789,7 +963,7 @@ def main():
         r = _run(work)
         idx_after = _snapshot(os.path.join(work, '索引'))
         _ok('S 配置错（卷指向目录）⇒ rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
-        _ok('S rc=2 派生件零变化（递归·含内容）', idx_before == idx_after,
+        _ok('S rc=2 不可信即零落盘（递归·含内容）', idx_before == idx_after,
             '差异=%s' % (_snap_diff(idx_before, idx_after),))
         stamp_now = json.load(io.open(sp, encoding='utf-8'))
         _ok('S rc=2 封存指纹仍在', isinstance(stamp_now.get('vol_seals'), dict)
@@ -798,37 +972,59 @@ def main():
         io.open(conf_path, 'w', encoding='utf-8').write(conf_backup)
         os.rmdir(os.path.join(work, '坏卷目录'))
 
-        # T rc=3 违例：同样只报不写——清单与时戳零变化
-        # T rc=3 violation: report only · manifest and timestamp unchanged
+        # T rc=3 违例：不可信即零落盘——清单与时戳零变化
+        # T rc=3 violation: untrusted ⇒ zero write; manifest and timestamp unchanged
         orig_t = io.open(vol, 'rb').read()
         idx_before = _snapshot(os.path.join(work, '索引'))
         _tamper_mid(vol, 0.50)
         r = _run(work)
         idx_after = _snapshot(os.path.join(work, '索引'))
         _ok('T 等长改写 ⇒ rc=3', r.returncode == 3, 'rc=%d' % r.returncode)
-        _ok('T rc=3 派生件零变化（含清单/封存时戳）', idx_before == idx_after,
+        _ok('T rc=3 不可信即零落盘（含清单/封存时戳）', idx_before == idx_after,
             '差异=%s' % (_snap_diff(idx_before, idx_after),))
         io.open(vol, 'wb').write(orig_t)
         _run(work)
 
-        # U rc=4 作者口径红：同样只报不写
-        # U rc=4 author-convention red: report only, nothing written
+        # V5 rc=5 证据缺失：同样不可信即零落盘
+        # V5 rc=5 lost evidence: untrusted ⇒ zero write as well
+        orig_v5 = io.open(vol, 'rb').read()
+        cp_v5 = io.open(cp, 'rb').read()
+        os.remove(cp)
+        _tamper_mid(vol, 0.60)
+        idx_before = _snapshot(os.path.join(work, '索引'))
+        r = _run(work)
+        idx_after = _snapshot(os.path.join(work, '索引'))
+        _ok('V5 删游标+等长改写 ⇒ rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
+        _ok('V5 rc=5 不可信即零落盘', idx_before == idx_after,
+            '差异=%s' % (_snap_diff(idx_before, idx_after),))
+        io.open(vol, 'wb').write(orig_v5)
+        io.open(cp, 'wb').write(cp_v5)
+        _run(work)
+
+        # U rc=4 作者口径红：不是不可信，照写；文案明确「已写回·只报不拦」
+        # U rc=4 author-convention red: not untrusted data, so the run writes; the text says so
         orig_u = io.open(vol, 'rb').read()
         with io.open(vol, 'a', encoding='utf-8') as f:
             f.write('[2026-11-13 16:00:00] [测试] [机器id作者] [ag-0123456789abcdef] 正文\n')
         idx_before = _snapshot(os.path.join(work, '索引'))
         r = _run(work)
         idx_after = _snapshot(os.path.join(work, '索引'))
+        txt = r.stdout + r.stderr
         _ok('U 作者位机器 id ⇒ rc=4', r.returncode == 4, 'rc=%d' % r.returncode)
-        _ok('U rc=4 派生件零变化', idx_before == idx_after,
+        _ok('U 作者红照写：派生件已变化', idx_before != idx_after,
             '差异=%s' % (_snap_diff(idx_before, idx_after),))
+        _ok('U 文案明确「已写回·作者口径红·只报不拦」',
+            '已写回' in txt and '作者口径红' in txt and '只报不拦' in txt, txt[-160:])
         io.open(vol, 'wb').write(orig_u)
-        _run(work)
+        _base(work)
 
         # R2/V/W 与静态检查：错峰并发、原子替换+无锁读者、子目录长条目锁根
         _case_stagger(work)
         _case_safeio(work)
         _case_subdir(work)
+        _case_partial_commit(work)
+        _case_tail(work)
+        _case_append(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',

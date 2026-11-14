@@ -295,6 +295,7 @@ def test_hook_parse(tmp):
         target[:160])
     _ok('⑩5 作者位仍是显示名（机器 id 只在附注）',
         ('[%s]' % AID) not in target.replace('[id=%s]' % AID, ''), target[:160])
+    _ok('⑩6 [未注册] 标记原样传播（不得洗成确定作者）', '[未注册]' in target, target[:160])
 
 
 # ── ⑪ 退出码口径写进 --help ──────────────────────────────────
@@ -456,17 +457,24 @@ def test_entry_shell_concurrency(tmp):
         _ok('⑬0 packaging/cli_shim.py 存在', False, src_shim)
         return
     base = os.path.join(tmp, 'shell')
-    payload = os.path.join(base, 'payload')
-    os.makedirs(os.path.join(payload, 'sample'))
-    _write(os.path.join(payload, 'daybook.conf'), '[index]\nroot=\n')
-    _write(os.path.join(payload, 'sample', 'x.txt'), 'x\n')
-    _write(os.path.join(payload, 'entry.py'), "print('ok')\n")
-    for i in range(400):
-        _write(os.path.join(payload, 'mod%03d.py' % i), '# filler\n')
-    shim = os.path.join(base, 'shim.py')
     text = io.open(src_shim, encoding='utf-8').read()
     text = text.replace('@@DIST@@', 'daybook').replace('@@CMD@@', 'daybook').replace('@@ENTRY@@', 'entry.py')
-    _write(shim, text)
+
+    def mk_payload(tag, content):
+        d = os.path.join(base, tag)
+        payload = os.path.join(d, 'payload')
+        os.makedirs(os.path.join(payload, 'sample'))
+        _write(os.path.join(payload, 'daybook.conf'), '[index]\nroot=\n')
+        _write(os.path.join(payload, 'sample', 'x.txt'), 'x\n')
+        _write(os.path.join(payload, 'entry.py'), "print('ok')\n")
+        for i in range(400):
+            _write(os.path.join(payload, 'mod%03d.py' % i), content)
+        shim = os.path.join(d, 'shim.py')
+        _write(shim, text)
+        return shim, payload
+
+    shim_mcp, payload_mcp = mk_payload('mcp', '# MCP\n')
+    shim_cli, payload_cli = mk_payload('cli', '# CLI\n')
     launcher = os.path.join(base, 'launch.py')
     _write(launcher, (
         "import os, sys, time, runpy\n"
@@ -476,16 +484,26 @@ def test_entry_shell_concurrency(tmp):
         "    time.sleep(0.001)\n"
         "sys.argv = [shim, '--home=' + home]\n"
         "sys.exit(mod['main']())\n"))
-    # 两轮×8 进程：空运行目录首启，全部同时补链。旧实现（无 FileExistsError 容忍）
-    # 每进程约 40% 概率 rc=1，两轮全绿概率 <0.1%，因此该用例对旧实现必红。
-    # Two rounds × 8 processes: concurrent first runs into empty homes. The old implementation
-    # (no FileExistsError tolerance) fails ~40% per process, so it goes red essentially always.
+    # 真实次序：先跑一次 mcp 入口（home 里已有一整套指向 mcp payload 的链），
+    # 再并发多个 CLI 入口——reassign 分支会改指；旧实现 os.remove 撞上别人已删即 rc=1。
+    # The real sequence: run the mcp entry once (the home already links the mcp payload),
+    # then start several CLI entries concurrently — reassign repoints them, and the old
+    # implementation's os.remove hit a link another process had already removed ⇒ rc=1.
     all_rcs, all_outs = [], []
     home = os.path.join(base, 'home')
     for rnd in range(2):
         home = os.path.join(base, 'home%d' % rnd)
+        flag0 = os.path.join(base, 'mcp.flag%d' % rnd)
+        p0 = subprocess.Popen([sys.executable, '-B', launcher, shim_mcp, home, flag0],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+        time.sleep(0.05)
+        io.open(flag0, 'w').write('1')
+        o0, e0 = p0.communicate()
+        all_outs.append((o0 or '', e0 or ''))
+        all_rcs.append(p0.returncode)
         barrier = os.path.join(base, 'go%d.flag' % rnd)
-        procs = [subprocess.Popen([sys.executable, '-B', launcher, shim, home, barrier],
+        procs = [subprocess.Popen([sys.executable, '-B', launcher, shim_cli, home, barrier],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   universal_newlines=True) for _ in range(8)]
         time.sleep(0.2)
@@ -493,13 +511,35 @@ def test_entry_shell_concurrency(tmp):
         outs = [p.communicate() for p in procs]
         all_outs.extend(outs)
         all_rcs.extend(p.returncode for p in procs)
+    # 第三轮：home 内预置指向 /nowhere 的错误软链，8 进程并发改指（无旧链可删的路径不走，
+    # 这条专门打「先删后建」的空窗与 FileNotFoundError）。
+    # Third round: pre-place broken links to /nowhere, then 8 concurrent repoints — this kills
+    # the remove→symlink window and the FileNotFoundError branch.
+    home = os.path.join(base, 'home_bad')
+    os.makedirs(home)
+    for i in range(400):
+        os.symlink('/nowhere', os.path.join(home, 'mod%03d.py' % i))
+    os.symlink('/nowhere', os.path.join(home, 'entry.py'))
+    barrier = os.path.join(base, 'go_bad.flag')
+    procs = [subprocess.Popen([sys.executable, '-B', launcher, shim_cli, home, barrier],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True) for _ in range(8)]
+    time.sleep(0.2)
+    io.open(barrier, 'w').write('1')
+    outs = [p.communicate() for p in procs]
+    all_outs.extend(outs)
+    all_rcs.extend(p.returncode for p in procs)
     bad = [(rc, (o + e).strip().splitlines()[-1:] or [''])
            for (o, e), rc in zip(all_outs, all_rcs) if rc != 0]
-    _ok('⑬1 8 进程×2 轮并发首启全 rc=0（补链不互相踩）', not bad, '非零=%s' % bad[:4])
+    _ok('⑬1 先 mcp 后 8 进程×2 轮并发 CLI 全 rc=0（改指不互相踩）', not bad,
+        '非零=%s' % bad[:4])
     _ok('⑬2 无 Traceback', not any('Traceback' in (o + e) for o, e in all_outs))
     _ok('⑬3 conf/sample 就位', os.path.isfile(os.path.join(home, 'daybook.conf'))
         and os.path.isdir(os.path.join(home, 'sample')))
-    _ok('⑬4 产品件已链入', os.path.islink(os.path.join(home, 'mod000.py')))
+    _ok('⑬4 产品件已改指到 CLI payload',
+        os.path.islink(os.path.join(home, 'mod000.py'))
+        and os.path.realpath(os.path.join(home, 'mod000.py')).startswith(
+            os.path.realpath(payload_cli)))
     _ok('⑬5 无残留临时件',
         not [n for n in os.listdir(home) if n.startswith('.daybook.')])
 

@@ -641,12 +641,43 @@ def test_single_pass_reads():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_author_head_parse():
+    """orch 解析作者位必须与 daybook_append.head_author 同源：[未注册] 与 [id=ag-…] 都要带回。
+    orch must parse the author slot through daybook_append.head_author, so both the
+    [未注册] annotation and the [id=ag-…] annotation come back."""
+    print('== 13. orch 作者位走 head_author（[未注册] / [id=] 不丢）==')
+    from orchestrator import parse_ledger, is_field_seg
+    root = _fresh_root('auth')
+    try:
+        p = os.path.join(root, '协作卷.txt')
+        with io.open(p, 'w', encoding='utf-8') as f:
+            f.write('[2026-11-14 10:00:00] [聊] [未注册作者] [路人甲] [未注册] 正文甲\n')
+            f.write('[2026-11-14 10:01:00] [聊] [注册作者] [汤姆] [id=ag-0123456789abcdef] 正文乙\n')
+            f.write('[2026-11-14 10:02:00] [聊] [无附注] [杰森] 正文丙\n')
+        es = parse_ledger(p)
+        check('解析出 3 条', len(es) == 3, 'n=%d' % len(es))
+        check('未注册条：作者位仍是显示名（不洗成机器 id）',
+              es[0]['author'] == '路人甲', repr(es[0].get('author')))
+        check('未注册条：[未注册] 标记带回', es[0]['unregistered'] is True,
+              repr(es[0].get('unregistered')))
+        check('注册条：[id=ag-…] 附注带回', es[1]['author_id'] == 'ag-0123456789abcdef',
+              repr(es[1].get('author_id')))
+        check('注册条：不误标未注册', es[1]['unregistered'] is False)
+        check('无附注条：作者位正常', es[2]['author'] == '杰森' and es[2]['unregistered'] is False,
+              '%r %r' % (es[2].get('author'), es[2].get('unregistered')))
+        check('is_field_seg 认 [未注册]', is_field_seg('未注册') is True)
+        return all(_results)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 TESTS = {1: test_pull_reply, 2: test_identity_signature,
          3: test_root_resolution, 4: test_read_locking,
          5: test_route, 6: test_digest_visibility_and_limit,
          7: test_alarm_structure_and_exit_codes, 8: test_cli_limit_semantics,
          9: test_cross_process_lock, 10: test_verify_requires_baseline,
-         11: test_sock_and_dead_code, 12: test_single_pass_reads}
+         11: test_sock_and_dead_code, 12: test_single_pass_reads,
+         13: test_author_head_parse}
 
 
 def main(argv):

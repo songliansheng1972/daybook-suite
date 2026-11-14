@@ -121,11 +121,18 @@ def _link_payload(home, payload, made, reassign):
         target = os.path.join(payload, name)
         if os.path.islink(link):
             if reassign and os.path.realpath(link) != os.path.realpath(target):
+                # 改指走「临时名 + os.replace」：原子、幂等、无「先删后建」空窗；
+                # 并发改指最多是最后一个赢，任何时刻 runpy 都看得到完整链。
+                # Repoint via temp name + os.replace: atomic, idempotent, no remove→symlink
+                # window. Concurrent repoints just let the last one win; runpy always sees
+                # a complete link.
+                tmp = link + '.daybook-link.%d' % os.getpid()
                 try:
-                    os.remove(link)
-                    os.symlink(target, link)
-                except FileExistsError:
-                    pass          # 另一个并发进程刚补上同一条链 / a concurrent run just linked it
+                    os.remove(tmp)
+                except FileNotFoundError:
+                    pass
+                os.symlink(target, tmp)
+                os.replace(tmp, link)
                 made.append(name)
             continue
         if os.path.exists(link):

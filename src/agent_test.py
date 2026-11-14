@@ -64,7 +64,7 @@ def test_task_volume(tmp):
     """验收 2：任务流转 待办→进行中→完成→待审→已审。
     Acceptance 2: task flow 待办→进行中→完成→待审→已审."""
     from task_volume import TaskVolume
-    tv = TaskVolume(os.path.join(tmp, '任务卷.txt'))
+    tv = TaskVolume(os.path.join(tmp, '任务卷.txt'), root=tmp)
     tid = tv.create('ag-tom', '实现 MCP resources/list')
     if not _ok('2.1 创建任务', tid.startswith('T')):
         return False
