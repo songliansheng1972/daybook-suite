@@ -9,21 +9,18 @@
 
 设计缘由（为什么要这一层壳）
 ----------------------------
-DAYBOOK 的产品件是「进目录直接跑」的形态：`daybook.py` 用
-`HERE = dirname(abspath(__file__))` 锚定 `daybook.conf` 与「账本根」，mcp/orch 各件亦用
-`HERE` 取数据卷（任务卷/注册卷/租约卷/心跳卷/消息卷）。这在解压即用的整装包里很干净；
-但一装进 site-packages 就出问题：conf 不在脚本旁会直接报错；就算把 conf 随包装进去，
-账本与各类数据卷也会写进**程序安装目录** —— 用户无处安放自己的东西。
+DAYBOOK 的产品件只认两级定位：显式 `--home`／`DAYBOOK_HOME`／`DAYBOOK_ROOT`，
+否则**当前工作目录**；账本根只由 conf 的 `[index] root` 决定，代码装在哪都不影响。
+装进 site-packages 后，壳把「代码目录」与「conf 所在目录」分开，并把这些旗标/环境变量
+统一交给产品侧，保证两边解析到同一个 conf。
 
 故本壳把「代码目录」与「运行目录」分开：
   · 代码目录 = 包内 `payload/`（随 pip 升级自动生效）
   · 运行目录 = 见 `resolve_home()`
   · 首次在该目录就位：`daybook.conf` 与 `sample/` **各复制一份**（用户可改），
     其余件（产品 `.py`、配置、文档）**一律建软链**指回 `payload/`
-  · 随后 `runpy` 跑「运行目录里的 @@ENTRY@@」⇒ `HERE` = 运行目录
+  · 随后 `runpy` 跑「运行目录里的 @@ENTRY@@」，并把运行目录写进 `DAYBOOK_ROOT`
     ⇒ conf / 账本 / 索引 / 备份 / 各数据卷 **全部落在用户自己的目录**
-
-前提（已探针实测）：`os.path.abspath` **不解析软链**，故经软链执行时 `HERE` 等于软链所在目录。
 """
 
 import os
@@ -71,12 +68,12 @@ def sibling_payloads():
 def resolve_home(argv):
     """挑运行目录，并把 `--home` 从参数里摘掉。
 
-    优先次序：`--home=X` > 环境变量 `DAYBOOK_HOME` > **当前目录**（仅当它已含 `daybook.conf`，
-    即「用我自己那本账」）。三者都没有 ⇒ 报错要求显式指定：绝不隐式改 `~/.daybook`
+    优先次序：`--home=X` > `DAYBOOK_HOME` > `DAYBOOK_ROOT` > **当前目录**（仅当它已含
+    `daybook.conf`，即「用我自己那本账」）。都没有 conf ⇒ 报错：绝不隐式改 `~/.daybook`
     （曾因默认落到家目录软链而误改真实账本）。
-    Priority: --home=X > DAYBOOK_HOME > cwd containing daybook.conf. With none of the three,
-    refuse and demand an explicit location: never implicitly touch ~/.daybook (a default that
-    landed on a home-directory symlink once mutated a real ledger).
+    Priority: --home=X > DAYBOOK_HOME > DAYBOOK_ROOT > cwd containing daybook.conf. With no
+    conf anywhere, refuse: never implicitly touch ~/.daybook (a default that landed on a
+    home-directory symlink once mutated a real ledger).
     """
     rest = []
     home = None
@@ -102,9 +99,10 @@ def resolve_home(argv):
         return os.path.abspath(os.path.expanduser(env)), rest
     if os.path.isfile(os.path.join(os.getcwd(), _CONF)):
         return os.getcwd(), rest
+    # 与产品侧逐字一致的一句（与入口无关）· the same entry-independent sentence the products use
     sys.stderr.write(
-        "%s: 未指定账本目录。请用 --home=<目录> 或环境变量 DAYBOOK_HOME 显式指定"
-        "（不再默认使用 ~/.daybook）。\n" % _CMD)
+        "★ 未找到 daybook.conf：%s（请用 --home 或 DAYBOOK_HOME 指定 conf 所在目录）\n"
+        % os.path.realpath(os.getcwd()))
     raise SystemExit(2)
 
 

@@ -54,6 +54,7 @@ Cases
 跑法 / Run: python3 ledger_guard_test.py
 退出码 / Exit code: 0=全绿 1=有红
 """
+import ast
 import hashlib
 import io
 import json
@@ -68,6 +69,75 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 被测 daybook.py：默认同目录；变异验证时用 DAYBOOK_SRC 指向临时副本
 # The daybook.py under test: same directory by default; DAYBOOK_SRC points at a mutant copy.
 SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(HERE, 'daybook.py')
+
+# 写路径登记表（单一常量）：(文件, 所在函数, 写什么, 锁落点, 对应判据)
+# Write-path registry (single constant): (file, enclosing function, what, lock root, criterion)
+# 判据两端都红：登记了但代码里找不到 ⇒ 红；代码里有写调用但没登记 ⇒ 红（AH）。
+# Both directions fail: registered but absent in code, or a write call in code that is not
+# registered (AH).
+WRITE_PATHS = (
+    ('safeio.py', 'read_modify_write', '派生件读改写落盘', '调用方给的账本根', '通用写入口'),
+    ('daybook_append.py', 'append_one', '内容卷追加', '账本根', 'AE2 cli/hook'),
+    ('daybook_record.py', 'record', '记录卷', '显式 root', '复签'),
+    ('daybook_session_hook.py', 'atomic_json', '会话标记', '显式 root', '复签'),
+    ('agent_registry.py', 'register', '注册卷', '账本根', '复签'),
+    ('agent_registry.py', 'revoke', '注册卷', '账本根', '复签'),
+    ('agent_heartbeat.py', 'beat', '心跳卷', '账本根', '复签'),
+    ('agent_lock.py', '_log', '租约日志', '账本根', '复签'),
+    ('agent_message.py', '_append_inbox', '消息卷', '账本根（resolve_root）', 'AE2 inbox'),
+    ('mcp_resources.py', '_audit', '审计卷', '账本根', '复签'),
+    ('mcp_tools.py', '_audit', '审计卷', '账本根', '复签'),
+    ('mcp_tools.py', '_record_signature', '签名卷', '账本根', '复签'),
+    ('mcp_tools.py', '_write_cursor', '游标', '账本根', '复签'),
+)
+
+_WRITE_HELPERS = ('atomic_write', 'atomic_append', 'atomic_replace')
+
+
+def _scan_write_sites(d):
+    """静态扫出 (文件, 函数) 级别的写调用点；测试件与打包器不算产品写路径。
+    Statically list (file, function) write call sites; test files and the packer are not product
+    write paths."""
+    files, sites = [], set()
+    for fn in sorted(os.listdir(d)):
+        if not fn.endswith('.py') or fn.endswith('_test.py') or fn in ('pack.py',):
+            continue
+        try:
+            tree = ast.parse(io.open(os.path.join(d, fn), encoding='utf-8').read())
+        except SyntaxError:
+            continue
+        files.append(fn)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Call):
+                        f = sub.func
+                        nm = getattr(f, 'id', None) or getattr(f, 'attr', None)
+                        if nm in _WRITE_HELPERS:
+                            sites.add((fn, node.name))
+    return files, sites
+
+
+def _case_write_paths(tmp):
+    """AH 写路径登记表判据：两端都红，新增写路径不登记就复签不过。
+    AH write-path registry criterion: both directions fail, so an unregistered new write path
+    cannot pass a re-sign review."""
+    print('  -- AH 写路径登记表（两端都红） --')
+    d = os.path.dirname(os.path.abspath(SRC_BIN))
+    files, sites = _scan_write_sites(d)
+    reg = {(f, fn) for f, fn, _w, _l, _c in WRITE_PATHS}
+    is_src = os.path.exists(os.path.join(d, 'pack.py'))
+    if is_src:
+        want = {f for f, _fn, _w, _l, _c in WRITE_PATHS}
+        _ok('AH 源树：登记表涉及的件全部在场', want <= set(files),
+            '缺=%s' % sorted(want - set(files)))
+    absent = sorted((f, fn) for f, fn, _w, _l, _c in WRITE_PATHS
+                    if f in files and (f, fn) not in sites)
+    _ok('AH 登记了但代码里找不到 ⇒ 红', not absent, '找不到=%s' % absent)
+    unreg = sorted(sites - reg)
+    _ok('AH 代码里有写调用但没登记 ⇒ 红', not unreg, '未登记=%s' % unreg)
+    print('    [数据] AH 登记 %d 条，实扫 %d 条，冲突 %d 处'
+          % (len(reg & sites), len(sites), len(absent) + len(unreg)))
 
 CONF = """[volumes]
 账=账卷.txt
@@ -989,6 +1059,8 @@ def _case_five_roots(tmp):
                   os.path.join(led, '对话卷.txt'),
                   os.path.join(confd, 'hook_a_关键词.txt')], led),
     }
+    if os.path.exists(os.path.join(confd, 'agent_message.py')):
+        ents['inbox'] = ([sys.executable, '-B', '-c', _CHILD_INBOX, confd, confd], led)
     for name, (cmd, cwd) in ents.items():
         for f in ('release.flag', 'held.flag'):
             try:
@@ -1047,12 +1119,16 @@ def _matrix_cmds(exedir, ledger, kinds):
     return {k: want[k] for k in kinds}
 
 
-def _matrix_lock(label, code, ledger, env, cwd):
-    """持账本根锁，三个写入口必须都被挡住（每格都实测，锁落点与耗时逐个打印）。
-    Hold the ledger root and require every write entry to block (measured per cell; lock point and
-    elapsed printed for each)."""
+def _matrix_lock(label, code, ledger, env, cwd, confd):
+    """持账本根锁，写入口（含 inbox）必须都被挡住（每格实测，锁落点与耗时逐个打印）。
+    Hold the ledger root and require every write entry (inbox included) to block (measured per
+    cell; lock point and elapsed printed for each)."""
     cmds = _matrix_cmds(code, ledger, ('daybook', 'cli', 'hook'))
-    for name in ('daybook', 'cli', 'hook'):
+    names = ['daybook', 'cli', 'hook']
+    if os.path.exists(os.path.join(code, 'agent_message.py')):
+        cmds['inbox'] = [sys.executable, '-B', '-c', _CHILD_INBOX, code, confd]
+        names.append('inbox')
+    for name in names:
         for f in ('release.flag', 'held.flag'):
             try:
                 os.remove(os.path.join(ledger, f))
@@ -1120,7 +1196,7 @@ def _case_root_matrix(tmp):
     os.makedirs(other)
     nc = os.path.join(base, 'noconf')
     os.makedirs(nc)
-    ncell = 0
+    ncell = n_ok = n_fail = 0
     for env_state in ('unset', 'conf', 'noconf'):
         for root_mode in ('empty', 'relative', 'absolute'):
             for start in ('inside', 'outside', 'installed'):
@@ -1164,6 +1240,7 @@ def _case_root_matrix(tmp):
                 expect_ok = (env_state == 'conf') or (
                     env_state == 'unset' and start == 'inside' and root_mode == 'empty')
                 if expect_ok:
+                    n_ok += 1
                     want = os.path.realpath(ledger)
                     got = {}
                     for kind in kinds:
@@ -1177,8 +1254,9 @@ def _case_root_matrix(tmp):
                         ' | '.join('%s=%s' % (k, got[k]) for k in kinds))
                     print('    [数据] %s 根: %s' % (label, ' '.join(
                         '%s=%s' % (k, got[k]) for k in kinds)))
-                    _matrix_lock(label, code, ledger, env, cwd)
+                    _matrix_lock(label, code, ledger, env, cwd, confd)
                 else:
+                    n_fail += 1
                     rcs, msgs = {}, {}
                     for kind, cmd in _matrix_cmds(exedir, ledger, kinds).items():
                         r = subprocess.run(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
@@ -1195,6 +1273,83 @@ def _case_root_matrix(tmp):
                         ' | '.join('%s=%s' % (k, msgs[k][:70]) for k in kinds))
                     if msgs:
                         print('    [数据] %s 文案: %s' % (label, list(uniq)[0]))
+    print('    [数据] AF 实跑：成功 %d 格 / 失败 %d 格（共 %d 格，计数取自判据自身）'
+          % (n_ok, n_fail, ncell))
+
+
+_HOME_STATIC = (('daybook.py', 'take_home('), ('daybook_append.py', 'take_home('),
+                ('daybook_hook.py', 'take_home('), ('mcp_server.py', 'take_home('),
+                ('orchestrator.py', "'--home'"))
+
+
+def _case_home_flag(tmp):
+    """AI 统一旗标 --home：六个入口都认，且只用来定位 conf（env 清空、cwd 在账本外）。
+    AI the unified --home flag: all six entries accept it and use it only to locate conf
+    (env cleared, cwd outside the ledger)."""
+    print('  -- AI --home 统一旗标（六入口） --')
+    d = os.path.dirname(os.path.abspath(SRC_BIN))
+    base = os.path.join(tmp, 'ai')
+    confd = os.path.join(base, 'conf')
+    outside = os.path.join(base, 'outside')
+    os.makedirs(confd)
+    os.makedirs(outside)
+    io.open(os.path.join(confd, 'daybook.conf'), 'w', encoding='utf-8').write(
+        '[volumes]\n账=账卷.txt\n对话=对话卷.txt\n[index]\nroot=\n')
+    io.open(os.path.join(confd, '账卷.txt'), 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+    os.makedirs(os.path.join(confd, '对话原件'))
+    io.open(os.path.join(confd, '对话原件', 'd1.txt'), 'w', encoding='utf-8').write(
+        '讨论一下 决定 这件事\n')
+    io.open(os.path.join(confd, '对话卷.txt'), 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [聊] [甲] [皮特] 对话原件/d1.txt\n')
+    kw = os.path.join(confd, 'hook_a_关键词.txt')
+    io.open(kw, 'w', encoding='utf-8').write('[账] [追更] 决定\n')
+    env = dict(os.environ)
+    env.pop('DAYBOOK_ROOT', None)
+    env.pop('DAYBOOK_HOME', None)
+    py = sys.executable
+
+    def run(cmd, **kw):
+        return subprocess.run(cmd, cwd=outside, env=env, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, universal_newlines=True, **kw)
+
+    r = run([py, '-B', os.path.join(d, 'daybook.py'), '--home=' + confd, 'baseline'])
+    _ok('AI daybook 认 --home=DIR（baseline rc=0）', r.returncode == 0,
+        'rc=%d %s' % (r.returncode, (r.stderr or '')[-100:]))
+    r = run([py, '-B', os.path.join(d, 'daybook.py'), '--home', confd, 'index'])
+    _ok('AI daybook 认 --home DIR（index rc=0）', r.returncode == 0, 'rc=%d' % r.returncode)
+    r = run([py, '-B', os.path.join(d, 'daybook_append.py'), '--home=' + confd,
+             os.path.join(confd, '账卷.txt'), '测试', '旗标', '皮特', '正文'])
+    _ok('AI append 认 --home（rc=0 且落条）',
+        r.returncode == 0 and '旗标' in io.open(os.path.join(confd, '账卷.txt'),
+                                              encoding='utf-8').read(),
+        'rc=%d %s' % (r.returncode, (r.stderr or '')[-80:]))
+    r = run([py, '-B', os.path.join(d, 'daybook_hook.py'), '--home=' + confd])
+    _ok('AI hook 认 --home（rc=0 且追更）',
+        r.returncode == 0 and '决定' in io.open(os.path.join(confd, '账卷.txt'),
+                                               encoding='utf-8').read(),
+        'rc=%d %s' % (r.returncode, (r.stderr or '')[-80:]))
+    if os.path.exists(os.path.join(d, 'mcp_server.py')):
+        try:
+            r = run([py, '-B', os.path.join(d, 'mcp_server.py'), '--home=' + confd],
+                    stdin=subprocess.DEVNULL, timeout=15)
+            ok = r.returncode == 0 and ('root=%s' % os.path.realpath(confd)) in (r.stderr or '')
+            _ok('AI mcp 认 --home（启动自检 root=conf）', ok,
+                'rc=%d %s' % (r.returncode, (r.stderr or '')[-80:]))
+        except subprocess.TimeoutExpired:
+            _ok('AI mcp 认 --home（启动自检 root=conf）', False, '超时未退出')
+    if os.path.exists(os.path.join(d, 'orchestrator.py')):
+        r = run([py, '-B', os.path.join(d, 'orchestrator.py'), '--home=' + confd, 'alarm'])
+        _ok('AI orch 认 --home（alarm rc=0）', r.returncode == 0,
+            'rc=%d %s' % (r.returncode, (r.stderr or '')[-80:]))
+    for fn, needle in _HOME_STATIC:
+        p = os.path.join(d, fn)
+        if not os.path.exists(p):
+            continue
+        _ok('AI %s 静态接受 --home' % fn, needle in io.open(p, encoding='utf-8').read(), needle)
+    shim = os.path.join(os.path.dirname(d), 'packaging', 'cli_shim.py')
+    if os.path.exists(shim):
+        _ok('AI cli_shim 接受 --home', '--home' in io.open(shim, encoding='utf-8').read(), '')
 
 
 def _case_pad_notice(tmp):
@@ -1240,6 +1395,13 @@ def _case_pad_notice(tmp):
     after = io.open(p, 'rb').read()
     _ok('AG 无账本根 ⇒ append_one rc=2 且不写', rc == 2 and before == after,
         'rc=%r changed=%s' % (rc, before != after))
+
+
+_CHILD_INBOX = r'''import sys
+sys.path.insert(0, sys.argv[1])
+import agent_message as am
+am._append_inbox({'from': 'A', 'to': 'B', 'type': 'notify', 'content': 'x'}, root=sys.argv[2])
+'''
 
 
 _CHILD_HOLD_AB = r'''
@@ -1650,6 +1812,8 @@ def main():
         _case_five_roots(work)
         _case_root_matrix(work)
         _case_pad_notice(work)
+        _case_write_paths(work)
+        _case_home_flag(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',

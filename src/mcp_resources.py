@@ -74,19 +74,22 @@ def _warn(msg, key=None):
         pass
 
 
+HOME_OVERRIDE = None   # --home：conf 所在目录（mcp_server.main 写入）· set by mcp_server.main
+
+
 def _conf_dir():
     """conf 所在目录：唯一由 ledger_root.locate 决定（override/env 只找 conf，不当根）。
     Directory holding daybook.conf: decided solely by ledger_root.locate (override/env only
     locate conf, never become the root)."""
     from ledger_root import locate
-    return locate()[0]
+    return locate(HOME_OVERRIDE)[0]
 
 
 def _conf_path():
     """daybook.conf 的绝对路径（locate 找到的那一份；没找到返回候选位）。
     Absolute path of the located daybook.conf (the candidate location when none was found)."""
     from ledger_root import locate
-    _cd, cp = locate()
+    _cd, cp = locate(HOME_OVERRIDE)
     return cp or os.path.join(_cd, CONF_NAME)
 
 
@@ -108,7 +111,7 @@ def _root():
     解析失败抛 RootError —— 读错根必须报错，绝不静默当空账本。
     Raises RootError on failure — a wrong root must fail loudly, never masquerade as an empty ledger."""
     from ledger_root import locate, not_found_message
-    cd, cp = locate()
+    cd, cp = locate(HOME_OVERRIDE)
     if cp is None:
         raise RootError(not_found_message(cd))
     return _resolve_root(cd, _load_conf(cp))

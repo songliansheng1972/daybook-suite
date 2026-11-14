@@ -904,8 +904,11 @@ def _print_pull(hub, who):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='daybook 智能体编排中心')
-    ap.add_argument('--root', default=None,
+    ap.add_argument('--home', dest='root', default=None,
                     help='conf 所在目录（默认当前工作目录；显式指定但无 conf 即 rc=2）')
+    # --root 保留为同义别名：语义已变（旧=账本根，新=conf 所在目录）。
+    # --root is kept as an alias; its meaning changed (old = ledger root, new = conf directory).
+    ap.add_argument('--root', dest='root', help='同 --home（语义已变更：旧=账本根）')
     ap.add_argument('--rule', default=DEFAULT_RULE)
     ap.add_argument('--roles', default=DEFAULT_ROLES)
     sub = ap.add_subparsers(dest='cmd')

@@ -27,6 +27,29 @@ CONF_NAME = 'daybook.conf'
 ENV_VARS = ('DAYBOOK_ROOT', 'DAYBOOK_HOME')
 
 
+def take_home(argv):
+    """从参数表里剥出 `--home DIR` / `--home=DIR`（统一旗标，所有入口共用）。
+    Strip `--home DIR` / `--home=DIR` from an argv list (the one flag every entry accepts).
+    返回 (剩余参数, home|None)。"""
+    rest, home, i = [], None, 0
+    while i < len(argv):
+        a = argv[i]
+        if a == '--home':
+            if i + 1 < len(argv):
+                home = argv[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if a.startswith('--home='):
+            home = a.split('=', 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    return rest, home
+
+
 def not_found_message(conf_dir):
     """五处入口共用的「找不到 conf」文案（逐字一致）。
     The one "conf not found" wording shared verbatim by all five entries."""

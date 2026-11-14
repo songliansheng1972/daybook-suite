@@ -220,13 +220,15 @@ def ledger_home(override=None):
 
 
 def main():
+    from ledger_root import take_home
+    args, home = take_home(sys.argv[1:])
     try:
-        root = ledger_home()
+        root = ledger_home(home)
     except ValueError as exc:
         sys.stderr.write('%s\n' % exc)
         return 2
-    dialog_path = sys.argv[1] if len(sys.argv) >= 3 else os.path.join(root, '对话卷.txt')
-    kw_path = sys.argv[2] if len(sys.argv) >= 3 else os.path.join(root, 'hook_a_关键词.txt')
+    dialog_path = args[0] if len(args) >= 2 else os.path.join(root, '对话卷.txt')
+    kw_path = args[1] if len(args) >= 2 else os.path.join(root, 'hook_a_关键词.txt')
     if not os.path.exists(dialog_path):
         print('对话卷不存在：%s' % dialog_path)
         return 1

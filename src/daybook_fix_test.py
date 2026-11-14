@@ -227,7 +227,8 @@ def test_no_implicit_home(tmp):
     text = (r.stdout or '') + (r.stderr or '')
     _ok('⑦1 无 --home/无 DAYBOOK_HOME ⇒ rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
     _ok('⑦2 明确要求显式指定，不静默落 ~/.daybook',
-        '--home' in text and '~/.daybook' in text, text.strip()[:120])
+        '--home' in text and '未找到 daybook.conf' in text and '~/.daybook' not in text,
+        text.strip()[:120])
 
 
 # ── ⑧ 索引面 vs 备份面：内部卷只备份不索引 ─────────────────────
@@ -328,15 +329,21 @@ def test_author_cli_backdoor(tmp):
     r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '正文四参'],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
-    _ok('⑫1 4 参形态（默认未标）被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+    _ok('⑫1 4 参形态（默认未标）被拒 rc=2·错因=作者必填',
+        r.returncode == 2 and '作者必填' in (r.stderr or ''),
+        'rc=%d err=%s' % (r.returncode, (r.stderr or '')[:80]))
     r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '未标', '正文'],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
-    _ok('⑫2 显式「未标」占位被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+    _ok('⑫2 显式「未标」占位被拒 rc=2·错因=未标占位',
+        r.returncode == 2 and '未标' in (r.stderr or '') and '作者必填' in (r.stderr or ''),
+        'rc=%d err=%s' % (r.returncode, (r.stderr or '')[:80]))
     r = subprocess.run([sys.executable, cli, vol, '聊', '标题', '汤姆', '正文', '--name=别人'],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=cli_env,
                        universal_newlines=True)
-    _ok('⑫3 --name= 后门被拒 rc=2', r.returncode == 2, 'rc=%d' % r.returncode)
+    _ok('⑫3 --name= 后门被拒 rc=2·错因=不支持的选项',
+        r.returncode == 2 and '不支持的选项' in (r.stderr or '') and '--name=' in (r.stderr or ''),
+        'rc=%d err=%s' % (r.returncode, (r.stderr or '')[:80]))
     _ok('⑫4 三次拒写都没落条目', io.open(vol, encoding='utf-8').read().strip() == '')
     # 独立模式（无注册表）也拒机器 id：作者位只许显示名
     # Standalone mode (no registry) also refuses a machine id: the author slot is a display name only

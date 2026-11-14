@@ -458,15 +458,16 @@ def resolve_cli_author(author, vol_path):
     return a, None, True
 
 
-def _cli_root():
-    """CLI 的账本根：与 daybook.py / MCP 同源（ledger_root.conf_dir + resolve_root）。
+def _cli_root(override=None):
+    """CLI 的账本根：与 daybook.py / MCP 同源（ledger_root.locate + resolve_root）。
+    override = --home（conf 所在目录）。
     The CLI's ledger root: the same source as daybook.py / the MCP
     (ledger_root.conf_dir + resolve_root).
     返回 None = 配置错（调用方退 2）；conf 只查两级（显式 > 当前目录），找不到即报错。
     None = config error (the caller exits 2); the conf is looked up in two levels only
     (explicit > cwd) and a miss fails immediately."""
     from ledger_root import locate, not_found_message, read_conf_value, resolve_root
-    cd, cpath = locate()
+    cd, cpath = locate(override)
     if cpath is None:
         sys.stderr.write(not_found_message(cd) + '\n')
         return None
@@ -483,18 +484,20 @@ def _cli_root():
 
 
 def main():
-    if len(sys.argv) >= 2 and sys.argv[1] in ('--check', '-c'):
-        path = sys.argv[2] if len(sys.argv) >= 3 else os.curdir
+    from ledger_root import take_home
+    _args, _home = take_home(sys.argv[1:])
+    if _args and _args[0] in ('--check', '-c'):
+        path = _args[1] if len(_args) >= 2 else os.curdir
         return check_pipe_buf(path)
-    if len(sys.argv) < 3:
+    if len(_args) < 2:
         print(__doc__); return 1
-    path = sys.argv[1]
+    path = _args[0]
     # --name=显示名：显式指定作者位的显示名（作者位本就写显示名，此参作覆盖）
     # 作者必填、无后门：· The author is mandatory and there is no back door:
     #   卷 类 标题 作者 "正文"
     # 三参/四参旧形态（作者默认「未标」）一律拒写：不给绕过作者口径的入口
     # Legacy 3/4-arg forms (author defaulting to 未标) are refused: no path around the author check
-    argv = sys.argv[2:]
+    argv = _args[1:]
     bad = [a for a in argv if a.startswith('--')]
     if bad:
         sys.stderr.write('不支持的选项：%s（作者位只接受显示名，不再有 --name= 后门）\n' % ' '.join(bad))
@@ -514,7 +517,7 @@ def main():
     except ValueError as exc:
         sys.stderr.write('%s\n' % exc)
         return 2
-    root = _cli_root()
+    root = _cli_root(_home)
     if root is None:
         return 2
     return append_one(path, kind, title, msg, author_slot,

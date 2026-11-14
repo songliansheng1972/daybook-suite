@@ -1398,7 +1398,9 @@ def main():
     用法与未知子命令在 load_conf() 之前处理：缺 conf 时给明确报错，不抛 traceback。
     Usage and unknown subcommands are handled before load_conf(): a missing conf gets a clear
     message instead of a traceback."""
-    cmd = sys.argv[1] if len(sys.argv) > 1 else 'index'
+    from ledger_root import take_home
+    _args, _home = take_home(sys.argv[1:])
+    cmd = _args[0] if _args else 'index'
     known = ('index', 'baseline', '认基线', 'checkauthors', '查作者口径',
              'multiindex', '多级索引',
              'backup', 'query', 'watch', 'mcp', 'orchestrate', '编排', '司南')
@@ -1414,13 +1416,13 @@ def main():
     # Root: decided only by conf's [index] root; the conf is looked up in two levels only
     # (explicit > cwd) and a miss fails immediately — no script-dir fallback, no next candidate.
     from ledger_root import locate, not_found_message
-    conf_dir, conf_path = locate()
+    conf_dir, conf_path = locate(_home)
     if conf_path is None:
         sys.stderr.write(not_found_message(conf_dir) + '\n')
         return 2
     try:
         conf = load_conf(conf_path)
-        root = ledger_home()
+        root = ledger_home(_home)
     except (OSError, UnicodeDecodeError, ValueError) as exc:
         sys.stderr.write('★ 配置错（检查 daybook.conf 与 [index] root）：%s\n' % exc)
         return 2
@@ -1517,14 +1519,14 @@ def main():
         # 四库式多级目录（部/类/属·跨卷总目）·派生件·零依赖·与 index 同源同入口
         # Four-branch multilevel catalogue (derived data; same entry point as index)
         import daybook_multidx
-        sys.exit(daybook_multidx.main(sys.argv[2:]))
+        sys.exit(daybook_multidx.main(_args[1:]))
     elif cmd == 'backup':
         bdir, n = backup(conf, root)
         print('备份完成：%s（%d 卷）' % (bdir, n), flush=True)
     elif cmd == 'query':
-        print(query(conf, root, sys.argv[2:]), flush=True)
+        print(query(conf, root, _args[1:]), flush=True)
     elif cmd == 'watch':
-        gap = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        gap = int(_args[1]) if len(_args) > 1 else 5
         last = None
         print('监视 %d 卷，每 %d 秒查一次变动。Ctrl-C 退出。' % (len(vols), gap), flush=True)
         while True:
@@ -1584,7 +1586,7 @@ def main():
             sys.stderr.write('未安装 daybook-orch：统一入口 `daybook orchestrate` 需该包提供 orchestrator。\n'
                              '请先 pip install daybook-orch。\n')
             sys.exit(2)
-        sys.exit(orchestrator.main(sys.argv[2:]))
+        sys.exit(orchestrator.main(_args[1:]))
     else:
         print(__doc__)
 

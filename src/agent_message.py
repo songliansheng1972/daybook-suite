@@ -111,6 +111,11 @@ def _append_inbox(msg, direction='收', root=None):
     """消息进 inbox 卷·append-only·白箱可审计。
     Write the message into the inbox volume · append-only · white-box auditable."""
     from safeio import atomic_append
+    from volume_paths import resolve_root
+    # root 只用于定位 conf；锁根必须是账本根（否则持账本根锁时这里不挡）。
+    # root only locates conf; the lock root must be the ledger root (otherwise a holder of the
+    # ledger-root lock does not block this write).
+    lock_root = resolve_root(root)
     path = inbox_path(root)
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
@@ -119,7 +124,7 @@ def _append_inbox(msg, direction='收', root=None):
         _now(), direction,
         msg.get('from', '?'), msg.get('to', '?'),
         msg.get('type', '?'), msg.get('content', '').rstrip('\n'))
-    atomic_append(path, rec, root=root)
+    atomic_append(path, rec, root=lock_root)
 
 
 class _Handler(socketserver.BaseRequestHandler):

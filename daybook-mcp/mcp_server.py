@@ -249,6 +249,9 @@ def serve(infile=None, outfile=None):
 def main():
     """启动自检后进主循环。根无效 → stderr 报错并退出（不静默空跑）。
     Run the startup self-check, then enter the main loop. An invalid root → stderr error and exit (never silently serve an empty ledger)."""
+    from ledger_root import take_home
+    _args, home = take_home(sys.argv[1:])
+    res.HOME_OVERRIDE = home          # --home 只用来定位 conf
     try:
         root, nvol = res.self_check()
     except res.RootError as e:
