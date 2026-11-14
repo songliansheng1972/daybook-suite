@@ -39,12 +39,19 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-# conf 按脚本自身位置解析（不经 cwd）：盒内由 pack 改名为 daybook.conf，
-# 源树里同一份 conf 名为 daybook.orch.conf（pack.py 的 conf_rename 映射）。
-# The conf is resolved next to this script (never through cwd): pack renames it to
-# daybook.conf inside the box, while the source tree keeps the same single file as
-# daybook.orch.conf (pack.py's conf_rename mapping).
-CONF_CANDIDATES = ('daybook.conf', 'daybook.orch.conf')
+# conf 按脚本自身位置解析（不经 cwd）：候选名从 pack.py 的 conf_rename 表派生，
+# 不手抄。盒内只有改名的目标（daybook.conf）；源树按表的源名顺序回退。
+# The conf is resolved next to this script (never through cwd). Candidates derive from
+# pack.py's conf_rename table (not hand-copied): the box only has the rename target
+# (daybook.conf); the source tree falls back in the table's source-name order.
+try:
+    from pack import PACKAGES as _PACKAGES
+    CONF_CANDIDATES = ((_PACKAGES['orch']['conf_rename'][0][1],)
+                       + tuple(_PACKAGES['orch']['conf_rename'][0][0]))
+except ImportError:
+    # 盒内不发行 pack.py：conf 已按表改名为 daybook.conf
+    # pack.py is not shipped inside the box; the conf is already renamed to daybook.conf
+    CONF_CANDIDATES = ('daybook.conf',)
 
 _results = []
 

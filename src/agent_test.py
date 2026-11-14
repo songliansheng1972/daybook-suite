@@ -172,18 +172,30 @@ def test_agent_lock(tmp):
     if not _ok('5.2 Agent B 同资源拿不到锁（非阻塞立刻 None）',
                lid2 is None and dt < 0.5, 'lid2=%r dt=%.3fs' % (lid2, dt)):
         return False
-    # 阻塞：C 在 B 之外等到 A 释放才进临界区
-    # Blocking: C waits until A releases, then enters
-    got = []
+    # 阻塞：C 一直等到 A 释放才进临界区。用 Event 握手，不靠 sleep+is_alive 猜调度。
+    # Blocking: C waits until A releases. Event handshake — no sleep+is_alive scheduling guess.
     import threading
-    th = threading.Thread(target=lambda: got.append(lk.acquire('task:T001', 'ag-c', blocking=True)))
+    got = []
+    started = threading.Event()
+    done = threading.Event()
+
+    def _blocking_acquire():
+        started.set()
+        got.append(lk.acquire('task:T001', 'ag-c', blocking=True))
+        done.set()
+
+    th = threading.Thread(target=_blocking_acquire)
     th.start()
-    time.sleep(0.3)
-    waiting = th.is_alive()
+    started.wait(2)
+    # 持锁未放：0.5s 内 done 必然不置位（置位就证明它没真阻塞）
+    # Lock still held: done must not fire within 0.5s (firing proves it never blocked)
+    blocked = not done.wait(0.5)
     lk.release(lid1)
+    finished = done.wait(5)
     th.join(5)
-    if not _ok('5.3 blocking=True 确实阻塞到释放之后', waiting and bool(got) and got[0],
-               'waiting=%s got=%r' % (waiting, got)):
+    if not _ok('5.3 blocking=True 确实阻塞到释放之后（Event 握手）',
+               blocked and finished and bool(got) and got[0],
+               'blocked=%s finished=%s got=%r' % (blocked, finished, got)):
         return False
     lid3 = got[0]
     lk.release(lid3)
@@ -192,8 +204,9 @@ def test_agent_lock(tmp):
     if not _ok('5.4 释放后可再次获取', bool(lid4)):
         return False
     lk.release(lid4)
-    # 变异自证：acquire 永远「成功」时，5.2 的互斥断言必须失败
-    # Mutation self-check: if acquire always "succeeds", the 5.2 exclusion assertion must fail
+    # 变异自证：acquire 永远「成功」时，5.2（互斥）与 5.3（真阻塞）的断言必须都失败
+    # Mutation self-check: if acquire always "succeeds", both the 5.2 exclusion assertion
+    # and the 5.3 "really blocked" assertion must fail
     orig = AgentLock.acquire
     AgentLock.acquire = lambda self, resource, agent_id, blocking=False: 'fake-lease'
     try:
@@ -201,11 +214,14 @@ def test_agent_lock(tmp):
                           lease_vol=os.path.join(tmp, '租约卷.txt'))
         first = probe.acquire('task:MUT', 'ag-x')
         second = probe.acquire('task:MUT', 'ag-y')
-        mutation_red = (first is not None and second is None)
+        excl_green = (first is not None and second is None)   # 5.2 形态，变异下必 False
+        # 5.3 形态：持锁线程未释放时，blocking 调用不得返回；变异下它会立即返回
+        blocked_green = (probe.acquire('task:MUT2', 'ag-z', blocking=True) is None)
     finally:
         AgentLock.acquire = orig
-    return _ok('5.5 变异：acquire 永真 ⇒ 互斥断言必须红', not mutation_red,
-               'mutation_red=%s' % mutation_red)
+    return _ok('5.5 变异：acquire 恒真 ⇒ 5.2/5.3 断言都必须红',
+               not excl_green and not blocked_green,
+               'excl_green=%s blocked_green=%s' % (excl_green, blocked_green))
 
 
 def test_agent_heartbeat(tmp):

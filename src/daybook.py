@@ -495,11 +495,12 @@ def build(conf, root='.', baseline=False, dry=False):
     new_seals = {}
     wrote_any = False   # 本轮是否真的写过派生件：rc=5 时不写口径戳，靠它判定
                         # did this run really write anything? rc=5 must not touch the stamp
-    # W-75 修②：索引写入全临界区（TSV/游标/清单·目录级锁）
-    # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest, dir lock)
+    # W-75 修②：索引写入全临界区（TSV/游标/清单）——锁账本根目录本身，不建锁文件
+    # W-75 fix 2: the whole index write is one critical section (TSV/cursor/manifest) —
+    # the ledger-root directory itself is locked; no lock file is created
     from safeio import locked as _safe_locked
     gated = False
-    with _safe_locked(os.path.join(outdir, '.index.lock')):
+    with _safe_locked(root):
 
         # ── 口径漂移闸：口径变了就清索引重扫，不许静默丢条目 ──
         # ── Criterion drift gate: a changed criterion forces a full rescan ──
@@ -1170,6 +1171,12 @@ def main():
         root = root_cfg
     else:
         root = os.path.join(HERE, root_cfg)
+    # 账本根必须存在：不存在即配置错，退 2，不回退到临时目录或其它目录
+    # The ledger root must exist: a missing root is a configuration error (rc=2); never fall
+    # back to the temp dir or any other directory.
+    if not os.path.isdir(root):
+        sys.stderr.write('★ 账本根不存在：%s（配置错·检查 daybook.conf 的 [index] root）\n' % root)
+        return 2
     # watch 监视面＝所有真实卷文件（内部卷变动也要触发）；索引面仍只认 conf['volumes']
     # The watch surface = every real volume file (internal changes must trigger too);
     # the index surface remains conf['volumes'].

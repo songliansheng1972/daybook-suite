@@ -22,15 +22,20 @@ Cases
   M 三件派生件全删                              ⇒ rc=5（无外部锚·复跑仍 5），认基线后 0
   N 索引缺失且卷变长、旧前缀被改                 ⇒ rc=3（不能因「卷变大」跳过前缀校验）
   O 违例态认基线                                ⇒ rc=3，三件派生件零变化（不替人认下篡改）
+  P 同一账本·两个不同 TMPDIR 并发持锁读改写     ⇒ 临界区不重叠、不丢更新（锁绑目录 inode）
+  Q 持锁期间删除任何外部件                      ⇒ 仍互斥（账本内本无锁件可删）
 
 变异验证 / mutation check
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
   D、E 必须红；恢复原码后必须全绿。用法：
     DAYBOOK_SRC=/tmp/mutant/daybook.py python3 ledger_guard_test.py
+  锁的变异同理：把 safeio 的目录 flock 改回「目录内锁文件」⇒ A、B 必红；
+  改回「临时目录按 realpath 命名的锁文件」⇒ P、Q 必红。
 
 跑法 / Run: python3 ledger_guard_test.py
 退出码 / Exit code: 0=全绿 1=有红
 """
+import hashlib
 import io
 import json
 import os
@@ -38,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 被测 daybook.py：默认同目录；变异验证时用 DAYBOOK_SRC 指向临时副本
@@ -130,14 +136,39 @@ def _log(tag, r):
 def _dir_hash(d):
     """目录内所有文件（按名排序）的联合 sha256：用于证明「一个字节都没写」。
     Combined sha256 of every file in a directory (name-sorted): proves nothing was written."""
-    import hashlib as _h
-    h = _h.sha256()
+    h = hashlib.sha256()
     for name in sorted(os.listdir(d)):
         p = os.path.join(d, name)
         if os.path.isfile(p):
             h.update(name.encode('utf-8'))
             h.update(io.open(p, 'rb').read())
     return h.hexdigest()
+
+
+def _snapshot(d):
+    """递归快照：{'相对路径' 或 '目录/' : sha256 或 'd'}。
+    根目录 listdir 看不出「子目录新增文件」与「同名文件内容被改」，故比全树。
+    Recursive snapshot: {relpath or 'dir/': sha256 or 'd'}. A root-level listdir cannot see
+    files added inside subdirectories or a rewritten existing file, so the whole tree is compared."""
+    out = {}
+    for base, dirs, files in os.walk(d):
+        for name in dirs:
+            out[os.path.relpath(os.path.join(base, name), d) + '/'] = 'd'
+        for name in files:
+            p = os.path.join(base, name)
+            h = hashlib.sha256()
+            with open(p, 'rb') as f:
+                for chunk in iter(lambda: f.read(1 << 20), b''):
+                    h.update(chunk)
+            out[os.path.relpath(p, d)] = h.hexdigest()
+    return out
+
+
+def _snap_diff(before, after):
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
+    changed = sorted(k for k in set(before) & set(after) if before[k] != after[k])
+    return added, removed, changed
 
 
 def _tamper_mid(path, start_frac):
@@ -155,6 +186,122 @@ def _tamper_mid(path, start_frac):
     return st, pos
 
 
+_CHILD_RW = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import safeio
+root, counter, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+with safeio.locked(root):
+    n = int(open(counter).read() or 0)
+    with open(os.path.join(root, 'trace.txt'), 'a', encoding='utf-8') as f:
+        f.write('in %s\n' % tag)
+    time.sleep(0.05)
+    with open(counter, 'w') as f:
+        f.write(str(n + 1))
+    with open(os.path.join(root, 'trace.txt'), 'a', encoding='utf-8') as f:
+        f.write('out %s\n' % tag)
+'''
+
+_CHILD_HOLD = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import safeio
+root = sys.argv[1]
+with safeio.locked(root):
+    open(os.path.join(root, 'held.flag'), 'w').write('1')
+    while not os.path.exists(os.path.join(root, 'release.flag')):
+        time.sleep(0.02)
+'''
+
+_CHILD_PROBE = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import safeio
+try:
+    with safeio.locked(sys.argv[1], timeout=0.2):
+        print('OK')
+except TimeoutError:
+    print('BUSY')
+'''
+
+
+def _stage_safeio(tmp):
+    shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
+                 os.path.join(tmp, 'safeio.py'))
+
+
+def _case_p(tmp):
+    """P 同一账本、两个不同 TMPDIR 的并发持锁读改写：必须互斥（无重叠、无丢更新）。
+    锁若绑在「临时目录里的文件」上，两个 TMPDIR 就是两把锁，本用例必红。
+    P: two processes with different TMPDIRs do a locked read-modify-write on one ledger;
+    exclusion must hold. If the lock lives in a temp-dir file, two TMPDIRs give two locks
+    and this case goes red."""
+    d = os.path.join(tmp, 'p')
+    os.makedirs(d)
+    _stage_safeio(d)
+    counter = os.path.join(d, 'counter.txt')
+    io.open(counter, 'w').write('0')
+    procs = []
+    for rnd in range(10):
+        for i, name in enumerate(('tmpA', 'tmpB')):
+            td = os.path.join(d, name)
+            os.makedirs(td, exist_ok=True)
+            env = dict(os.environ)
+            env['TMPDIR'] = td
+            procs.append(subprocess.Popen(
+                [sys.executable, '-B', '-c', _CHILD_RW, d, counter, 'r%d-%d' % (rnd, i)],
+                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True))
+    outs = [p.communicate() for p in procs]
+    bad = [(p.returncode, err.strip()[:80]) for p, (_o, err) in zip(procs, outs)
+           if p.returncode != 0]
+    total = int(io.open(counter).read())
+    trace = [l.strip() for l in io.open(os.path.join(d, 'trace.txt')).read().splitlines()
+             if l.strip()]
+    seq_ok = all((l.split()[0] == 'in') == (i % 2 == 0) for i, l in enumerate(trace))
+    _ok('P 不同 TMPDIR 并发：临界区不重叠', seq_ok and len(trace) == 40,
+        'trace=%d 交替=%s' % (len(trace), seq_ok))
+    _ok('P 不丢更新（%d/20）' % total, total == 20 and not bad, '非零进程=%s' % bad)
+    _ok('P 账本内无锁件', not any('.safeio_lock' in k for k in _snapshot(d)))
+
+
+def _case_q(tmp):
+    """Q 持锁期间删除任何外部件：互斥仍成立（账本内本无锁件可删）。
+    旧实现把锁放在临时目录文件上，删掉它后第二个进程能新建同名文件并进临界区，本用例必红。
+    Q: deleting any external artifact while the lock is held must not break exclusion.
+    The old temp-dir lock file could be deleted and recreated by the second process, which
+    would enter the critical section — this case goes red there."""
+    d = os.path.join(tmp, 'q')
+    os.makedirs(d)
+    _stage_safeio(d)
+    holder = subprocess.Popen([sys.executable, '-B', '-c', _CHILD_HOLD, d, d],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    held = os.path.join(d, 'held.flag')
+    for _ in range(200):
+        if os.path.exists(held):
+            break
+        time.sleep(0.02)
+    _ok('Q 持锁进程已进临界区', os.path.exists(held))
+    ext = os.path.join(tempfile.gettempdir(), 'daybook-locks')
+    if os.path.isdir(ext):
+        shutil.rmtree(ext, ignore_errors=True)
+    locks = [k for k in _snapshot(d) if '.safeio_lock' in k or 'daybook-locks' in k]
+    _ok('Q 账本内无锁件可删', not locks, '发现=%s' % locks)
+    probe = subprocess.run([sys.executable, '-B', '-c', _CHILD_PROBE, d, d],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+    _ok('Q 删过外部件后仍互斥（探针 BUSY）', probe.stdout.strip() == 'BUSY',
+        (probe.stdout.strip() or probe.stderr.strip())[:120])
+    io.open(os.path.join(d, 'release.flag'), 'w').write('1')
+    holder.communicate(timeout=30)
+    probe2 = subprocess.run([sys.executable, '-B', '-c', _CHILD_PROBE, d, d],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+    _ok('Q 释放后可获取（探针 OK）', probe2.stdout.strip() == 'OK',
+        probe2.stdout.strip() or probe2.stderr.strip()[:120])
+
+
 def main():
     if not os.path.exists(SRC_BIN):
         print('找不到被测 daybook.py：%s' % SRC_BIN, file=sys.stderr)
@@ -170,17 +317,19 @@ def main():
         # A：首次索引非空卷 ⇒ 无任何封存证据，退 5 且不写回；认基线后才 0
         # A: first index of a non-empty volume has no sealed evidence ⇒ 5 and nothing written
         #    back; only an explicit baseline makes it 0
-        root_before = set(os.listdir(work))
+        root_before = _snapshot(work)
         r = _run(work)
         txt = r.stdout + r.stderr
         _ok('A 首次索引 ⇒ rc=5（无封存证据）', r.returncode == 5, 'rc=%d' % r.returncode)
         _ok('A 报「无任何封存证据」', '无任何封存证据' in txt)
         _ok('A 不写回游标/索引', not os.path.exists(cp) and not os.path.exists(idf))
-        root_after = set(os.listdir(work))
-        _ok('A 账本目录零变化（rc=5 不新增文件或目录·锁在临时目录）',
-            root_before == root_after, '新增=%s' % sorted(root_after - root_before))
-        _ok('A 账本根无 .safeio_lock 残留',
-            not any(n.startswith('.safeio_lock') for n in root_after))
+        root_after = _snapshot(work)
+        added, removed, changed = _snap_diff(root_before, root_after)
+        _ok('A 账本目录零变化（递归·含内容·锁为目录 flock）',
+            not (added or removed or changed),
+            '新增=%s 删除=%s 改动=%s' % (added, removed, changed))
+        _ok('A 账本内无任何锁件',
+            not any('.safeio_lock' in k or 'daybook-locks' in k for k in root_after))
         _log('A', r)
         r = _run(work)
         _ok('A 未认基线前复跑仍 rc=5', r.returncode == 5, 'rc=%d' % r.returncode)
@@ -258,14 +407,17 @@ def main():
         # B：未变复跑两次 ⇒ rc=0 稳定，且正常跑也不得在账本根新增文件
         # B: two unchanged reruns ⇒ stable 0, and a normal run must not add files to the ledger root
         for i in (1, 2):
-            before_b = set(os.listdir(work))
+            before_b = set(_snapshot(work))
             r = _run(work)
             txt = r.stdout + r.stderr
-            after_b = set(os.listdir(work))
+            after_b = set(_snapshot(work))
             _ok('B 未变复跑#%d rc=0' % i, r.returncode == 0, 'rc=%d' % r.returncode)
             _ok('B 未变复跑#%d 判未变' % i, '未变·跳过' in txt and '全扫' not in txt)
-            _ok('B 未变复跑#%d 账本根不新增文件' % i, before_b == after_b,
+            _ok('B 未变复跑#%d 账本目录不新增（递归）' % i, before_b == after_b,
                 '新增=%s' % sorted(after_b - before_b))
+            locks_b = [k for k in after_b
+                       if '.safeio_lock' in k or 'daybook-locks' in k]
+            _ok('B 未变复跑#%d 账本内无锁件' % i, not locks_b, '发现=%s' % locks_b)
 
         # ── G–K：派生件被删/被改写，不得与「未变」同码 ──
         # ── G–K: deleted or rewritten derived artifacts must never share the unchanged status ──
@@ -408,6 +560,12 @@ def main():
         _log('O', r)
         io.open(vol, 'wb').write(orig_n)
         _base(work)
+
+        # P/Q 锁的进程间语义（跨 TMPDIR 互斥、删除外部件不影响）
+        # P/Q cross-process lock semantics (exclusion across TMPDIRs; deleting external
+        # artifacts changes nothing)
+        _case_p(work)
+        _case_q(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -415,7 +573,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–O 十五组用例全绿')
+    print('PASS: A–Q 十七组用例全绿')
     return 0
 
 

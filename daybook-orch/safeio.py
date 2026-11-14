@@ -11,15 +11,18 @@ Three primitives, zero dependencies (standard library only), minimal API:
   atomic_append(path, bytes)      # O_APPEND 追加（持锁）· O_APPEND append (holding the lock)
   read_modify_write(path, fn)     # 持锁读-改-写 · locked read-modify-write
 
-降级：无 fcntl 平台（Windows）退 mkdir 原子锁（os.mkdir 天生原子）。
-Fallback: on platforms without fcntl (Windows), fall back to a mkdir atomic lock (os.mkdir is inherently atomic).
-锁粒度：每个目标文件一把锁（按目标 realpath 的稳定键，落系统临时目录 daybook-locks/），
-不锁卷原文，也不在账本目录里留下任何锁文件。
-Lock granularity: one lock per target file (stable key from the target's realpath, under
-daybook-locks/ in the system temp dir); the volume contents are never locked, and no lock
-file is ever left inside the ledger directory.
+锁粒度：目录级——flock 账本根目录本身的 fd（O_RDONLY|O_DIRECTORY），全程不新建任何文件。
+同一账本内的所有路径都落到同一个目录 inode，故跨 TMPDIR、跨用户、跨 cron/launchd 都是同一把锁；
+锁不需要写权限（只读卷上的读路径也能取共享锁）；没有「锁文件被删」这回事。
+Lock granularity: directory-level — flock the ledger-root directory fd itself (O_RDONLY|O_DIRECTORY);
+no file is ever created. Every path of one ledger resolves to the same directory inode, so different
+TMPDIRs / users / cron jobs all contend on one lock. No write permission is needed (read paths on a
+read-only volume can still take a shared lock), and there is no lock file anyone could delete.
+降级：无 fcntl 平台（Windows）目录取不到 fd，退到目录内隐藏锁件 + msvcrt 锁（仅该平台）。
+Fallback: on platforms without fcntl (Windows) a directory fd cannot be opened, so a hidden lock
+file inside that directory plus msvcrt locking is used (that platform only).
 """
-import os, contextlib, threading, hashlib, tempfile
+import os, contextlib, threading
 
 try:
     import fcntl
@@ -45,17 +48,14 @@ def _held_map():
     return m
 
 
-def _lock_path(path):
-    """锁文件路径：按目标文件 realpath 的稳定键，放到系统临时目录下的固定子目录。
-    账本根不再新增锁文件，且同一账本跨进程仍争同一把锁。
-    Lock-file path: a stable key derived from the target's realpath, under a fixed
-    subdirectory of the system temp dir. No lock file is ever created inside the ledger
-    root, yet all processes still contend on the same lock."""
-    key = hashlib.sha256(os.path.realpath(path).encode('utf-8')).hexdigest()[:32]
-    d = os.path.join(tempfile.gettempdir(), 'daybook-locks')
-    if not os.path.isdir(d):
-        os.makedirs(d, exist_ok=True)
-    return os.path.join(d, key + '.lock')
+def _lock_dir(path):
+    """锁目标＝目录本身：目标所在目录的 realpath（目标本身是目录则取它）。
+    锁的身份是目录 inode，与 TMPDIR、用户名、启动方式无关；不落任何文件。
+    Lock target = the directory itself: realpath of the containing directory (or the path
+    itself when it is a directory). The lock identity is the directory inode, independent of
+    TMPDIR / user / how the process was started, and no file is created."""
+    p = os.path.realpath(path)
+    return p if os.path.isdir(p) else os.path.dirname(p)
 
 
 @contextlib.contextmanager
@@ -70,7 +70,7 @@ def locked(path, timeout=None, shared=False):
     without opening a second fd. No shared→exclusive upgrade on reentry (prevents self-deadlock).
     timeout 秒内拿不到则超时；None=阻塞等待。
     Times out if not acquired within timeout seconds; None=block indefinitely."""
-    lp = _lock_path(path)
+    lp = _lock_dir(path)
     held = _held_map()
     if lp in held:
         held[lp][1] += 1
@@ -80,7 +80,10 @@ def locked(path, timeout=None, shared=False):
             held[lp][1] -= 1
         return
     if _HAS_FCNTL:
-        fd = os.open(lp, os.O_RDWR | os.O_CREAT, 0o644)
+        # 打开目录本身取 fd：不新建文件，不需要写权限；flock 绑在目录 inode 上。
+        # Open the directory itself: no file is created, no write permission is required,
+        # and the flock is bound to the directory inode.
+        fd = os.open(lp, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
         flag = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
         if timeout is not None:
             import time
@@ -108,28 +111,39 @@ def locked(path, timeout=None, shared=False):
                 pass
             os.close(fd)
     else:
-        # 降级：mkdir 原子锁（os.mkdir 天生原子·同路径只能成功一次）
-        # 无共享锁原语，读侧也用独占锁（更强，不会放开撕裂窗口）。
-        # fallback: mkdir atomic lock (os.mkdir is inherently atomic).
-        # No shared-lock primitive: readers use the exclusive lock too (stronger; never opens a tearing window).
+        # Windows：目录取不到可锁 fd，退到目录内隐藏锁件 + msvcrt（仅该平台）。
+        # Windows: a directory fd cannot be locked, so fall back to a hidden lock file in that
+        # directory with msvcrt (that platform only).
         import time
+        import msvcrt
+        lock_file = os.path.join(lp, '.safeio_lock')
+        fd = os.open(lock_file, os.O_RDWR | os.O_CREAT, 0o644)
         if timeout is None:
             timeout = 10
         deadline = time.time() + timeout
         while True:
             try:
-                os.mkdir(lp)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 break
-            except FileExistsError:
+            except OSError:
                 if time.time() >= deadline:
-                    raise TimeoutError('safeio: mkdir lock timeout for %s' % path)
+                    os.close(fd)
+                    raise TimeoutError('safeio: lock timeout for %s' % path)
                 time.sleep(0.05)
-        held[lp] = [None, 1]
+        held[lp] = [fd, 1]
         try:
-            yield None
+            yield fd
         finally:
             held.pop(lp, None)
-            os.rmdir(lp)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+            os.close(fd)
+            try:
+                os.remove(lock_file)
+            except OSError:
+                pass
 
 
 def atomic_append(path, data):
