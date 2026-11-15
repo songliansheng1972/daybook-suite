@@ -14,7 +14,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
-def record(role, title, content, stamp=None, update_index=True):
+def record(role, title, content, stamp=None, update_index=True, root=None):
     if not content:
         raise ValueError('拒绝记录空内容')
 
@@ -33,7 +33,7 @@ def record(role, title, content, stamp=None, update_index=True):
     # Each original is a separate UTF-8 artifact; it goes through safeio.atomic_write
     # (the single atomic-replace implementation).
     from safeio import atomic_write
-    atomic_write(archive_path, content, root=HERE)
+    atomic_write(archive_path, content, root=root or HERE)
 
     entry_title = '%s %s' % (role, stamp)
     reference = '%s\nSHA256: %s' % (relative_path, digest)

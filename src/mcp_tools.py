@@ -916,8 +916,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             # 读 size 与写游标在同一把账本根锁内：并发 mark_read 不会用旧 size 覆盖新游标
             # Read size and write the cursor under the same ledger-root lock: a concurrent
             # mark_read can no longer overwrite a newer cursor with a stale size.
-            from safeio import locked
-            with locked(_root()):
+            with _root().lock():
                 size = os.path.getsize(full_path)
                 _record_signature('daybook_mark_read', agent_id, signature, payload, volume=vol)
                 _write_cursor(agent_id, vol, size)
@@ -1000,7 +999,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             # Same predicates and aggregation as the CLI — no duplicated refusal logic and
             # nothing dropped. On 3 the build already wrote nothing for that volume, so one
             # signed call can never rebuild tampering into a fresh baseline.
-            per, total, _rep = _db.build(conf, _root(), conf_path=_mr._conf_path())
+            per, total, _rep = _db.build(conf, _root())
             codes = []
             if _db.CONFIG_ERRORS: codes.append(_db.EXIT_CONFIG)
             if _db.VIOLATIONS: codes.append(_db.EXIT_VIOLATION)

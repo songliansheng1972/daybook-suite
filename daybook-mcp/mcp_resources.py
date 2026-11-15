@@ -105,16 +105,28 @@ def _resolve_root(conf_dir, conf):
         raise RootError(str(exc))
 
 
+_ROOT_CACHE = {}
+
+
 def _root():
-    """账本根 = conf 的 [index] root（locate 找到 conf 后唯一解析）。
-    Ledger root = conf's [index] root (one resolution after locate finds the conf).
+    """账本根句柄 = conf 的 [index] root（locate 找到 conf 后唯一解析），进程内按路径复用
+    同一个 Root（dev_ino 在打开时固定；路径变了就是新根）。
+    Ledger-root handle = conf's [index] root (one resolution after locate finds the conf); the
+    same Root is reused per path inside the process (dev_ino is fixed at open; a different path
+    is a different root).
     解析失败抛 RootError —— 读错根必须报错，绝不静默当空账本。
     Raises RootError on failure — a wrong root must fail loudly, never masquerade as an empty ledger."""
     from ledger_root import locate, not_found_message
     cd, cp = locate(HOME_OVERRIDE)
     if cp is None:
         raise RootError(not_found_message(cd))
-    return _resolve_root(cd, _load_conf(cp))
+    path = _resolve_root(cd, _load_conf(cp))
+    rt = _ROOT_CACHE.get(path)
+    if rt is None:
+        from safeio import Root
+        rt = Root._from_dir_path(path, 'mcp_resources._root')
+        _ROOT_CACHE[path] = rt
+    return rt
 
 
 def _audit(method, agent_id, detail):

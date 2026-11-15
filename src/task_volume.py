@@ -114,11 +114,12 @@ class TaskVolume:
         State transition. Raises on violation."""
         if new_state not in ALL_STATES:
             raise ValueError('非法状态：%s' % new_state)
-        from safeio import atomic_append, exclusive_held, locked
-        if exclusive_held(self.root):
-            return self._transition_locked(tid, new_state, agent_id, note)
-        with locked(self.root):
-            return self._transition_locked(tid, new_state, agent_id, note)
+        from safeio import atomic_append, exclusive_held, root_scope
+        with root_scope(self.root, 'task_volume.transition') as rt:
+            if exclusive_held(rt):
+                return self._transition_locked(tid, new_state, agent_id, note)
+            with rt.lock():
+                return self._transition_locked(tid, new_state, agent_id, note)
 
     def _transition_locked(self, tid, new_state, agent_id, note=''):
         """已持账本根独占锁时执行迁移（不再取锁）。

@@ -342,38 +342,41 @@ def append_one(path, kind, title, msg, author='未标', to=None,
         # must turn this into rc=2.
         sys.stderr.write('★ 未能确定账本根（请在账本目录下调用或设置 DAYBOOK_HOME）\n')
         return 2
-    ledger_root = os.path.realpath(root)
-    from safeio import atomic_append, atomic_write, locked
-    if len(b) > limit:
-        # W-75 修③：超 PIPE_BUF 走账本根排他锁 + 整文件原子换入（读者不取锁也不撕裂）
-        # W-75 fix ③: over PIPE_BUF takes the ledger-root exclusive lock and swaps the whole
-        # file in atomically, so a lock-free reader never observes a torn entry.
-        sys.stderr.write('★ 超限 %d 字节·走加锁写入路径\n' % len(b))
-        with locked(ledger_root):
-            old = b''
-            if os.path.exists(path):
-                with open(path, 'rb') as f:
-                    old = f.read()
-            # 卷末无换行 ⇒ 先补一个换行再追加：既不把既有字节（合法正文）截掉，也不让新条目
-            # 粘在旧行行尾造出「增量 2 条 / 全量 1 条」和幻影行号。
-            # 残渣行必须在 stderr 点名（卷名/行号/缺失字段），不得静默升格为正常条目。
-            # Volume not ending in a newline ⇒ prepend one: never truncate legal bytes, and never
-            # glue a new entry onto the old line (which caused incremental 2 / rebuild 1 and
-            # phantom line numbers). A residue line is named on stderr (volume/line/missing
-            # fields); it is never silently promoted to a normal entry.
-            if old and not old.endswith(b'\n'):
-                _need, _notice = pad_notice(path)
-                if _notice:
-                    sys.stderr.write(_notice)
-                old += b'\n'
-            atomic_write(path, old + b, root=ledger_root)
+    from safeio import atomic_append, atomic_write, root_scope
+    # ★ 步骤 2：根句柄由入口给出（Root）或由本函数临时打开；锁与写共用同一 inode。
+    # ★ Step 2: the root handle comes from the entry (Root) or is opened here; the lock and
+    #   the write share one inode.
+    with root_scope(root, 'daybook_append.append_one') as rt:
+        if len(b) > limit:
+            # W-75 修③：超 PIPE_BUF 走账本根排他锁 + 整文件原子换入（读者不取锁也不撕裂）
+            # W-75 fix ③: over PIPE_BUF takes the ledger-root exclusive lock and swaps the whole
+            # file in atomically, so a lock-free reader never observes a torn entry.
+            sys.stderr.write('★ 超限 %d 字节·走加锁写入路径\n' % len(b))
+            with rt.lock():
+                old = b''
+                if os.path.exists(path):
+                    with open(path, 'rb') as f:
+                        old = f.read()
+                # 卷末无换行 ⇒ 先补一个换行再追加：既不把既有字节（合法正文）截掉，也不让新条目
+                # 粘在旧行行尾造出「增量 2 条 / 全量 1 条」和幻影行号。
+                # 残渣行必须在 stderr 点名（卷名/行号/缺失字段），不得静默升格为正常条目。
+                # Volume not ending in a newline ⇒ prepend one: never truncate legal bytes, and never
+                # glue a new entry onto the old line (which caused incremental 2 / rebuild 1 and
+                # phantom line numbers). A residue line is named on stderr (volume/line/missing
+                # fields); it is never silently promoted to a normal entry.
+                if old and not old.endswith(b'\n'):
+                    _need, _notice = pad_notice(path)
+                    if _notice:
+                        sys.stderr.write(_notice)
+                    old += b'\n'
+                atomic_write(path, old + b, root=rt)
+            return 0
+        with rt.lock():
+            _need, _notice = pad_notice(path)
+            if _notice:
+                sys.stderr.write(_notice)
+            atomic_append(path, b, root=rt, ensure_newline=_need)
         return 0
-    with locked(ledger_root):
-        _need, _notice = pad_notice(path)
-        if _notice:
-            sys.stderr.write(_notice)
-        atomic_append(path, b, root=ledger_root, ensure_newline=_need)
-    return 0
 
 
 def check_pipe_buf(path):
@@ -460,27 +463,18 @@ def resolve_cli_author(author, vol_path):
 
 
 def _cli_root(override=None):
-    """CLI 的账本根：与 daybook.py / MCP 同源（ledger_root.locate + resolve_root）。
+    """CLI 的账本根句柄：与 daybook.py / MCP 同源（ledger_root 唯一解析）。
     override = --home（conf 所在目录）。
-    The CLI's ledger root: the same source as daybook.py / the MCP
-    (ledger_root.conf_dir + resolve_root).
+    The CLI's ledger-root handle: the same source as daybook.py / the MCP (one resolver in
+    ledger_root). `override` is --home (the conf directory).
     返回 None = 配置错（调用方退 2）；conf 只查两级（显式 > 当前目录），找不到即报错。
     None = config error (the caller exits 2); the conf is looked up in two levels only
     (explicit > cwd) and a miss fails immediately."""
-    from ledger_root import locate, not_found_message, read_conf_value, resolve_root
-    cd, cpath = locate(override)
-    if cpath is None:
-        sys.stderr.write(not_found_message(cd) + '\n')
-        return None
+    from safeio import Root
     try:
-        root_cfg = read_conf_value(cpath, 'index', 'root')
-    except (OSError, UnicodeDecodeError) as exc:  # 配置坏了就是配置错，不猜根
-        sys.stderr.write('★ 读不到/解析不了 %s：%s\n' % (cpath, exc))
-        return None
-    try:
-        return resolve_root(cd, {'index': {'root': root_cfg}})
-    except ValueError as exc:
-        sys.stderr.write('★ %s\n' % exc)
+        return Root.open(override)
+    except RuntimeError as exc:
+        sys.stderr.write('%s\n' % exc)
         return None
 
 

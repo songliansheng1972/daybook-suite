@@ -233,7 +233,50 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     锚点消失或变换无差异记「死变异」并判红，跳过的变异打印原因。
 49. **收口读数**：源树 `0 红 / 442 项（PASS 442；跳过 0）`；`daybook` 盒
     `0 红 / 340 项（PASS 340；跳过 10）`；两套 `python3 src/pack.py --verify` rc=0；
-    构建号 起居注 **4170** ／ 璇玑 **6332** ／ 司南 **4012**（代码规模 14,514 行）。
+    构建号 起居注 **4433** ／ 璇玑 **6596** ／ 司南 **4262**（代码规模 15,291 行）。
+
+### 架构收口 · 步骤 2（2026-11-15）
+
+50. **入口只开一次根句柄，向下传 `Root`**：`daybook.py`（全部子命令含 `watch`）、
+    `daybook_append.py`、`daybook_hook.py`、`daybook_session_hook.py`、`mcp_resources._root()`
+    （进程内按路径复用同一个 `Root`）、`AgentLock` 改为在启动/首次解析时 `Root.open()` 一次，
+    把句柄向下传；根路径字符串只作为拼路径用的路径式对象（`Root.__fspath__`），不再充当身份。
+    `exclusive_held()` 只接受 `Root`/`LockedRoot`，传路径直接 `TypeError`。
+51. **删掉以路径为键的持有表**：`_held_for(path)`（realpath 字符串 + 每次 `stat` 的二次查找）整段
+    删除，只留 `_held_for_root(rt)`（同句柄或同 `dev_ino`）。`append_inplace` 里「内部再
+    `locate()` + `read_conf_value()` + `resolve_root()` + realpath 比对」整段删除——根来自入口句柄，
+    函数内不做任何 conf 解析；`conf_path` 形参随 `build` / `daybook_multidx.build` 一并删除。
+52. **换根语义写进行为**：写落打开时的 inode；`watch` 每轮 `revalidate()`，路径已不是本根就显式
+    重开（不同 inode 就是不同根，不静默写旧 inode）。判据新增 `SWAPNEST_OK`：换根后同一句柄的
+    同线程重入仍毫秒级 `RuntimeError`；变异 M1b（锁身份改现算 `stat(label)`）必红，否则「身份在
+    open 时固定」只是说法。
+53. **跨平台写路径（硬要求，不退成 POSIX-only）**：语义契约一条、系统调用两套——POSIX 用
+    `flock(根目录 fd)` + `openat/O_NOFOLLOW` 走查 + `fsync(dir)`；Windows 用命名互斥量
+    （`CreateMutexW`/`WaitForSingleObject`，进程崩溃自动放弃，不落锁件）+ `realpath`/`commonpath`
+    归属判 + 拒绝 reparse point + `os.replace`。Windows 不能对目录 `fsync`，换名持久化交给 NTFS
+    日志（已在 README 写明，不宣称超越平台）。`packaging/pack_pypi.py` 分类器为
+    `Operating System :: OS Independent`；README 两平台都写明。Windows 判据 W2 在非 Windows
+    机器上**显式跳过并计数**「未在 Windows 验证」，不静默当通过；POSIX 侧 P0/Q/P1 无退化。
+    W1（Windows 写路径分支）在 POSIX 上强制走一遍并真写/真拒（无目录 fd、归属判、拒绝重解析点、
+    追加后 inode 复核），避免这段代码沦为未执行的分支。
+54. **4.0.6 真实吞吐实测（可复跑）**：新增 `bench/throughput_bench.py`，只测收口版形态（写入含根锁）：
+    40 万条 / 卷 23.7 MB（APFS）：**单条追加（含账本根排他锁）0.072 ms ≈ 13,951 条/秒**；
+    追加一条后的增量 `index` **0.069 s**；40 万条索引上一次 `query` **0.20 s**；全量 `baseline`
+    **4.78 s**；**持根锁 1.00 s 期间另一写者实测等待 1.01 s**。复跑：
+    `python3 bench/throughput_bench.py --check`（上限：单条追加 ≤200 ms、查询 ≤60 s、
+    锁等待 ≥持锁时长×0.8，越界即 rc=1）。旧口径「6.2–9.3 万条/秒」来自无锁追加路径，已从
+    README 撤回并在此注明作废。
+55. **并发写者上限写成性能承诺（可复跑）**：新增 `bench/concurrency_bench.py`，8/64/256/1000 四点，
+    每点报写成功率、单条追加 p50/p95/max、等待 ≥250 ms 的写条数。本机（macOS/APFS）读数：
+    8 写者 100%·p50 0.07 ms / p95 1.38 ms / max 1.68 ms；64 写者 100%·4.15/4.50/5.63 ms；
+    256 写者 100%·17.45/17.89/18.89 ms；1000 写者 100%（20000/20000）·77.03/79.24/81.06 ms；
+    四点超阈值等待均为 0。复跑：`python3 bench/concurrency_bench.py --check`（成功率 <100% 即 rc=1）。
+    口径：同进程线程写者，各自持 Root 句柄逐条走公开入口；跨进程互斥由 P0/Q 判据覆盖。
+56. **两条定位判据落地（可执行，不是文档承诺）**：新增 `src/verify_plain.py`（只用标准库，不导入
+    任何 daybook 模块）。(a) **TXT**：给一个账卷（可带索引 TSV），逐行解析五段格式，打印最后一条的
+    时间/类别/标题/作者与完整性结论（含索引行数一致性）；(b) **MIG**：把仓内 `.py` 拷到干净目录，
+    在 `-I -S` 隔离模式、换 `HOME`、`cwd=/` 下运行，只凭仓内文件说清最后一条与下一步动作。
+    两条都在 guard 里判定，失败即红。
 
 ## v4.0.5 · 2026-11-14
 

@@ -35,10 +35,12 @@ def local_stamp(value):
     return parsed.astimezone().strftime('%Y%m%d_%H%M%S')
 
 
-def atomic_json(path, value):
-    """写账本内的 json（root 显式为工作区根 ROOT；越界即拒绝）。"""
+def atomic_json(path, value, root):
+    """写账本内的 json（root 为入口打开的 Root 句柄；越界即拒绝）。
+    Write a json inside the ledger (root is the Root handle opened by the entry; out-of-root is
+    refused)."""
     from safeio import atomic_write
-    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True), root=ROOT)
+    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True), root=root)
 
 
 def scan_code():
@@ -58,19 +60,19 @@ def scan_code():
     return files
 
 
-def archive_message(role, event, workspace):
+def archive_message(role, event, workspace, root):
     content = event['data'].get('content')
     if not isinstance(content, str) or not content:
         return False
     source_id = event['data'].get('messageId') or event.get('id', '')
     title = '%s-%s' % (role, source_id[:12] or 'message')
     path, digest, _ = daybook_record.record(
-        role, title, content.encode('utf-8'), local_stamp(event['timestamp']))
+        role, title, content.encode('utf-8'), local_stamp(event['timestamp']), root=root)
     print('已归档%s消息：%s SHA256=%s' % (role, path, digest), flush=True)
     return True
 
 
-def archive_code_changes(files, previous, stamp):
+def archive_code_changes(files, previous, stamp, root):
     current_hashes = {}
     for relative_path, content in files.items():
         digest = hashlib.sha256(content).hexdigest()
@@ -78,14 +80,14 @@ def archive_code_changes(files, previous, stamp):
         if previous.get(relative_path) == digest:
             continue
         path, saved_digest, _ = daybook_record.record(
-            '实验代码', relative_path, content, stamp)
+            '实验代码', relative_path, content, stamp, root=root)
         print('已归档代码变更：%s SHA256=%s' % (path, saved_digest), flush=True)
     for relative_path, digest in previous.items():
         if relative_path not in current_hashes:
             tombstone = ('删除文件：%s\n原 SHA256：%s\n' % (
                 relative_path, digest)).encode('utf-8')
             path, saved_digest, _ = daybook_record.record(
-                '实验代码', relative_path + '-deleted', tombstone, stamp)
+                '实验代码', relative_path + '-deleted', tombstone, stamp, root=root)
             print('已归档代码删除记录：%s SHA256=%s' % (
                 path, saved_digest), flush=True)
     return current_hashes
@@ -102,7 +104,7 @@ def load_state(path):
         return json.load(state_file)
 
 
-def initialize_state(events_root, state_path):
+def initialize_state(events_root, state_path, root):
     state = {
         'offsets': {},
         'workspaces': {},
@@ -124,11 +126,11 @@ def initialize_state(events_root, state_path):
                     session_id = os.path.basename(os.path.dirname(path))
                     state['workspaces'][session_id] = os.path.realpath(cwd)
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
-    atomic_json(state_path, state)
+    atomic_json(state_path, state, root)
     return state
 
 
-def handle_event(event, session_id, state, workspace):
+def handle_event(event, session_id, state, workspace, root):
     kind = event.get('type')
     data = event.get('data') or {}
     if kind == 'session.start':
@@ -142,24 +144,24 @@ def handle_event(event, session_id, state, workspace):
         return
 
     if kind == 'user.message':
-        if not archive_message('用户', event, workspace):
+        if not archive_message('用户', event, workspace, root):
             print('跳过无文本的用户消息事件：%s' % event.get('id'), file=sys.stderr)
     elif (kind == 'assistant.message'
           and data.get('phase') == 'final_answer'):
-        if not archive_message('助手', event, workspace):
+        if not archive_message('助手', event, workspace, root):
             print('跳过空的助手最终回复事件：%s' % event.get('id'), file=sys.stderr)
     elif kind == 'assistant.turn_end':
         files = scan_code()
         state['code_hashes'] = archive_code_changes(
-            files, state['code_hashes'], local_stamp(event['timestamp']))
+            files, state['code_hashes'], local_stamp(event['timestamp']), root)
 
 
-def process_once(events_root, state_path, workspace, initialize=False):
+def process_once(events_root, state_path, workspace, root, initialize=False):
     os.makedirs(os.path.dirname(state_path), exist_ok=True)
     state = load_state(state_path)
     if state is None:
         if not initialize:
-            state = initialize_state(events_root, state_path)
+            state = initialize_state(events_root, state_path, root)
             print('已建立初始游标；既有会话不回灌。', flush=True)
             return
         state = {'offsets': {}, 'workspaces': {}, 'code_hashes': {}}
@@ -182,14 +184,14 @@ def process_once(events_root, state_path, workspace, initialize=False):
             if not raw_line:
                 continue
             event = json.loads(raw_line.decode('utf-8'))
-            handle_event(event, session_id, state, workspace)
+            handle_event(event, session_id, state, workspace, root)
         state['offsets'][path] = offset + complete_length
         changed = True
     if changed:
-        atomic_json(state_path, state)
+        atomic_json(state_path, state, root)
 
 
-def install():
+def install(root):
     vscode_dir = os.path.join(ROOT, '.vscode')
     tasks_path = os.path.join(vscode_dir, 'tasks.json')
     os.makedirs(vscode_dir, exist_ok=True)
@@ -211,12 +213,12 @@ def install():
     })
     config['version'] = '2.0.0'
     config['tasks'] = tasks
-    atomic_json(tasks_path, config)
+    atomic_json(tasks_path, config, root)
     print('已配置 VS Code 文件夹打开后台任务：%s' % tasks_path)
     print('在 VS Code 首次允许自动任务后，归档器会随工作区打开而运行。')
 
 
-def uninstall():
+def uninstall(root):
     tasks_path = os.path.join(ROOT, '.vscode', 'tasks.json')
     if not os.path.exists(tasks_path):
         print('VS Code 自动归档任务尚未配置。')
@@ -225,7 +227,7 @@ def uninstall():
         config = json.load(tasks_file)
     tasks = [task for task in config.get('tasks', []) if task.get('label') != LABEL]
     config['tasks'] = tasks
-    atomic_json(tasks_path, config)
+    atomic_json(tasks_path, config, root)
     print('已从 VS Code 任务配置移除自动归档任务。')
 
 
@@ -242,11 +244,16 @@ def main():
     subparsers.add_parser('uninstall')
     args = parser.parse_args()
 
+    # ★ 步骤 2：入口只打开一次账本根句柄，向下传 Root（不再传根路径字符串）。
+    # ★ Step 2: the entry opens the ledger-root handle once and passes the Root down.
+    from safeio import Root
+    root = Root._from_dir_path(ROOT, 'daybook_session_hook.main')
+
     if args.command == 'install':
-        install()
+        install(root)
         return 0
     if args.command == 'uninstall':
-        uninstall()
+        uninstall(root)
         return 0
 
     events_root = os.path.realpath(args.events_root)
@@ -254,13 +261,13 @@ def main():
     if not os.path.isdir(events_root):
         parser.error('Copilot session event directory not found: %s' % events_root)
     if args.once:
-        process_once(events_root, args.state, workspace, args.initialize)
+        process_once(events_root, args.state, workspace, root, args.initialize)
         return 0
-    process_once(events_root, args.state, workspace, args.initialize)
+    process_once(events_root, args.state, workspace, root, args.initialize)
     print('监听工作区：%s' % workspace, flush=True)
     while True:
         time.sleep(1)
-        process_once(events_root, args.state, workspace, True)
+        process_once(events_root, args.state, workspace, root, True)
 
 
 if __name__ == '__main__':

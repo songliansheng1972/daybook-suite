@@ -12,6 +12,6 @@ def run(root, conf_path):
     open(p, 'wb').write(b'a\n')
     safeio.atomic_append(p, b'b\n', root=root)
     with safeio.locked(root):
-        safeio.append_inplace(p, b'c\n', root=root, conf_path=conf_path)
+        safeio.append_inplace(p, b'c\n', root=root)
     safeio.atomic_write(p, b'd\n', root=root)
     safeio.read_modify_write(p, lambda b: b + b'e\n', root=root)

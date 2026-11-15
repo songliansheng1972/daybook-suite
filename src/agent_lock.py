@@ -79,10 +79,10 @@ class AgentLock:
     def _lease_id(self, label, agent_id, ts):
         return '%s:%s:%d' % (agent_id, label, int(ts))
 
-    def _log(self, lease_id, action, extra=''):
+    def _log(self, lease_id, action, extra='', root=None):
         from safeio import atomic_append
         rec = ('[%s] [租约] [%s] %s %s\n' % (_now(), lease_id, action, extra)).rstrip() + '\n'
-        atomic_append(self.lease_vol, rec, root=self.root)
+        atomic_append(self.lease_vol, rec, root=root)
 
     def acquire(self, label, agent_id, blocking=False):
         """获取**账本根锁**。返回 lease_id 或 None。
@@ -98,27 +98,33 @@ class AgentLock:
           blocking=False: return None immediately if unavailable
         锁＝账本根目录 flock（进程退出自动释放），不落任何锁文件。
         The lock is a flock on the ledger-root directory (auto-released on process exit);
-        no lock file is ever created."""
-        from safeio import locked, exclusive_held
-        if exclusive_held(self.root):
+        no lock file is ever created.
+        ★ 步骤 2：锁与记账都挂同一个 Root 句柄（dev_ino 在打开时固定），不再以路径为身份。
+        ★ Step 2: the lock and the bookkeeping share one Root handle (dev_ino fixed at open);
+          a path is no longer an identity."""
+        from safeio import Root, exclusive_held
+        rt = Root._from_dir_path(self.root, 'agent_lock.acquire')
+        if exclusive_held(rt):
+            rt.close()
             raise RuntimeError('agent_lock: 同线程重复获取账本根锁（%s）·拒绝等待'
                                '（同线程等自己必自死锁；互斥范围是整个账本根）' % self.root)
-        cm = locked(self.root, timeout=None if blocking else 0)
         try:
-            cm.__enter__()
+            lr = rt.lock(timeout=None if blocking else 0)
         except TimeoutError:
+            rt.close()
             return None
         ts = _now_ts()
         lease_id = self._lease_id(label, agent_id, ts)
-        self._ctx[lease_id] = {'cm': cm, 'tid': threading.get_ident()}
+        self._ctx[lease_id] = {'lr': lr, 'root': rt, 'tid': threading.get_ident()}
         try:
-            self._log(lease_id, 'acquire', 'label=%s agent=%s' % (label, agent_id))
+            self._log(lease_id, 'acquire', 'label=%s agent=%s' % (label, agent_id), rt)
         except BaseException:
             # 记账失败不得泄漏根锁：摘掉登记并退锁，再抛
             # A failed bookkeeping write must not leak the root lock: drop the registration,
-            # exit the context, then re-raise
+            # release the lock, then re-raise
             self._ctx.pop(lease_id, None)
-            cm.__exit__(None, None, None)
+            lr.release()
+            rt.close()
             raise
         return lease_id
 
@@ -137,9 +143,10 @@ class AgentLock:
                                '（锁按账本根、按线程持有）' % (lease_id, ent['tid']))
         self._ctx.pop(lease_id, None)
         try:
-            self._log(lease_id, 'release')
+            self._log(lease_id, 'release', root=ent['root'])
         finally:
-            ent['cm'].__exit__(None, None, None)
+            ent['lr'].release()
+            ent['root'].close()
         return True
 
     def held_by(self, label):

@@ -385,13 +385,13 @@ def test_root_from_conf():
         d = mk('')
         os.environ['DAYBOOK_ROOT'] = d
         ok = _ok('10.1 conf root 为空 ⇒ conf 所在目录（realpath 归一）',
-                 mr._root() == os.path.realpath(d), mr._root()) and ok
+                 os.fspath(mr._root()) == os.path.realpath(d), os.fspath(mr._root())) and ok
 
         d2 = mk('ledger')
         os.makedirs(os.path.join(d2, 'ledger'))
         os.environ['DAYBOOK_ROOT'] = d2
         ok = _ok('10.2 conf root=ledger ⇒ conf 目录/ledger（realpath 归一）',
-                 mr._root() == os.path.realpath(os.path.join(d2, 'ledger')), mr._root()) and ok
+                 os.fspath(mr._root()) == os.path.realpath(os.path.join(d2, 'ledger')), os.fspath(mr._root())) and ok
 
         d3 = mk('./nope')
         os.environ['DAYBOOK_ROOT'] = d3
@@ -409,7 +409,9 @@ def test_root_from_conf():
         with_env = mr._root()
         os.environ.pop('DAYBOOK_ROOT', None)
         ok = _ok('10.4 当前目录与 DAYBOOK_ROOT 指向同一账本',
-                 no_env == with_env == os.path.realpath(d4), '%s | %s' % (no_env, with_env)) and ok
+                 no_env.dev_ino == with_env.dev_ino
+                 and os.fspath(no_env) == os.path.realpath(d4),
+                 '%s | %s' % (no_env, with_env)) and ok
 
         os.environ['DAYBOOK_ROOT'] = '/no/such/dir_xyz'
         try:

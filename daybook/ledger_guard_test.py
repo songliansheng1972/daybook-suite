@@ -136,6 +136,8 @@ WRITE_PATHS = (
     ('path_leak_check.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
     ('safeio.py', '_append', 'impl', 'safeio 唯一写链（追加）'),
     ('safeio.py', '_replace', 'impl', 'safeio 唯一写链（临时件 + replace + fsync(dfd)）'),
+    ('safeio.py', '_append_win', 'impl', 'Windows 追加（realpath 归属判 + O_APPEND + inode 复核）'),
+    ('safeio.py', '_replace_win', 'impl', 'Windows 替换（临时件 + os.replace）'),
     ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
     ('task_volume.py', 'create', 'ledger', '账本内容/派生件'),
     ('task_volume.py', '_transition_locked', 'ledger', '账本内容/派生件'),
@@ -1677,14 +1679,14 @@ open(cp, 'w', encoding='utf-8').write('[index]\nroot=\nout_dir=索引\n')
 before = open(p, 'rb').read()
 # 不持账本根锁直接调用 ⇒ 必须抛错且零写
 try:
-    safeio.append_inplace(p, 'x\n', d, conf_path=cp)
+    safeio.append_inplace(p, 'x\n', d)
     print('NO_LOCK_NO_ERROR')
     sys.exit(3)
 except RuntimeError:
     pass
 assert open(p, 'rb').read() == before, '未持锁调用改动了文件'
 with safeio.locked(d):
-    padded = safeio.append_inplace(p, '账\t2\tt\t测试\ty\t皮特\n', d, conf_path=cp)
+    padded = safeio.append_inplace(p, '账\t2\tt\t测试\ty\t皮特\n', d)
 data = open(p, 'rb').read()
 assert data.endswith(b'\n'), '追加后仍不是以换行结尾'
 assert '半'.encode('utf-8') in data, '合法的末行被截掉了'
@@ -1839,13 +1841,13 @@ def _case_tail_no_truncate(tmp):
     n_guard = "                    elif n_idx != cur.get('n', -1):"
     _ok('AJ 变异前置：找到「索引行数与游标不符」守卫', n_guard in src)
     src = src.replace(n_guard, '                    elif False:')
-    ap = ("""            if append_inplace(_idf, data, root, conf_path=conf_path) and report is not None:
+    ap = ("""            if append_inplace(_idf, data, root) and report is not None:
                 report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))""")
     mut_ap = ("""            if os.path.exists(_idf):
                 _d0 = open(_idf, 'rb').read()
                 if _d0 and not _d0.endswith(b'\\n'):
                     open(_idf, 'wb').write(_d0[:_d0.rfind(b'\\n') + 1])
-            append_inplace(_idf, data, root, conf_path=conf_path)""")
+            append_inplace(_idf, data, root)""")
     _ok('AJ 变异前置：找到增量追加行', ap in src)
     src = src.replace(ap, mut_ap)
     io.open(os.path.join(mut, 'daybook.py'), 'w', encoding='utf-8').write(src)
@@ -1886,7 +1888,7 @@ other = os.path.join(d, 'other'); os.makedirs(other, exist_ok=True)
 def attempt(root):
     before = open(p, 'rb').read()
     try:
-        safeio.append_inplace(p, 'b\n', root, conf_path=cp)
+        safeio.append_inplace(p, 'b\n', root)
     except RuntimeError:
         return 'RAISED_ZERO' if open(p, 'rb').read() == before else 'RAISED_DIRTY'
     return 'WROTE'
@@ -1925,7 +1927,7 @@ elif mode == 'outside':
     with safeio.locked(d):
         before = open(p2, 'rb').read()
         try:
-            safeio.append_inplace(p2, 'b\n', d, conf_path=cp)
+            safeio.append_inplace(p2, 'b\n', d)
             print('WROTE')
         except RuntimeError:
             print('RAISED_ZERO' if open(p2, 'rb').read() == before else 'RAISED_DIRTY')
@@ -1939,7 +1941,7 @@ elif mode == 'hardlink':
     os.link(secret, p3)
     with safeio.locked(d):
         try:
-            safeio.append_inplace(p3, 'b\n', d, conf_path=cp)
+            safeio.append_inplace(p3, 'b\n', d)
             print('WROTE_BOTH' if open(secret, 'rb').read() == b'a\nb\n' else 'WROTE_ONE')
         except RuntimeError:
             print('RAISED')
@@ -1957,7 +1959,7 @@ elif mode == 'ancestor':
     os.symlink(out, sub)
     with safeio.locked(d):
         try:
-            safeio.append_inplace(os.path.join(sub, 'leak.tsv'), 'b\n', d, conf_path=cp)
+            safeio.append_inplace(os.path.join(sub, 'leak.tsv'), 'b\n', d)
             print('WROTE')
         except RuntimeError:
             print('ANCESTOR_ZERO' if open(leak, 'rb').read() == b'a\n' else 'ANCESTOR_DIRTY')
@@ -1990,7 +1992,7 @@ elif mode == 'race':
     with safeio.locked(d):
         for _ in range(300):
             try:
-                safeio.append_inplace(os.path.join(sub, 'leak.tsv'), b'x\n', d, conf_path=cp)
+                safeio.append_inplace(os.path.join(sub, 'leak.tsv'), b'x\n', d)
                 ok += 1
             except RuntimeError:
                 rej += 1
@@ -2011,7 +2013,7 @@ elif mode == 'prims':
         for fn in ('x.txt', 'y.txt', 'z.txt', 'w.txt'):
             try:
                 if fn == 'x.txt':
-                    safeio.append_inplace(os.path.join(sub, fn), 'APP\n', d, conf_path=cp)
+                    safeio.append_inplace(os.path.join(sub, fn), 'APP\n', d)
                 elif fn == 'y.txt':
                     safeio.atomic_append(os.path.join(sub, fn), 'APP\n', root=d)
                 elif fn == 'z.txt':
@@ -2067,7 +2069,7 @@ elif mode == 'alias':
     open(os.path.join(d, 'alias_written.txt'), 'wb').write(b'')
     with safeio.locked(d):
         try:
-            safeio.append_inplace(os.path.join(alias, 'alias_written.txt'), 'A\n', d, conf_path=cp)
+            safeio.append_inplace(os.path.join(alias, 'alias_written.txt'), 'A\n', d)
             print('ALIAS_OK' if os.path.exists(os.path.join(d, 'alias_written.txt')) else 'ALIAS_LOST')
         except RuntimeError as exc:
             print('ALIAS_REJECT %s' % exc)
@@ -2088,10 +2090,10 @@ elif mode == 'mode200':
     acl_readable = os.access(p8, os.R_OK)
     with safeio.locked(d):
         try:
-            padded7 = safeio.append_inplace(p7, 'b\n', d, conf_path=cp)
+            padded7 = safeio.append_inplace(p7, 'b\n', d)
             size7 = os.stat(p7).st_size
             os.chmod(p7, 0o600)
-            padded8 = safeio.append_inplace(p8, 'b\n', d, conf_path=cp)
+            padded8 = safeio.append_inplace(p8, 'b\n', d)
             size8 = os.stat(p8).st_size
             ok = (size7 == 4 and padded7 is False and not acl_readable
                   and size8 == 4 and padded8 is False)
@@ -2112,7 +2114,7 @@ elif mode == 'refuse':
         os.close(fd)
         os.chmod(q, perm)
         try:
-            safeio.append_inplace(q, 'b\n', d, conf_path=cp)
+            safeio.append_inplace(q, 'b\n', d)
             bad.append(tag)
         except RuntimeError:
             pass
@@ -2124,11 +2126,11 @@ elif mode == 'refuse':
         try:
             if tag == 'enoent':
                 safeio.append_inplace(os.path.join(d, 'nope_dir', 'x.txt'), 'b\n',
-                                      d, conf_path=cp)
+                                      d)
             elif tag == 'eisdir':
-                safeio.append_inplace(os.path.join(d, 'eisdir'), 'b\n', d, conf_path=cp)
+                safeio.append_inplace(os.path.join(d, 'eisdir'), 'b\n', d)
             else:
-                safeio.append_inplace(os.path.join(d, 'eloop'), 'b\n', d, conf_path=cp)
+                safeio.append_inplace(os.path.join(d, 'eloop'), 'b\n', d)
             bad.append(tag)
         except RuntimeError:
             pass
@@ -2165,7 +2167,7 @@ elif mode == 'nofile':
     miss = os.path.join(d, 'no_such_file.txt')
     try:
         with safeio.locked(d):
-            safeio.append_inplace(miss, 'x\n', d, conf_path=cp)
+            safeio.append_inplace(miss, 'x\n', d)
         print('NOFILE_MISS')
     except RuntimeError as exc:
         print('NOFILE_OK' if not os.path.exists(miss) and '不存在' in str(exc)
@@ -2187,7 +2189,7 @@ elif mode == 'replace':
     os.write = hooked
     try:
         with safeio.locked(d):
-            safeio.append_inplace(p, 'b\n', d, conf_path=cp)
+            safeio.append_inplace(p, 'b\n', d)
         print('REPLACE_MISS')
     except RuntimeError as exc:
         print('REPLACE_OK' if '替换' in str(exc) else 'REPLACE_ERR %s' % exc)
@@ -2258,8 +2260,12 @@ elif mode == 'wait':
     t.start()
     time.sleep(0.05)
     t0 = time.time()
-    with safeio.locked(d):
-        print('WAIT %.3f %s' % (time.time() - t0, safeio.exclusive_held(d)))
+    rt = safeio.Root._from_dir_path(d)
+    try:
+        with rt.lock():
+            print('WAIT %.3f %s' % (time.time() - t0, safeio.exclusive_held(rt)))
+    finally:
+        rt.close()
     t.join()
 '''
 
@@ -2361,8 +2367,10 @@ def _nest():
 
 def _swap():
     # 持锁后根路径被替换：写必须落打开时的 inode，路径上的新 inode 零触碰。
-    # After the root path is swapped while locked: the write must land on the inode opened,
-    # and the new inode on the path must stay untouched.
+    # 句柄由调用方在换根前打开 —— 换根后按**新路径**重新 open 才是显式的「另一个根」。
+    # After the root path is swapped while locked: the write must land on the inode opened and
+    # the new inode on the path must stay untouched. The handle is opened before the swap;
+    # re-opening the path afterwards is an explicit "different root".
     base = tempfile.mkdtemp(prefix='rootswap_')
     A = os.path.join(base, 'A')
     B = os.path.join(base, 'B')
@@ -2370,14 +2378,45 @@ def _swap():
     os.makedirs(B)
     open(os.path.join(A, 'vol.txt'), 'wb').write(b'a-original\n')
     open(os.path.join(B, 'vol.txt'), 'wb').write(b'b-original\n')
-    with safeio.locked(A):
-        os.rename(A, os.path.join(base, 'A-moved'))
-        os.rename(B, A)
-        safeio.atomic_write(os.path.join(A, 'vol.txt'), b'written-after-swap\n', root=A)
+    rt = safeio.Root._from_dir_path(A)
+    try:
+        with rt.lock():
+            os.rename(A, os.path.join(base, 'A-moved'))
+            os.rename(B, A)
+            safeio.atomic_write(os.path.join(A, 'vol.txt'), b'written-after-swap\n', root=rt)
+    finally:
+        rt.close()
     new = open(os.path.join(A, 'vol.txt'), 'rb').read()
     old = open(os.path.join(base, 'A-moved', 'vol.txt'), 'rb').read()
     print('SWAP_OK' if new == b'b-original\n' and old == b'written-after-swap\n'
           else 'SWAP_BAD new=%r old=%r' % (new, old))
+
+
+def _swapnest():
+    # 句柄身份必须在 open 时固定：换根后同一句柄的「同线程重复获取」仍须毫秒级报错，
+    # 否则锁身份被现算成新 inode，重入保护在换根后蒸发。
+    # The handle identity must be fixed at open: after a swap, same-thread re-entry on that
+    # handle must still raise in milliseconds, otherwise re-entry protection evaporates.
+    base = tempfile.mkdtemp(prefix='swapnest_')
+    A = os.path.join(base, 'A')
+    B = os.path.join(base, 'B')
+    os.makedirs(A)
+    os.makedirs(B)
+    rt = safeio.Root._from_dir_path(A)
+    try:
+        with rt.lock():
+            os.rename(A, os.path.join(base, 'A-moved'))
+            os.rename(B, A)
+            t0 = time.time()
+            try:
+                rt.lock(timeout=1.0)
+                print('SWAPNEST_ACQUIRED')
+            except RuntimeError:
+                print('SWAPNEST_OK' if time.time() - t0 < 0.2 else 'SWAPNEST_SLOW')
+            except TimeoutError:
+                print('SWAPNEST_TIMEOUT')
+    finally:
+        rt.close()
 
 
 def _split():
@@ -2395,15 +2434,24 @@ def _split():
     gate = threading.Event()
 
     def writer_a():
-        with safeio.locked(A):
-            gate.set()
-            old = open(os.path.join(A, 'derived.txt'), 'rb').read()
-            time.sleep(0.6)
-            safeio.atomic_write(os.path.join(A, 'derived.txt'), old + b'v2-from-A\n', root=A)
+        rt_a = safeio.Root._from_dir_path(A)
+        try:
+            with rt_a.lock():
+                gate.set()
+                old = open(os.path.join(A, 'derived.txt'), 'rb').read()
+                time.sleep(0.6)
+                safeio.atomic_write(os.path.join(A, 'derived.txt'), old + b'v2-from-A\n',
+                                    root=rt_a)
+        finally:
+            rt_a.close()
 
     def writer_b():
         gate.wait()
-        safeio.atomic_append(os.path.join(A, 'derived.txt'), b'v1-from-B\n', root=A)
+        rt_b = safeio.Root._from_dir_path(A)     # 换根后按新路径开 ⇒ 新 inode、新锁（显式）
+        try:
+            safeio.atomic_append(os.path.join(A, 'derived.txt'), b'v1-from-B\n', root=rt_b)
+        finally:
+            rt_b.close()
 
     ta = threading.Thread(target=writer_a)
     ta.start()
@@ -2422,7 +2470,8 @@ def _split():
 
 
 try:
-    {'alias': _alias, 'nest': _nest, 'swap': _swap, 'split': _split}[mode]()
+    {'alias': _alias, 'nest': _nest, 'swap': _swap, 'swapnest': _swapnest,
+     'split': _split}[mode]()
 finally:
     pass
 '''
@@ -2659,6 +2708,16 @@ def _case_lock_assert(tmp):
         got, err = _root_case(md, 'nest')
         _mut_ok('M1 锁身份改 label ⇒ P1 红（不互认/等超时）', got != 'NEST_OK',
                 '%s %s' % (got, err[:100]))
+    # M1b：锁身份改成「现算 stat(label)」⇒ 换根后同句柄的重入保护蒸发（P1 swapnest 必红）
+    # M1b: lock identity recomputed from stat(label) ⇒ after a swap the same handle loses its
+    # re-entry protection (P1 swapnest must go red)
+    md = _mut("        key = self.dev_ino",
+              "        _st = os.stat(self.label)\n"
+              "        key = (_st.st_dev, _st.st_ino)", 'M1b 锁身份现算')
+    if md:
+        got, err = _root_case(md, 'swapnest')
+        _mut_ok('M1b 锁身份现算（换根后）⇒ P1 红（重入静默放行）', got != 'SWAPNEST_OK',
+                '%s %s' % (got, err[:100]))
     # M2：去掉走查的 O_NOFOLLOW ⇒ 软链祖先被跟随，写逃到根外
     # M2: drop O_NOFOLLOW in the walk ⇒ a symlinked ancestor is followed and the write escapes
     md = _mut("os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY",
@@ -2678,8 +2737,8 @@ def _case_lock_assert(tmp):
                 got != 'POSIX_OK', '%s %s' % (got, err[:120]))
     # M5：删掉 append_inplace 的持锁前置 ⇒ 无锁也能写
     # M5: drop append_inplace's lock precondition ⇒ an unlocked write is allowed
-    md = _mut("    lr = _held_for(resolved)\n    if lr is None:",
-              "    lr = _held_for(resolved)\n    if False:", 'M5 去持锁前置')
+    md = _mut("        lr = _held_for_root(rt)\n        if lr is None:",
+              "        lr = _held_for_root(rt)\n        if False:", 'M5 去持锁前置')
     if md:
         got, err = _ak_scenario(md, 'nolock')
         _mut_ok('M5 去掉 append_inplace 持锁前置 ⇒ 无锁写放行（判据红）',
@@ -2699,7 +2758,8 @@ def _case_lock_assert(tmp):
         _skip('AK 变异④：当前盒无 agent_lock.py')
     else:
         agent_src = io.open(os.path.join(here, 'agent_lock.py'), encoding='utf-8').read()
-        dup_anchor = """        if exclusive_held(self.root):
+        dup_anchor = """        if exclusive_held(rt):
+            rt.close()
             raise RuntimeError('agent_lock: 同线程重复获取账本根锁（%s）·拒绝等待'
                                '（同线程等自己必自死锁；互斥范围是整个账本根）' % self.root)"""
         assert dup_anchor in agent_src
@@ -2730,7 +2790,7 @@ def _case_lock_assert(tmp):
     # Mutation ⑤: put a shared-lock branch back ⇒ the static criterion must go red
     def _has_shared(txt):
         return (_SHARED_TOKEN in txt) or ('LOCK_SH' in txt)
-    mut_shared = safeio_src.replace('def locked(path, timeout=None):',
+    mut_shared = safeio_src.replace('def locked(x, timeout=None):',
                                     'def locked(path, timeout=None, %sFalse):' % _SHARED_TOKEN)
     _ok('AK 变异⑤：保留 shared 分支 ⇒ 静态判据红',
         (not _has_shared(safeio_src)) and _has_shared(mut_shared),
@@ -2755,6 +2815,22 @@ def _case_root_handle(tmp):
     got, err = _root_case(here, 'split')
     _ok('P1/P5 换根下整写不覆盖追加（丢更新=False）', got == 'SPLIT_OK',
         '%s %s' % (got, err[:120]))
+    got, err = _root_case(here, 'swapnest')
+    _ok('P1 句柄身份在 open 时固定（换根后同线程重入仍毫秒级报错）',
+        got == 'SWAPNEST_OK', '%s %s' % (got, err[:120]))
+    # 步骤 2 静态：没有以路径为键的持有表，exclusive_held 只接受句柄，append_inplace 不再解析 conf
+    # Step-2 static: no path-keyed held table, exclusive_held takes handles only, and
+    # append_inplace no longer resolves a conf
+    safeio_src2 = io.open(os.path.join(here, 'safeio.py'), encoding='utf-8').read()
+    nopath = ('def _held_for(' not in safeio_src2
+              and 'def _held_for_root(' in safeio_src2
+              and 'def exclusive_held(root):' in safeio_src2
+              and 'isinstance(root, Root)' in safeio_src2
+              and 'def root_scope(' in safeio_src2
+              and 'def append_inplace(path, data, root):' in safeio_src2
+              and 'read_conf_value' not in safeio_src2)
+    _ok('P1[步骤2 静态] 持有表只按 dev_ino / exclusive_held 只收句柄 / append_inplace 不解析 conf',
+        nopath, 'ok=%s' % nopath)
 
 
 _HOLD = r'''
@@ -2855,7 +2931,9 @@ try:
     lk.acquire('task:A', 'ag1')
 except (PermissionError, RuntimeError):
     denied = True
-held = safeio.exclusive_held(d)
+_rt = safeio.Root._from_dir_path(d)
+held = safeio.exclusive_held(_rt)
+_rt.close()
 ctx = len(lk._ctx)
 os.chmod(d, 0o755)
 lk2 = AgentLock(lease, root=d)
@@ -4081,6 +4159,175 @@ def _case_entry_wrappers(tmp):
             shutil.rmtree(d, ignore_errors=True)
 
 
+_WIN_CHILD = r'''
+import os, sys, tempfile, shutil
+src = sys.argv[1]
+sys.path.insert(0, src)
+import safeio
+
+if os.name != 'nt':
+    # POSIX 上强制走 Windows 路径分支；互斥量用 flock 占位（真实互斥量另由 W2 在 Windows 验证）。
+    # Force the Windows path branch on POSIX; the mutex is stubbed with flock (the real mutex is
+    # covered by W2 on Windows).
+    import fcntl
+    safeio._WINDOWS = True
+    def _wl(rt, timeout):
+        fd = os.open(rt.label, os.O_RDONLY)
+        if timeout is None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    def _wu(fd):
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+    safeio._win_lock, safeio._win_unlock = _wl, _wu
+
+base = tempfile.mkdtemp(prefix='winpath_')
+try:
+    A = os.path.join(base, 'A')
+    B = os.path.join(base, 'B')
+    os.makedirs(A)
+    os.makedirs(B)
+    rt = safeio.Root._from_dir_path(A, 'winpath')
+    assert rt._fd is None, 'Windows 路径不应有目录 fd'
+    with rt.lock() as lr:
+        assert lr.write(rt.rel('x.txt'), b'a\n', mode=safeio.WriteMode.APPEND_CREATE) is False
+        assert lr.write(rt.rel('x.txt'), b'b', mode=safeio.WriteMode.APPEND_EXISTING,
+                        pad_newline=True) is False
+        lr.write(rt.rel('y.txt'), b'zz\n', mode=safeio.WriteMode.REPLACE)
+    assert rt.read(rt.rel('x.txt')) == b'a\nb'
+    assert rt.read(rt.rel('y.txt')) == b'zz\n'
+    try:
+        with rt.lock() as lr:
+            lr.write(rt.rel('nope.txt'), b'q\n', mode=safeio.WriteMode.APPEND_EXISTING)
+        raise AssertionError('缺件 append 未报错')
+    except RuntimeError:
+        pass
+    assert not os.path.exists(os.path.join(A, 'nope.txt'))
+    os.symlink(B, os.path.join(A, 'link'))
+    try:
+        with rt.lock() as lr:
+            lr.write(rt.rel('link', 'z.txt'), b'q\n', mode=safeio.WriteMode.APPEND_CREATE)
+        raise AssertionError('重解析点未拒绝')
+    except RuntimeError:
+        pass
+    assert not os.path.exists(os.path.join(B, 'z.txt'))
+    print('WINPATH_OK')
+finally:
+    shutil.rmtree(base, ignore_errors=True)
+'''
+
+_WIN_HOLD = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import safeio
+rt = safeio.Root._from_dir_path(sys.argv[2], 'winhold')
+with rt.lock():
+    print('READY', flush=True)
+    time.sleep(1.0)
+rt.close()
+'''
+
+_WIN_TRY = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import safeio
+rt = safeio.Root._from_dir_path(sys.argv[2], 'wintry')
+try:
+    rt.lock(timeout=0.3)
+    print('WINLOCK_BAD')
+except TimeoutError:
+    print('WINLOCK_OK')
+finally:
+    rt.close()
+'''
+
+
+def _case_win_path(work):
+    """W1/W2：Windows 写路径分支（POSIX 上强制跑一遍）与 Windows 原生互斥量。
+    W1/W2: the Windows write-path branch (forced on POSIX to keep it exercised) and the native
+    Windows mutex. A judge that cannot run on the current platform is skipped **with its reason
+    printed and counted** — never silently treated as passing."""
+    d = os.path.join(work, 'winpath')
+    os.makedirs(d)
+    child = os.path.join(d, 'w.py')
+    with io.open(child, 'w', encoding='utf-8') as f:
+        f.write(_WIN_CHILD)
+    r = subprocess.run([sys.executable, '-I', '-B', child, os.path.dirname(SRC_BIN)],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True, timeout=180)
+    out = (r.stdout + r.stderr).strip()
+    _ok('W1 Windows 写路径分支（无目录 fd·realpath 归属判·拒绝重解析点·追加后复核 inode）',
+        'WINPATH_OK' in out, out[-200:])
+    if os.name == 'nt':
+        hold = os.path.join(d, 'hold.py')
+        try_ = os.path.join(d, 'try.py')
+        with io.open(hold, 'w', encoding='utf-8') as f:
+            f.write(_WIN_HOLD)
+        with io.open(try_, 'w', encoding='utf-8') as f:
+            f.write(_WIN_TRY)
+        root = os.path.join(d, 'ledger')
+        os.makedirs(root)
+        p = subprocess.Popen([sys.executable, '-B', hold, os.path.dirname(SRC_BIN), root],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             universal_newlines=True)
+        try:
+            p.stdout.readline()
+            r2 = subprocess.run([sys.executable, '-B', try_, os.path.dirname(SRC_BIN), root],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                universal_newlines=True, timeout=60)
+            out2 = (r2.stdout + r2.stderr).strip()
+        finally:
+            p.communicate(timeout=60)
+        _ok('W2 Windows 命名互斥量：持锁进程期间另一进程 0.3s 内拿不到锁',
+            'WINLOCK_OK' in out2, out2[-200:])
+    else:
+        _skip('W2 Windows 命名互斥量/原生写路径：当前平台 POSIX，未在 Windows 验证（计数 1）')
+
+
+def _case_plain_migrate(work):
+    """TXT/MIG：明文人可读可查验（只用标准库）＋ 干净位置换用户目录、只凭仓内文件说清最后一条与下一步。
+    TXT/MIG: plain-text readable/verifiable with the standard library only, and a clean-location
+    / different-HOME run that names the last record and the next action from repo files alone."""
+    d = os.path.join(work, 'plain')
+    os.makedirs(d)
+    root = os.path.join(d, 'ledger')
+    os.makedirs(os.path.join(root, '索引'))
+    vol = os.path.join(root, '账卷.txt')
+    with io.open(vol, 'w', encoding='utf-8') as f:
+        f.write('[2026-11-15 09:01:00] [科研] [第一条] [老宋] 甲\n')
+        f.write('[2026-11-15 09:02:00] [审计] [第二条] [老宋] 乙\n')
+    idx = os.path.join(root, '索引', 'index_账.tsv')
+    with io.open(idx, 'w', encoding='utf-8') as f:
+        f.write('账\t1\t2026-11-15 09:01:00\t科研\t第一条\t老宋\n')
+        f.write('账\t2\t2026-11-15 09:02:00\t审计\t第二条\t老宋\n')
+    # 干净位置：只拷仓内 .py，隔离模式（-I -S）⇒ 不读 site-packages、不认环境变量
+    # Clean location: copy repo .py files only, run isolated (-I -S) so no site-packages or env
+    clean = os.path.join(d, 'clean')
+    os.makedirs(clean)
+    srcdir = os.path.dirname(SRC_BIN)
+    for name in os.listdir(srcdir):
+        if name.endswith('.py'):
+            shutil.copy2(os.path.join(srcdir, name), os.path.join(clean, name))
+    home = os.path.join(d, 'home')
+    os.makedirs(home)
+    env = {'HOME': home, 'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+           'LANG': 'C.UTF-8'}
+    r = subprocess.run([sys.executable, '-I', '-S', '-B',
+                        os.path.join(clean, 'verify_plain.py'), vol, idx],
+                       cwd='/', env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True, timeout=120)
+    out = (r.stdout + r.stderr).strip()
+    _ok('TXT 明文人可读可查验：不用任何 daybook 模块即读出时间/类别/标题/作者与完整性结论',
+        r.returncode == 0 and '时间=2026-11-15 09:02:00' in out and '类别=审计' in out
+        and '标题=第二条' in out and '作者=老宋' in out
+        and '完整性：OK' in out, out[-240:])
+    _ok('MIG 干净位置/换用户目录/无私有依赖：只凭仓内文件说清最后一条与下一步',
+        '最后一条：时间=2026-11-15 09:02:00' in out and '下一步：' in out
+        and 'Traceback' not in out, out[-240:])
+
+
 def main():
     if not os.path.exists(SRC_BIN):
         print('找不到被测 daybook.py：%s' % SRC_BIN, file=sys.stderr)
@@ -4481,9 +4728,10 @@ def main():
         _case_entry_wrappers(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
-        _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',
-            'import msvcrt' not in safeio_src
-            and 'os.remove(lock_file)' not in safeio_src
+        _ok('静态：Windows 写路径/互斥实现存在（命名互斥量 + realpath 归属判 + 拒绝重解析点）',
+            '_win_lock' in safeio_src and '_win_rel' in safeio_src
+            and '_append_win' in safeio_src and '_replace_win' in safeio_src
+            and 'CreateMutexW' in safeio_src and 'os.remove(lock_file)' not in safeio_src
             and '_HAS_FCNTL' not in safeio_src)
         daybook_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'daybook.py'),
                               encoding='utf-8').read()
@@ -4497,6 +4745,8 @@ def main():
         # artifacts changes nothing)
         _case_p(work)
         _case_q(work)
+        _case_win_path(work)
+        _case_plain_migrate(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

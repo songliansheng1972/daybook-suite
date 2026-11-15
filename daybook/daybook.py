@@ -455,7 +455,7 @@ def _txt_lines(rows):
             r[5] if len(r) > 5 else '')
 
 
-def _run_ops(ops, report=None, root=None, conf_path=None):
+def _run_ops(ops, report=None, root=None):
     """执行 build 暂存的落盘动作（只有账本可信时才会被调用）。
     Execute the writes staged by build (only ever called when the ledger is trustworthy).
     非追加型派生件走 safeio.atomic_write（同目录临时文件 + os.replace），读者不取写锁；
@@ -499,10 +499,9 @@ def _run_ops(ops, report=None, root=None, conf_path=None):
         elif kind == 'append':
             _idf, rows, itxt, vol = op[1], op[2], op[3], op[4]
             data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
-            if append_inplace(_idf, data, root, conf_path=conf_path) and report is not None:
+            if append_inplace(_idf, data, root) and report is not None:
                 report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))
-            if append_inplace(itxt, ''.join(_txt_lines(rows)), root,
-                               conf_path=conf_path) and report is not None:
+            if append_inplace(itxt, ''.join(_txt_lines(rows)), root) and report is not None:
                 report.append((vol, '★ 索引 TXT 末行无换行·已补换行后追加（不截断）'))
         elif kind == 'rewrite':
             _idf, fields, rows, itxt, vol = op[1], op[2], op[3], op[4], op[5]
@@ -518,7 +517,7 @@ def _run_ops(ops, report=None, root=None, conf_path=None):
             _atomic_write(itxt, head + ''.join(_txt_lines(rows)), root=root)
 
 
-def build(conf, root='.', baseline=False, dry=False, conf_path=None):
+def build(conf, root='.', baseline=False, dry=False):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
     tail-read on pure append, flag violations when the old part was rewritten.
@@ -972,7 +971,7 @@ def build(conf, root='.', baseline=False, dry=False, conf_path=None):
         untrusted = bool(CONFIG_ERRORS or VIOLATIONS or EVIDENCE_MISSING)
         if (not dry) and not untrusted:
             os.makedirs(outdir, exist_ok=True)
-            _run_ops(ops, report, root=root, conf_path=conf_path)
+            _run_ops(ops, report, root=root)
             from safeio import atomic_write as _atomic_write
             man = ['# 卷首清单 / Volume manifest\n',
                    '# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
@@ -1022,7 +1021,7 @@ def build(conf, root='.', baseline=False, dry=False, conf_path=None):
                  '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False), root=root)
             # 提交顺序：TSV→TXT→清单→时戳→游标（游标最后）
             # Commit order: TSV → TXT → manifest → stamp → cursor (cursor last)
-            _run_ops(cursor_ops, root=root, conf_path=conf_path)
+            _run_ops(cursor_ops, root=root)
         return per, total, report
 
 
@@ -1474,10 +1473,13 @@ def _main():
     if conf_path is None:
         sys.stderr.write(not_found_message(conf_dir) + '\n')
         return 2
+    from safeio import Root
     try:
         conf = load_conf(conf_path)
-        root = ledger_home(_home)
-    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # ★ 步骤 2：入口只解析一次根，向下传 Root 句柄（不再传根路径字符串）。
+        # ★ Step 2: the entry resolves the root once and passes the Root handle down.
+        root = Root.open(_home)
+    except (OSError, UnicodeDecodeError, ValueError, RuntimeError) as exc:
         sys.stderr.write('★ 配置错（检查 daybook.conf 与 [index] root）：%s\n' % exc)
         return 2
     # watch 监视面＝所有真实卷文件（内部卷变动也要触发）；索引面仍只认 conf['volumes']
@@ -1493,7 +1495,7 @@ def _main():
         else:
             sys.stderr.write('  ★ 跳过非卷键：%s=%s\n' % (k, v))
     if cmd == 'index':
-        per, total, rep = build(conf, root, conf_path=conf_path)
+        per, total, rep = build(conf, root)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
         if EVIDENCE_MISSING:
@@ -1543,7 +1545,7 @@ def _main():
         # Explicit baseline: a human accepts the current volumes as the new baseline. Verify
         # first without writing; refuse when any append-only violation or config error exists —
         # never accept "it was rewritten" as the new baseline on the user's behalf.
-        per, total, rep = build(conf, root, baseline=True, dry=True, conf_path=conf_path)
+        per, total, rep = build(conf, root, baseline=True, dry=True)
         if CONFIG_ERRORS or VIOLATIONS:
             for v, w in rep: sys.stderr.write('  %s: %s\n' % (v, w))
             if CONFIG_ERRORS:
@@ -1558,7 +1560,7 @@ def _main():
             sys.exit(worst_exit(codes))
         # 作者口径红只报不拦（人记账不必因未注册被卡），认基线继续
         # Author-convention red is reported but does not block a baseline
-        per, total, rep = build(conf, root, baseline=True, conf_path=conf_path)
+        per, total, rep = build(conf, root, baseline=True)
         if AUTHOR_RED:
             sys.stderr.write('★ 作者口径红：只报不拦，基线照认并已写回派生件\n')
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
@@ -1584,17 +1586,28 @@ def _main():
         last = None
         print('监视 %d 卷，每 %d 秒查一次变动。Ctrl-C 退出。' % (len(vols), gap), flush=True)
         while True:
+            # ★ 步骤 2 换根语义：写总是落打开时的 inode；长跑入口每轮显式复核一次，
+            #   路径已不是本根 ⇒ 显式重开（不同 inode 就是不同根，不静默续写旧 inode）。
+            # ★ Step-2 root-swap semantics: writes land on the inode opened; a long-running
+            #   entry re-checks each round and explicitly re-opens when the path is no longer
+            #   this root (a different inode is a different root — never a silent old-inode write).
+            try:
+                root.revalidate()
+            except RuntimeError as re_exc:
+                print('[%s] %s ⇒ 显式重开账本根' % (time.strftime('%H:%M:%S'), re_exc), flush=True)
+                root.close()
+                root = Root.open(_home)
             cur = hash_volumes(vols)
             if cur != last:
                 try:
-                    per, total, _rep = build(conf, root, conf_path=conf_path)
+                    per, total, _rep = build(conf, root)
                     # [多级] 变动续建：索引后自动重算四库式多级目录（失败不挡索引与备份）
                     # [multilevel] on change: rebuild the catalogue too (failure is non-blocking)
                     m_note = ''
                     if conf.get('multilevel', {}).get('multilevel_enabled', '是') in ('是', '1', 'true', 'True', 'yes'):
                         try:
                             import daybook_multidx
-                            _mp, _mt = daybook_multidx.build(conf, root, conf_path=conf_path)
+                            _mp, _mt = daybook_multidx.build(conf, root)
                             m_note = ' + 多级目录 %d 条' % _mt
                         except Exception as me:
                             m_note = '（多级目录失败：%s）' % me

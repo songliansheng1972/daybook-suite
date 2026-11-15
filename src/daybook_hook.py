@@ -242,9 +242,12 @@ def _main():
     if args and args[0] in ('-h', '--help'):
         print(__doc__ or '用法：daybook_hook.py [--home DIR] [对话卷 [关键词表]]')
         return 0
+    from safeio import Root
     try:
-        root = ledger_home(home)
-    except ValueError as exc:
+        # ★ 步骤 2：入口只解析一次根（Root 句柄），向下传句柄，不传根路径字符串。
+        # ★ Step 2: the entry resolves the root once (a Root handle) and passes it down.
+        root = Root.open(home)
+    except (ValueError, RuntimeError) as exc:
         sys.stderr.write('%s\n' % exc)
         return 2
     dialog_path = args[0] if len(args) >= 2 else os.path.join(root, '对话卷.txt')
