@@ -282,6 +282,20 @@ def build_total_md(vol_rows, now, orders=('子', '史', '集')):
     return '\n'.join(out) + '\n'
 
 
+def _tail_missing_newline(path):
+    """追加型派生件末字节是否不是换行（缺失或空文件都返回 False）。
+    Whether an append-type artifact ends without a newline (missing/empty ⇒ False)."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 0:
+                return False
+            f.seek(-1, os.SEEK_END)
+            return f.read(1) != b'\n'
+    except OSError:
+        return False
+
+
 def build(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
     """多级目录入口：整段持账本根排他锁（与 index/append 串行）。
     Multilevel entry: holds the ledger-root exclusive lock for the whole build
@@ -328,16 +342,20 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
         vol_rows[vol] = rows
         per[vol] = len(rows)
         _atomic_write(os.path.join(mdir, '%s_catalog.md' % vol), build_vol_md(vol, rows, now, l2name))
-        # 机读目录是只追加型：锁内原位追加新行（O(1)），崩溃半行先截断；Markdown 是摘要，仍原子替换。
+        # 机读目录是只追加型：锁内原位追加新行（O(1)）；末行无换行则转整卷重建
+        # （不截断：末行可能是合法的完整行）。Markdown 是摘要，仍原子替换。
         # The machine-readable catalogue is append-type: append the new rows in place under the
-        # lock (O(1)), truncating a crashed half-line first; the Markdown digest stays atomic.
+        # lock (O(1)); a newline-less tail triggers a whole-file rebuild (never a truncation:
+        # the last line may be a legal complete line). The Markdown digest stays atomic.
         tpath = os.path.join(mdir, '%s_catalog.tsv' % vol)
         prev = state.get(vol) if isinstance(state, dict) else None
         k = prev.get('rows') if isinstance(prev, dict) else None
-        if isinstance(k, int) and 0 <= k <= len(rows) and os.path.exists(tpath):
+        if isinstance(k, int) and 0 <= k <= len(rows) and os.path.exists(tpath) \
+                and not _tail_missing_newline(tpath):
             from safeio import append_inplace
             if len(rows) > k:
-                append_inplace(tpath, '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n')
+                append_inplace(tpath, '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n',
+                               root)
         else:
             _atomic_write(tpath, build_vol_tsv(vol, rows, l2name))
         state[vol] = {'rows': len(rows)}

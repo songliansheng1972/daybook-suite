@@ -54,7 +54,11 @@ class AgentLock:
         if not os.path.isdir(self.lock_dir):
             os.makedirs(self.lock_dir, exist_ok=True)
         if not os.path.exists(self.lease_vol):
-            open(self.lease_vol, 'a', encoding='utf-8').close()
+            # 租约卷在账本根内 ⇒ 建空件也走 safeio 原子写（持根锁），不许裸 open 建卷。
+            # The lease volume lives inside the ledger root ⇒ create it through safeio under
+            # the root lock; a bare open() is not allowed to create a ledger volume.
+            from safeio import atomic_append
+            atomic_append(self.lease_vol, b'', root=self.root)
         # 进程内持有的 fd（避免同进程重复释放） · fds held in-process (to avoid double-release within the same process)
         self._fds = {}  # lease_id -> fd · 内存租约映射 · in-memory lease map
 

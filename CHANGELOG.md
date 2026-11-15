@@ -33,22 +33,29 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 
 ### 返工补齐（2026-11-15）
 
-1. **写入口收口 + 写路径登记表可机检**：产品件里所有写账本的路径一律走 `safeio`
-   （`atomic_write` / `atomic_append` / 新增 `append_inplace`），`daybook_multidx` 增量 TSV、
-   hook 已处理状态、任务卷/心跳建卷、追加 CLI 的原地追加都不再有裸 `open(...,'ab'/'w')`。
-   `ledger_guard_test.py` 的 `WRITE_PATHS` 单一常量登记每条写路径（账本/safeio 实现/非账本，
-   非账本必须写理由），扫描器按包装清单还原 `import ... as` 别名，覆盖 `open` 写模式、
-   `os.open` 写标志、`os.replace/rename`、`shutil.copy*`、`Path.write_text/bytes`、
-   `tempfile`、`subprocess` 重定向；登记未实现、实现未登记、账本桶直写三向都红。
-2. **编排二阶解析修复**：`Hub.__init__` 传给 `resolve_volumes()` 的是 **conf 目录**（不是已解析的
+1. **写入口收口 + 写路径登记表可机检**：产品件里所有写账本根内件（含租约卷、`keys/` 密钥、
+   `backup/` 副本）一律走 `safeio`（`atomic_write` / `atomic_append` / `append_inplace`）；
+   密钥用 `atomic_write(..., mode=0o600)` 保权限，备份改为读源字节 + 原子写，不再有第二套写路径。
+   `ledger_guard_test.py` 的 `WRITE_PATHS` 单一常量登记每条写路径，桶含义由判据机器校验：
+   `ledger`（只许 safeio）、`lockfile`（锁件形态固定为 `<锁目录>/<资源>.lock`、不写数据）、
+   `other`（**只允许 tempfile 生成、位于系统临时目录的目标**，否则必须归账本）、`impl`（safeio 自身）。
+   扫描器按包装清单还原 `import ... as` 别名，覆盖 `open`/`io.open` 写模式、`os.open` 写标志、
+   `os.replace/rename`、`shutil.copy*`、`Path.write_text/bytes`、`tempfile`、`subprocess` 重定向。
+2. **增量追加不再截断**：`append_inplace` 只做「追加；末字节不是换行先补一个换行，其余字节不动」，
+   并移除 `repair_partial_tail`（该函数已删）。索引末行无换行（或游标不在行首）时一律转全量
+   重扫重建并报告，绝不「截掉再追加」——丢的只可能是可重算的派生件。`append_inplace` 自校验
+   账本根锁：未持锁直接抛错且零写（不依赖调用方纪律）。
+3. **编排二阶解析修复**：`Hub.__init__` 传给 `resolve_volumes()` 的是 **conf 目录**（不是已解析的
    账本根），`[index] root` 非空（相对/绝对）时 orch 命令不再 rc=2；`digest` 读卷表、
    `push_digest` 推送、`read_multidx_rows`/`make_entry_ref` 的 conf 来源同样改为 conf 目录。
-3. **环境变量优先级全仓一条线**：`--home` > `DAYBOOK_HOME` > `DAYBOOK_ROOT`（ROOT 仅兼容别名，
+4. **环境变量优先级全仓一条线**：`--home` > `DAYBOOK_HOME` > `DAYBOOK_ROOT`（ROOT 仅兼容别名，
    最低）；`cli_shim` 与产品共用 `ledger_root.ENV_VARS`，不再各写一套。
-4. **入口严格化**：`--home` 无值 rc=2（不再静默按 cwd 回落）；`mcp_server` 未知参数 rc=2
+5. **入口严格化**：`--home` 无值 rc=2（不再静默按 cwd 回落）；`mcp_server` 未知参数 rc=2
    （stdio 服务端不许带错旗标照常启动）并补 `--help`；追加 CLI 与 hook 的 `--help` 改为 rc=0。
-5. **判据自己报数**：登记/实扫/未登记/找不到/直写与 AF/AI 格数、源/盒项数一律由判据打印，
+6. **判据自己报数**：登记/实扫/未登记/找不到/直写、分桶、AF/AI 格数、源/盒项数一律由判据打印，
    报告只抄判据输出。
+7. **已知边界**：单次 `O_APPEND` 的原子性仅在 APFS 上实测（32 MB 单写、5179 次采样未见半条）；
+   更大写入与跨文件系统未验证，不构成保证。
 
 ## v4.0.5 · 2026-11-14
 

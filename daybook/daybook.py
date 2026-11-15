@@ -447,14 +447,16 @@ def _txt_lines(rows):
             r[5] if len(r) > 5 else '')
 
 
-def _run_ops(ops, report=None):
+def _run_ops(ops, report=None, root=None):
     """执行 build 暂存的落盘动作（只有账本可信时才会被调用）。
     Execute the writes staged by build (only ever called when the ledger is trustworthy).
     非追加型派生件走 safeio.atomic_write（同目录临时文件 + os.replace），读者不取写锁；
-    追加型（索引 TSV/TXT）在账本根锁内原位追加，崩溃半行先截断再续写（O(1)，不重写全文件）。
+    追加型（索引 TSV/TXT）在账本根锁内原位追加：末字节不是换行时先补一个换行再写，
+    **绝不截断**（末尾无换行可能是合法的完整行；增量路径见 build 里的全量重建回退）。
     Non-append artifacts use safeio.atomic_write (temp + os.replace); append-type artifacts
-    (index TSV/TXT) are appended in place under the ledger-root lock, with any crash tail
-    truncated first (O(1); the whole file is never rewritten)."""
+    (index TSV/TXT) are appended in place under the ledger-root lock: a missing trailing
+    newline is padded first, and **nothing is ever truncated** (a newline-less tail may be a
+    legal complete line; the incremental path falls back to a full rebuild in build)."""
     from safeio import atomic_write as _atomic_write, append_inplace
     for op in ops:
         kind = op[0]
@@ -489,13 +491,10 @@ def _run_ops(ops, report=None):
         elif kind == 'append':
             _idf, rows, itxt, vol = op[1], op[2], op[3], op[4]
             data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
-            _dropped = append_inplace(_idf, data)
-            if _dropped and report is not None:
-                report.append((vol, '★ 索引尾部半行（崩溃残留）已截断 %d 字节·续写（不进判据、不退 3）'
-                               % _dropped))
-            _tdropped = append_inplace(itxt, ''.join(_txt_lines(rows)))
-            if _tdropped and report is not None:
-                report.append((vol, '★ 索引 TXT 尾部半行已截断 %d 字节·续写' % _tdropped))
+            if append_inplace(_idf, data, root) and report is not None:
+                report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))
+            if append_inplace(itxt, ''.join(_txt_lines(rows)), root) and report is not None:
+                report.append((vol, '★ 索引 TXT 末行无换行·已补换行后追加（不截断）'))
         elif kind == 'rewrite':
             _idf, fields, rows, itxt, vol = op[1], op[2], op[3], op[4], op[5]
             data = '\t'.join(fields) + '\n' + ''.join(
@@ -840,7 +839,21 @@ def build(conf, root='.', baseline=False, dry=False):
                     with open(p, 'rb') as f:
                         f.seek(n_old_b); tail = f.read()
                     n_idx = _count_index_rows(idf_use)
-                    if n_idx != cur.get('n', -1):
+                    itxt_chk = os.path.join(outdir, '%s%s.txt' % (prefix, vol))
+                    bad_tail = [os.path.basename(x) for x in (idf_use, itxt_chk)
+                                if _tail_missing_newline(x)]
+                    if bad_tail:
+                        # 索引末行无换行：既可能是崩溃半行，也可能是「完整但无换行」的合法行，
+                        # 静态无法区分 ⇒ 一律不做「截掉再追加」，转全量重扫重建（丢的只可能是
+                        # 可重算的派生件，账本原文一字不动）。
+                        # A newline-less index tail may be a crash residue or a legal complete
+                        # line — indistinguishable statically ⇒ never truncate-then-append;
+                        # fall back to a full rescan (only rebuildable derived files are lost).
+                        content_hash = None
+                        report.append((vol, '★ 索引末行无换行（%s）·不截断·转全量重扫重建'
+                                       % '、'.join(bad_tail)))
+                        cur = None
+                    elif n_idx != cur.get('n', -1):
                         content_hash = None
                         report.append((vol, '★ 索引行数与游标不符（索引 %d 行 / 游标 %r）'
                                        '·派生件需追赶·自动重扫（不判违例）' % (n_idx, cur.get('n'))))
@@ -950,7 +963,7 @@ def build(conf, root='.', baseline=False, dry=False):
         untrusted = bool(CONFIG_ERRORS or VIOLATIONS or EVIDENCE_MISSING)
         if (not dry) and not untrusted:
             os.makedirs(outdir, exist_ok=True)
-            _run_ops(ops, report)
+            _run_ops(ops, report, root=root)
             from safeio import atomic_write as _atomic_write
             man = ['# 卷首清单 / Volume manifest\n',
                    '# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
@@ -999,7 +1012,7 @@ def build(conf, root='.', baseline=False, dry=False):
                  '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
             # 提交顺序：TSV→TXT→清单→时戳→游标（游标最后）
             # Commit order: TSV → TXT → manifest → stamp → cursor (cursor last)
-            _run_ops(cursor_ops)
+            _run_ops(cursor_ops, root=root)
         return per, total, report
 
 
@@ -1023,6 +1036,20 @@ def _line_boundary(path, off):
     with open(path, 'rb') as f:
         f.seek(off - 1)
         return f.read(1) == b'\n'
+
+
+def _tail_missing_newline(path):
+    """追加型派生件末字节是否不是换行（缺失或空文件都返回 False）。
+    Whether an append-type artifact ends without a newline (missing/empty ⇒ False)."""
+    try:
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() == 0:
+                return False
+            f.seek(-1, os.SEEK_END)
+            return f.read(1) != b'\n'
+    except OSError:
+        return False
 
 
 def _count_index_rows(idf):
@@ -1084,12 +1111,30 @@ def backup(conf, root='.'):
         return _backup_locked(conf, root)
 
 
+def _backup_copy(src, dst):
+    """备份一个文件：读源字节 → safeio.atomic_write（不走第二套写路径），再补时间戳。
+    Back up one file: read the source bytes → safeio.atomic_write (no second write path),
+    then restore the timestamps."""
+    from safeio import atomic_write as _atomic_write
+    with open(src, 'rb') as f:
+        data = f.read()
+    _atomic_write(dst, data)
+    try:
+        st = os.stat(src)
+        os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError:
+        pass
+
+
 def _backup_locked(conf, root='.'):
     """把所有卷复制到 backup/YYYY-MM-DD_HHMMSS/。append-only 纪律适用于备份：旧的不删不改。
     Copy every volume into backup/YYYY-MM-DD_HHMMSS/. Append-only applies to backups too:
     old copies are never deleted or modified.
     ★ 老宋定：索引目录（TSV+TXT+清单）也一起备份——索引可重算，但备份能救命。
-    ★ Song: back up the index directory as well (TSV+TXT+manifest)."""
+    ★ Song: back up the index directory as well (TSV+TXT+manifest).
+    ★ 备份落在账本根内 ⇒ 一律走 safeio.atomic_write（不再用 shutil.copy2 这套第二写路径）。
+    ★ Backups land inside the ledger root ⇒ always through safeio.atomic_write (no second
+      write path such as shutil.copy2)."""
     # 备份面＝所有真实卷文件（含注册卷/编排卷等内部卷）；索引面仍只认 conf['volumes']
     # Backup surface = every real volume file (internal volumes included); the index surface
     # remains conf['volumes'] only.
@@ -1102,7 +1147,7 @@ def _backup_locked(conf, root='.'):
         # 只备份普通文件：目录型条目（locks=.locks）不得让 copy2 抛 IsADirectoryError
         # Only regular files: a directory entry (locks=.locks) must not make copy2 raise
         if os.path.isfile(p):
-            shutil.copy2(p, os.path.join(bdir, os.path.basename(p)))
+            _backup_copy(p, os.path.join(bdir, os.path.basename(p)))
             n += 1
     # ★ 备份索引产出（TSV+TXT+清单+游标） / ★ Back up the index artifacts
     # ★ out_dir 为空时索引件就在根目录：只备份已知索引件，绝不整根复制
@@ -1114,7 +1159,7 @@ def _backup_locked(conf, root='.'):
         for name in os.listdir(root):
             src = os.path.join(root, name)
             if os.path.isfile(src) and any(fnmatch.fnmatch(name, p) for p in known):
-                shutil.copy2(src, os.path.join(bdir, name))
+                _backup_copy(src, os.path.join(bdir, name))
         return bdir, n
     idx_full = idx_dir if os.path.isabs(idx_dir) else os.path.join(root, idx_dir)
     if os.path.isdir(idx_full) and os.path.abspath(idx_full) != os.path.abspath(root):
@@ -1123,7 +1168,7 @@ def _backup_locked(conf, root='.'):
         for name in os.listdir(idx_full):
             src = os.path.join(idx_full, name)
             if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(bidx, name))
+                _backup_copy(src, os.path.join(bidx, name))
     return bdir, n
 
 def hash_volumes(paths):

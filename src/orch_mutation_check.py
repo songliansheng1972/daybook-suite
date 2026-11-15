@@ -72,6 +72,8 @@ MUTATIONS = [
         'safeio.py',
         """    fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=d)
     try:
+        if mode is not None:
+            os.fchmod(fd, mode)
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
             f.flush()

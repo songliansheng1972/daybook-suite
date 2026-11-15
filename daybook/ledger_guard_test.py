@@ -72,69 +72,77 @@ SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(HERE, 'daybook.py')
 
 # 写路径登记表（单一常量）：(文件, 所在函数, 桶, 理由)
 # Write-path registry (single constant): (file, enclosing function, bucket, reason)
-# 桶：ledger=写账本（只许 safeio 原子写/追加，扫到直接写即红）；impl=safeio 自身实现；
-#     other=不写账本（必须写明理由）。
-# Buckets: ledger = writes the ledger (safeio atomic write/append only; any direct write fails);
-#          impl = safeio's own implementation; other = does not write the ledger (reason required).
+# 桶（判据机器校验，理由文字不作数）：
+#   ledger   = 写账本/账本根内的件（租约卷、keys/、backup/ 都算）⇒ 只许 safeio，扫到直接写即红；
+#   lockfile = 锁件本身（目标固定为 <锁目录>/<资源>.lock，不写数据）⇒ 允许 os.open，形态机器校验；
+#   other    = 只允许「目标由 tempfile 生成、位于系统临时目录」一类 ⇒ 目标表达式机器校验；
+#   impl     = safeio 自身实现。
+# Buckets (machine-checked; the prose reason does not count):
+#   ledger   = writes the ledger or anything inside the ledger root (lease volume, keys/,
+#              backup/ all count) ⇒ safeio only; any direct write fails;
+#   lockfile = the lock artifact itself (target fixed to <lock dir>/<resource>.lock, no data
+#              written) ⇒ os.open allowed, shape machine-checked;
+#   other    = only "target produced by tempfile, inside the system temp dir" ⇒ target
+#              expression machine-checked;
+#   impl     = safeio's own implementation.
 WRITE_PATHS = (
     ('agent_heartbeat.py', '__init__', 'ledger', '账本内容/派生件'),
     ('agent_heartbeat.py', 'beat', 'ledger', '账本内容/派生件'),
-    ('agent_lock.py', '__init__', 'other', 'agent 租约锁文件（非账本卷）'),
+    ('agent_lock.py', '__init__', 'ledger', '租约卷在账本根内（原子建卷）'),
     ('agent_lock.py', '_log', 'ledger', '账本内容/派生件'),
-    ('agent_lock.py', 'acquire', 'other', 'agent 租约锁文件（非账本卷）'),
-    ('agent_lock.py', 'held_by', 'other', 'agent 租约锁文件（非账本卷）'),
+    ('agent_lock.py', 'acquire', 'lockfile', '锁件·不写数据·目标固定为 <锁目录>/<资源>.lock'),
+    ('agent_lock.py', 'held_by', 'lockfile', '锁件·不写数据·目标固定为 <锁目录>/<资源>.lock'),
     ('agent_message.py', '_append_inbox', 'ledger', '账本内容/派生件'),
-    ('agent_registry.py', '_write_secret', 'other', '注册密钥文件（0600·非账本卷）'),
+    ('agent_registry.py', '_write_secret', 'ledger', 'keys/ 在账本根内（atomic_write 0600）'),
     ('agent_registry.py', 'register', 'ledger', '账本内容/派生件'),
     ('agent_registry.py', 'revoke', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_write_cursor', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_run_ops', 'ledger', '账本内容/派生件'),
     ('daybook.py', 'build', 'ledger', '账本内容/派生件'),
-    ('daybook.py', '_backup_locked', 'other', '备份副本（只增不改·非账本卷）'),
+    ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（atomic_write）'),
     ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
     ('daybook_hook.py', 'mark_processed', 'ledger', '账本内容/派生件'),
     ('daybook_multidx.py', '_build_locked', 'ledger', '账本内容/派生件'),
     ('daybook_record.py', 'record', 'ledger', '账本内容/派生件'),
     ('daybook_session_hook.py', 'atomic_json', 'ledger', '账本内容/派生件'),
-    ('entry_smoke_test.py', 'mutation_check', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', '_setup', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', 'test_cross_ref_numbered', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', 'test_root_from_conf', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', '_copy_server', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', 'test_zero_bytecode', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', 'test_empty_volumes_warns', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_p0_regression.py', 'mk', 'other', '随包测试/基准脚本：只写临时件'),
+    ('entry_smoke_test.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', '_setup', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', 'test_cross_ref_numbered', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', 'test_root_from_conf', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', '_copy_server', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', 'test_zero_bytecode', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', 'test_empty_volumes_warns', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', 'mk', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_resources.py', '_audit', 'ledger', '账本内容/派生件'),
-    ('mcp_test.py', '_setup_tmp_root', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_test.py', 'test_daybook_index', 'other', '随包测试/基准脚本：只写临时件'),
-    ('mcp_test.py', 'test_subscribe_push', 'other', '随包测试/基准脚本：只写临时件'),
+    ('mcp_test.py', '_setup_tmp_root', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_test.py', 'test_daybook_index', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_test.py', 'test_subscribe_push', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_tools.py', '_audit', 'ledger', '账本内容/派生件'),
     ('mcp_tools.py', '_record_signature', 'ledger', '账本内容/派生件'),
     ('mcp_tools.py', '_write_cursor', 'ledger', '账本内容/派生件'),
-    ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', '_make_volume', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_identity_signature', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_root_resolution', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_fixes_test.py', 'test_single_pass_reads', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_mutation_check.py', 'make_mutant', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_perf_bench.py', 'build_dataset', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orch_perf_bench.py', 'main', 'other', '随包测试/基准脚本：只写临时件'),
-    ('orchestrator.py', '_selftest', 'other', '自检临时目录'),
-    ('path_leak_check.py', 'mutation_check', 'other', '随包测试/基准脚本：只写临时件'),
+    ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', '_make_volume', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_identity_signature', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_root_resolution', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_single_pass_reads', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_mutation_check.py', 'make_mutant', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_perf_bench.py', 'build_dataset', 'other', '随包压测：目标由 tempfile 生成'),
+    ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包压测：目标由 tempfile 生成'),
+    ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
+    ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
+    ('path_leak_check.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
     ('safeio.py', 'atomic_write', 'impl', 'safeio 实现本身'),
-    ('safeio.py', 'repair_partial_tail', 'impl', 'safeio 实现本身'),
     ('safeio.py', 'atomic_append', 'impl', 'safeio 实现本身'),
     ('safeio.py', 'append_inplace', 'impl', 'safeio 实现本身'),
+    ('safeio.py', 'read_modify_write', 'impl', 'safeio 实现本身'),
     ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
     ('task_volume.py', 'create', 'ledger', '账本内容/派生件'),
     ('task_volume.py', 'transition', 'ledger', '账本内容/派生件'),
-    ('safeio.py', 'read_modify_write', 'impl', 'safeio 实现本身'),
 )
 
 _WRITE_SAFE = frozenset(('safeio.atomic_write', 'safeio.atomic_append',
@@ -204,9 +212,261 @@ def _osopen_writes(node):
     return bool(f & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
 
 
+_TEMP_CALLS = ('tempfile.mkdtemp', 'tempfile.mkstemp', 'tempfile.NamedTemporaryFile',
+               'tempfile.TemporaryDirectory', 'tempfile.TemporaryFile', 'tempfile.gettempdir')
+_PATH_FIRST = ('os.path.join', 'os.path.dirname', 'os.path.abspath', 'os.path.realpath',
+               'os.fspath', 'str')
+# os.path.* 经 _resolve_callee 还原后是裸属性名（os.path 是 Attribute 而非 Name）
+# os.path.* comes back as a bare attribute name from _resolve_callee (os.path is an Attribute)
+_PATH_ATTRS = ('join', 'dirname', 'abspath', 'realpath', 'fspath')
+
+
+def _is_path_helper(t):
+    return t in _PATH_FIRST or t.split('.')[-1] in _PATH_ATTRS
+
+
+def _expr_temp(e, names, helpers, aliases):
+    """表达式是否「由 tempfile 生成」（名字 / join 链首元 / 拼接左元 / 本模块 tempfile 助手返回）。
+    Whether the expression is produced by tempfile (a tracked name, the first element of a join
+    chain, the left operand of a concatenation, or the return of a module helper)."""
+    if isinstance(e, ast.Name):
+        return e.id in names
+    if isinstance(e, ast.Call):
+        t = _resolve_callee(e.func, aliases)
+        if t in _TEMP_CALLS:
+            return True
+        if _is_path_helper(t):
+            return bool(e.args) and _expr_temp(e.args[0], names, helpers, aliases)
+        if '.' not in t and t in helpers:
+            return True
+        return False
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        return _expr_temp(e.left, names, helpers, aliases)
+    if isinstance(e, ast.JoinedStr):
+        for v in e.values:
+            if isinstance(v, ast.FormattedValue):
+                return _expr_temp(v.value, names, helpers, aliases)
+    return False
+
+
+def _module_temp_helpers(tree):
+    """本模块里「返回 tempfile 派生值」的函数名（固定点，支持一层转手）。
+    Module functions returning a tempfile-derived value (fixed point, one level of relay)."""
+    aliases = _write_aliases(tree)
+    funcs = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+    helpers = set()
+    for _ in range(3):
+        for fn in funcs:
+            if fn.name in helpers:
+                continue
+            local = _local_temp_names(fn, helpers, aliases)
+            for r in ast.walk(fn):
+                if isinstance(r, ast.Return) and r.value is not None \
+                        and _expr_temp(r.value, local, helpers, aliases):
+                    helpers.add(fn.name)
+                    break
+    return helpers
+
+
+def _local_temp_names(fn, helpers, aliases, seed=()):
+    """函数内被 tempfile 派生的局部名（赋值、with ... as、链式 join）；seed 为已证参数。
+    Local names derived from tempfile inside one function (assignments, with-as, join chains);
+    `seed` carries parameters already proven temp-derived at every call site."""
+    names = set(seed)
+    for n in ast.walk(fn):
+        if isinstance(n, ast.With):
+            for item in n.items:
+                if isinstance(item.optional_vars, ast.Name) and item.context_expr is not None \
+                        and _expr_temp(item.context_expr, names, helpers, aliases):
+                    names.add(item.optional_vars.id)
+    changed = True
+    while changed:
+        changed = False
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Assign):
+                targets, value = n.targets, n.value
+            elif isinstance(n, ast.AnnAssign) and n.value is not None:
+                targets, value = [n.target], n.value
+            elif isinstance(n, ast.NamedExpr):
+                targets, value = [n.target], n.value
+            else:
+                continue
+            if _expr_temp(value, names, helpers, aliases):
+                for t in targets:
+                    if isinstance(t, ast.Name) and t.id not in names:
+                        names.add(t.id)
+                        changed = True
+    return names
+
+
+def _root_name(e, aliases):
+    """写目标表达式 → 根名（('name', x) / ('attr', …) / ('call', …) / ('lit', …)）。
+    Write-target expression → root descriptor."""
+    if isinstance(e, ast.Name):
+        return ('name', e.id)
+    if isinstance(e, ast.Call):
+        t = _resolve_callee(e.func, aliases)
+        if _is_path_helper(t) and e.args:
+            return _root_name(e.args[0], aliases)
+        return ('call', t)
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        return _root_name(e.left, aliases)
+    if isinstance(e, ast.JoinedStr):
+        for v in e.values:
+            if isinstance(v, ast.FormattedValue):
+                return _root_name(v.value, aliases)
+    if isinstance(e, ast.Attribute):
+        return ('attr', ast.unparse(e))
+    if isinstance(e, ast.Constant):
+        return ('lit', repr(e.value)[:20])
+    return ('?', type(e).__name__)
+
+
+def _write_call_targets(call, aliases):
+    """一个调用里「写目标」的表达式清单（按各类写调用的参数位置）。
+    The target expressions written by one call (per write-call signature)."""
+    t = _resolve_callee(call.func, aliases)
+    if t == 'os.open':
+        return [call.args[0]] if call.args and _osopen_writes(call) else []
+    if t in ('open', 'io.open'):
+        return [call.args[0]] if call.args and _open_mode_writes(call) else []
+    if t in ('os.replace', 'os.rename', 'shutil.copy', 'shutil.copy2',
+             'shutil.copyfile', 'shutil.copytree'):
+        return [call.args[1]] if len(call.args) > 1 else []
+    if isinstance(call.func, ast.Attribute) and call.func.attr in ('write_text', 'write_bytes'):
+        return [call.func.value]
+    if t in _WRITE_TEMP:
+        return []
+    if t in _WRITE_SAFE:
+        # safeio 写的是「某个路径」，other 桶也必须证明这个路径来自 tempfile
+        # safeio writes *some* path; the `other` bucket must prove that path comes from tempfile
+        return [call.args[0]] if call.args else []
+    if t.split('.')[-1] in ('run', 'Popen', 'call', 'check_call', 'check_output'):
+        out = []
+        for kw in call.keywords:
+            if kw.arg in ('stdout', 'stderr'):
+                v = kw.value
+                if isinstance(v, ast.Constant):
+                    continue
+                if isinstance(v, ast.Attribute) and isinstance(v.value, ast.Name) \
+                        and v.value.id == 'subprocess':
+                    continue
+                out.append(v)
+        return out
+    return []
+
+
+def _enclosing(tree, node):
+    """node 所在的最内层函数（无则 None）。"""
+    best = None
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if any(sub is node for sub in ast.walk(n)):
+                if best is None or len(list(ast.walk(n))) < len(list(ast.walk(best))):
+                    best = n
+    return best
+
+
+def _param_temp_only(tree, fn, param, aliases, helpers):
+    """参数 param 在本模块所有调用点是否都收到 tempfile 派生实参。
+    Whether every in-module call site passes a tempfile-derived argument for `param`."""
+    args = [a.arg for a in fn.args.args]
+    if param not in args:
+        return False
+    idx = args.index(param)
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and _resolve_callee(n.func, aliases) == fn.name]
+    if not calls:
+        return False
+    for c in calls:
+        owner = _enclosing(tree, c)
+        names = _local_temp_names(owner, helpers, aliases) if owner is not None else set()
+        arg = c.args[idx] if len(c.args) > idx else None
+        for kw in c.keywords:
+            if kw.arg == param:
+                arg = kw.value
+        if arg is None or not _expr_temp(arg, names, helpers, aliases):
+            return False
+    return True
+
+
+def _other_target_reasons(tree, fn):
+    """other 桶机器校验：该函数每个写目标都必须由 tempfile 生成。
+    Machine check for the `other` bucket: every write target must come from tempfile.
+    返回空清单=通过；否则每项写明「目标可能落在账本根内」的具体调用。
+    Empty list = pass; otherwise each item names the offending call."""
+    aliases = _write_aliases(tree)
+    helpers = _module_temp_helpers(tree)
+    seed = {a.arg for a in fn.args.args
+            if _param_temp_only(tree, fn, a.arg, aliases, helpers)}
+    names = _local_temp_names(fn, helpers, aliases, seed)
+    bad = []
+    for call in ast.walk(fn):
+        if not isinstance(call, ast.Call):
+            continue
+        for tgt in _write_call_targets(call, aliases):
+            root = _root_name(tgt, aliases)
+            snippet = ast.unparse(call)[:70]
+            if root[0] == 'name':
+                if root[1] in names:
+                    continue
+                if _param_temp_only(tree, fn, root[1], aliases, helpers):
+                    continue
+                bad.append('%s（%s 非 tempfile 生成·目标可能落在账本根内）' % (snippet, root[1]))
+            else:
+                bad.append('%s（目标形态 %r 无法证明为 tempfile·可能落在账本根内）'
+                           % (snippet, root[1]))
+    return bad
+
+
+def _lockfile_reasons(tree, fn):
+    """lockfile 桶机器校验：目标形如 <锁目录>/<资源>.lock、只 os.open、不写数据。
+    Machine check for the `lockfile` bucket: target shaped <lock dir>/<resource>.lock, only
+    os.open, no data written."""
+    aliases = _write_aliases(tree)
+    lock_src = None
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef) and n.name == '_lock_path':
+            lock_src = n
+            break
+    if lock_src is None or '.lock' not in ast.unparse(lock_src):
+        return ['找不到 _lock_path 的 .lock 形态']
+    from_calls = set()
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) \
+                and isinstance(n.value, ast.Call) \
+                and _resolve_callee(n.value.func, aliases).endswith('_lock_path'):
+            from_calls.add(n.targets[0].id)
+    bad = []
+    for call in ast.walk(fn):
+        if not isinstance(call, ast.Call):
+            continue
+        targets = _write_call_targets(call, aliases)
+        for tgt in targets:
+            t = _resolve_callee(call.func, aliases)
+            if t not in ('os.open', 'open') or _open_mode_writes(call):
+                bad.append('%s（锁件不许数据写/替身写）' % ast.unparse(call)[:70])
+                continue
+            root = _root_name(tgt, aliases)
+            if root[0] != 'name' or root[1] not in from_calls:
+                bad.append('%s（目标不是 <锁目录>/<资源>.lock）' % ast.unparse(call)[:70])
+    for sub in ast.walk(fn):
+        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                and sub.func.attr in ('write', 'writelines', 'write_text', 'write_bytes'):
+            bad.append('%s（锁件函数里出现数据写）' % ast.unparse(sub)[:70])
+    return bad
+
+
+def _find_func(tree, name):
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
+            return n
+    return None
+
+
 def _scan_write_sites(d):
-    """按包装清单扫产品件与随包脚本，返回 (扫过的件, {(文件,函数): 写种类集合})。
-    Scan the shipped product/aux files from the pack manifest; return (files, sites).
+    """按包装清单扫产品件与随包脚本，返回 (扫过的件, {(文件,函数): 写种类集合}, {文件: AST})。
+    Scan the shipped product/aux files from the pack manifest; return (files, sites, trees).
     别名会还原成原名；覆盖 open 写模式、os.open 写标志、os.replace/rename、
     shutil.copy*、Path.write_text/bytes、tempfile、subprocess 重定向。
     Aliases are resolved; covers open write modes, os.open write flags, os.replace/rename,
@@ -226,13 +486,14 @@ def _scan_write_sites(d):
         scan = [n for n in sorted(os.listdir(d))
                 if n.endswith('.py') and n not in _WRITE_SKIP
                 and not n.endswith('_test.py')]
-    files, sites = [], {}
+    files, sites, trees = [], {}, {}
     for fn in scan:
         try:
             tree = ast.parse(io.open(os.path.join(d, fn), encoding='utf-8').read())
         except SyntaxError:
             continue
         files.append(fn)
+        trees[fn] = tree
         al = _write_aliases(tree)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -272,7 +533,7 @@ def _scan_write_sites(d):
                             kinds.add('subproc')
             if kinds:
                 sites[(fn, node.name)] = kinds
-    return files, sites
+    return files, sites, trees
 
 
 def _case_write_paths(tmp):
@@ -281,7 +542,7 @@ def _case_write_paths(tmp):
     write inside a ledger bucket all fail."""
     print('  -- AH 写路径登记表（三向都红） --')
     d = os.path.dirname(os.path.abspath(SRC_BIN))
-    files, sites = _scan_write_sites(d)
+    files, sites, trees = _scan_write_sites(d)
     reg = {(f, fn): (b, r) for f, fn, b, r in WRITE_PATHS}
     present = {k: v for k, v in reg.items() if k[0] in files}
     if os.path.exists(os.path.join(d, 'pack.py')):
@@ -295,14 +556,45 @@ def _case_write_paths(tmp):
     _ok('AH 登记了但代码里找不到 ⇒ 红', not absent, '找不到=%s' % absent)
     _ok('AH 代码里有写调用但没登记 ⇒ 红', not unreg, '未登记=%s' % unreg)
     _ok('AH 账本桶只许 safeio（直接写 ⇒ 红）', not direct, '直写=%s' % direct)
+    # other 桶＝后门：只允许「目标由 tempfile 生成」。任一条改标 other ⇒ 红。
+    # `other` is a backdoor if prose suffices: only tempfile-generated targets are allowed.
+    bad_other = []
+    for (f, fn), (b, _r) in sorted(present.items()):
+        if b != 'other':
+            continue
+        node = _find_func(trees[f], fn)
+        if node is None:
+            bad_other.append((f, fn, ['函数未找到']))
+            continue
+        reasons = _other_target_reasons(trees[f], node)
+        if reasons:
+            bad_other.append((f, fn, reasons[:2]))
+    _ok('AH other 桶只许 tempfile 目标（否则必须归账本）⇒ 红', not bad_other,
+        '未通过=%s' % bad_other[:4])
+    bad_lock = []
+    for (f, fn), (b, _r) in sorted(present.items()):
+        if b != 'lockfile':
+            continue
+        node = _find_func(trees[f], fn)
+        reasons = ['函数未找到'] if node is None else _lockfile_reasons(trees[f], node)
+        if reasons:
+            bad_lock.append((f, fn, reasons[:2]))
+    _ok('AH lockfile 桶形态机器校验（<锁目录>/<资源>.lock·不写数据）⇒ 红', not bad_lock,
+        '未通过=%s' % bad_lock[:4])
     print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
           % (len(present), len(sites), len(unreg), len(absent), len(direct)))
     buckets = {}
     for _k, (_b, _r) in present.items():
         buckets[_b] = buckets.get(_b, 0) + 1
-    print('    [数据] AH 在场分桶：账本 %d 条／safeio 实现 %d 条／非账本 %d 条（扫过 %d 件）'
-          % (buckets.get('ledger', 0), buckets.get('impl', 0),
-             buckets.get('other', 0), len(files)))
+    _TESTISH = tuple('_%s.py' % x for x in ('test', 'check', 'bench', 'regression'))
+    prod_other = sum(1 for (f, _fn), (b, _r) in present.items()
+                     if b == 'other' and not f.endswith(_TESTISH))
+    test_other = sum(1 for (f, _fn), (b, _r) in present.items()
+                     if b == 'other' and f.endswith(_TESTISH))
+    print('    [数据] AH 在场分桶：账本 %d 条／锁件 %d 条／非账本 %d 条（产品 %d·随包测试 %d）'
+          '／safeio 实现 %d 条（扫过 %d 件）'
+          % (buckets.get('ledger', 0), buckets.get('lockfile', 0), buckets.get('other', 0),
+             prod_other, test_other, buckets.get('impl', 0), len(files)))
 
 
 CONF = """[volumes]
@@ -823,13 +1115,24 @@ _CHILD_TRUNC = r'''
 import os, sys, json
 sys.path.insert(0, sys.argv[1])
 p, tp = sys.argv[2], sys.argv[3]
-import daybook
+import safeio, daybook
+before = open(p, 'rb').read()
 rep = []
-daybook._run_ops([('append', p, [['账', '2', 't', '测试', 'x', '皮特']], tp, '账')], rep)
+# 不持账本根锁直接调用 ⇒ 必须抛错且零写
+try:
+    safeio.append_inplace(p, 'x\n', os.path.dirname(p))
+    print('NO_LOCK_NO_ERROR')
+    sys.exit(3)
+except RuntimeError:
+    pass
+assert open(p, 'rb').read() == before, '未持锁调用改动了文件'
+with safeio.locked(os.path.dirname(p)):
+    padded = safeio.append_inplace(p, '账\t2\tt\t测试\ty\t皮特\n', os.path.dirname(p))
+    rep.append(('账', '★ 已补换行' if padded else ''))
 data = open(p, 'rb').read()
-assert data.endswith(b'\n'), '截断后续写仍以半行结尾'
-assert not data.endswith('半'.encode('utf-8')), '半行未被截断'
-assert '截断' in json.dumps(rep, ensure_ascii=False), '未报告截断'
+assert data.endswith(b'\n'), '追加后仍不是以换行结尾'
+assert '半'.encode('utf-8') in data, '合法的末行被截掉了'
+assert 'y'.encode('utf-8') in data, '新行未写入'
 print('OK')
 '''
 
@@ -875,8 +1178,9 @@ def _case_append(tmp):
 
 
 def _case_tail(tmp):
-    """Z 崩溃尾部半行：读者丢弃、写者截断续写。两条都要能自证。
-    Z Crashed tail: readers drop the half line; writers truncate then continue."""
+    """Z 崩溃尾部半行：读者丢弃；写者**不截断**，只补一个换行再追加。
+    Z Crashed tail: readers drop the half line; writers never truncate — they pad one newline
+    and append."""
     d = os.path.join(tmp, 'tail')
     os.makedirs(d)
     p = os.path.join(d, 'x.tsv')
@@ -898,9 +1202,275 @@ def _case_tail(tmp):
                         os.path.dirname(SRC_BIN), p, tp],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        universal_newlines=True)
-    _ok('Z2 崩溃半行：截断后原位续写并报告',
+    _ok('Z2 无锁调用抛错·持锁补换行追加且不截断（合法末行仍在）',
         r.returncode == 0 and r.stdout.strip() == 'OK',
         (r.stdout.strip() or r.stderr.strip())[:200])
+
+
+def _aj_run(d, cmd):
+    return subprocess.run([sys.executable, '-B', 'daybook.py', cmd], cwd=d,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True)
+
+
+def _case_tail_no_truncate(tmp):
+    """AJ 索引末行无换行：**不截断**，一律全量重扫重建；三种输入都不许丢行。
+    AJ A newline-less index tail: never truncate — always fall back to a full rescan; none of
+    the three inputs may lose a row."""
+    print('  -- AJ 索引末行无换行（不截断·全量重建） --')
+    d = os.path.join(tmp, 'aj')
+    os.makedirs(d)
+    _stage(d)
+    io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(CONF)
+    vol = os.path.join(d, '账卷.txt')
+    io.open(vol, 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [甲] [皮特] 一\n'
+        '[2026-11-13 10:01:00] [测试] [乙] [皮特] 二\n')
+    _aj_run(d, 'baseline')
+    _aj_run(d, 'index')
+    idf = os.path.join(d, '索引', 'index_账.tsv')
+    itxt = os.path.join(d, '索引', 'index_账.txt')
+
+    # 形态①：末行完整但无换行（合法行）⇒ 不许截掉，转全量重建
+    for f in (idf, itxt):
+        data = io.open(f, 'rb').read()
+        _ok('AJ 前置：%s 以换行结尾' % os.path.basename(f), data.endswith(b'\n'))
+        io.open(f, 'wb').write(data[:-1])
+    io.open(vol, 'a', encoding='utf-8').write(
+        '[2026-11-13 10:02:00] [测试] [丙] [皮特] 三\n')
+    r = _aj_run(d, 'index')
+    txt = r.stdout + r.stderr
+    _ok('AJ1 末行完整无换行 ⇒ rc=0 且报「不截断·转全量重扫」',
+        r.returncode == 0 and '索引末行无换行' in txt and '全量重扫' in txt, txt[-200:])
+    rows = _tsv_rows(idf)
+    _ok('AJ2 旧行一条不少（甲/乙/丙 三行俱在）',
+        [x[4] for x in rows] == ['甲', '乙', '丙'],
+        'titles=%s' % [x[4] if len(x) > 4 else '?' for x in rows])
+
+    # 形态②③：半行残渣 / 崩溃残行 ⇒ 全量重扫后条数与行号都和全新重建一致
+    for label, cut in (('半行残渣', 4), ('崩溃残行', 1)):
+        data = io.open(idf, 'rb').read()
+        io.open(idf, 'wb').write(data[:-cut])
+        io.open(vol, 'a', encoding='utf-8').write(
+            '[2026-11-13 10:0%d:00] [测试] [%s] [皮特] 续\n' % (3 + cut, label))
+        r = _aj_run(d, 'index')
+        _ok('AJ[%s] rc=0 且报不截断全量重建' % label,
+            r.returncode == 0 and '全量重扫' in (r.stdout + r.stderr),
+            (r.stdout + r.stderr)[-160:])
+        inc = _tsv_rows(idf)
+        full = os.path.join(tmp, 'aj_full_' + label)
+        os.makedirs(full)
+        _stage(full)
+        io.open(os.path.join(full, 'daybook.conf'), 'w', encoding='utf-8').write(CONF)
+        shutil.copy2(vol, os.path.join(full, '账卷.txt'))
+        _aj_run(full, 'baseline')
+        ref = _tsv_rows(os.path.join(full, '索引', 'index_账.tsv'))
+        _ok('AJ[%s] 条数==全量重建（%d/%d）' % (label, len(inc), len(ref)),
+            len(inc) == len(ref), 'inc=%d ref=%d' % (len(inc), len(ref)))
+        _ok('AJ[%s] 行号逐个一致' % label,
+            [x[1] for x in inc] == [x[1] for x in ref],
+            'inc=%s ref=%s' % ([x[1] for x in inc], [x[1] for x in ref]))
+
+    # 变异：增量路径「截断后再追加」⇒ 合法末行被吃掉，判据必须能抓住
+    mut = os.path.join(tmp, 'aj_mut')
+    os.makedirs(mut)
+    _stage(mut)
+    src = io.open(os.path.join(mut, 'daybook.py'), encoding='utf-8').read()
+    guard = ("""                    bad_tail = [os.path.basename(x) for x in (idf_use, itxt_chk)
+                                if _tail_missing_newline(x)]""")
+    _ok('AJ 变异前置：找到「末行无换行→全量重建」守卫', guard in src)
+    src = src.replace(guard, '                    bad_tail = []')
+    n_guard = "                    elif n_idx != cur.get('n', -1):"
+    _ok('AJ 变异前置：找到「索引行数与游标不符」守卫', n_guard in src)
+    src = src.replace(n_guard, '                    elif False:')
+    ap = ("""            if append_inplace(_idf, data, root) and report is not None:
+                report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))""")
+    mut_ap = ("""            if os.path.exists(_idf):
+                _d0 = open(_idf, 'rb').read()
+                if _d0 and not _d0.endswith(b'\\n'):
+                    open(_idf, 'wb').write(_d0[:_d0.rfind(b'\\n') + 1])
+            append_inplace(_idf, data, root)""")
+    _ok('AJ 变异前置：找到增量追加行', ap in src)
+    src = src.replace(ap, mut_ap)
+    io.open(os.path.join(mut, 'daybook.py'), 'w', encoding='utf-8').write(src)
+    io.open(os.path.join(mut, 'daybook.conf'), 'w', encoding='utf-8').write(CONF)
+    io.open(os.path.join(mut, '账卷.txt'), 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [甲] [皮特] 一\n'
+        '[2026-11-13 10:01:00] [测试] [乙] [皮特] 二\n')
+    _aj_run(mut, 'baseline')
+    _aj_run(mut, 'index')
+    midf = os.path.join(mut, '索引', 'index_账.tsv')
+    mitxt = os.path.join(mut, '索引', 'index_账.txt')
+    for f in (midf, mitxt):
+        data = io.open(f, 'rb').read()
+        io.open(f, 'wb').write(data[:-1])
+    io.open(os.path.join(mut, '账卷.txt'), 'a', encoding='utf-8').write(
+        '[2026-11-13 10:02:00] [测试] [丙] [皮特] 三\n')
+    _aj_run(mut, 'index')
+    mrows = _tsv_rows(midf)
+    _ok('AJ 变异「增量路径截断」⇒ 判据红（合法末行乙被吃掉）',
+        '乙' not in [x[4] for x in mrows],
+        'mutant_titles=%s（判据断言 titles==甲/乙/丙 会失败）'
+        % [x[4] if len(x) > 4 else '?' for x in mrows])
+
+
+_AK_CHILD = r'''
+import os, sys
+sys.path.insert(0, sys.argv[1])
+p = sys.argv[2]
+import safeio
+before = open(p, 'rb').read()
+try:
+    safeio.append_inplace(p, 'b\n', os.path.dirname(p))
+    print('NO_ERROR')
+    sys.exit(3)
+except RuntimeError:
+    pass
+assert open(p, 'rb').read() == before, 'CHANGED'
+with safeio.locked(os.path.dirname(p)):
+    safeio.append_inplace(p, 'b\n', os.path.dirname(p))
+assert open(p, 'rb').read() == before + b'b\n', 'WITH_LOCK_FAILED'
+print('OK')
+'''
+
+
+def _case_lock_assert(tmp):
+    """AK append_inplace 自校验根锁：无锁 ⇒ 抛错且零写；删掉断言 ⇒ 判据红。
+    AK append_inplace checks the root lock itself: without it → raise and write nothing;
+    deleting the assertion makes the criterion fail."""
+    print('  -- AK append_inplace 锁断言（无锁必须抛错·零写） --')
+    d = os.path.join(tmp, 'ak')
+    os.makedirs(d)
+    shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
+                 os.path.join(d, 'safeio.py'))
+    p = os.path.join(d, 'x.tsv')
+    io.open(p, 'wb').write(b'a\n')
+    r = subprocess.run([sys.executable, '-B', '-c', _AK_CHILD, d, p],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('AK 无锁调用抛 RuntimeError、零写；持锁可追加',
+        r.returncode == 0 and r.stdout.strip() == 'OK',
+        (r.stdout.strip() or r.stderr.strip())[:200])
+    mut = os.path.join(tmp, 'ak_mut')
+    os.makedirs(mut)
+    src = io.open(os.path.join(d, 'safeio.py'), encoding='utf-8').read()
+    guard = """    if lock_dir not in _held_map():
+        raise RuntimeError('safeio.append_inplace: 未持账本根锁（%s）·拒绝写入（零写）'
+                           % lock_dir)"""
+    _ok('AK 变异前置：找到锁断言', guard in src)
+    io.open(os.path.join(mut, 'safeio.py'), 'w', encoding='utf-8').write(
+        src.replace(guard, '    pass'))
+    mp = os.path.join(mut, 'x.tsv')
+    io.open(mp, 'wb').write(b'a\n')
+    r = subprocess.run([sys.executable, '-B', '-c', _AK_CHILD, mut, mp],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    _ok('AK 变异「删掉锁断言」⇒ 判据红（无锁照写）',
+        r.returncode != 0 or 'NO_ERROR' in r.stdout,
+        'rc=%d %s' % (r.returncode, (r.stdout.strip() or r.stderr.strip())[:120]))
+
+
+_AL_PUSH = r'''
+import os, sys, threading, time
+sys.path.insert(0, sys.argv[1])
+import agent_message as am
+srv = am.AgentServer('甲', root=sys.argv[2])
+t = threading.Thread(target=srv.serve_forever, daemon=True)
+t.start()
+print('READY', flush=True)
+time.sleep(float(sys.argv[3]))
+srv.shutdown()
+srv.server_close()
+'''
+
+
+def _al_push(cmd_dir, conf, ledger, hold_secs=None):
+    """起一个在线 AgentServer，跑 orch digest --push，返回 (rc, out, 推送耗时/超时标记)。
+    Start an online AgentServer, run orch digest --push, return (rc, output, timed_out)."""
+    srv = subprocess.Popen([sys.executable, '-B', '-c', _AL_PUSH, cmd_dir, conf, '12'],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+    srv.stdout.readline()
+    args = [sys.executable, '-B', os.path.join(cmd_dir, 'orchestrator.py'),
+            '--home=' + conf, 'digest', '--limit', '0', '--push', '甲']
+    try:
+        r = subprocess.run(args, cwd=tempfile.gettempdir(), stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True,
+                           timeout=hold_secs)
+        rc, out = r.returncode, r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        rc, out = None, 'TIMEOUT'
+    try:
+        srv.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        srv.kill()
+    return rc, out
+
+
+def _case_push_load_bearing(tmp):
+    """AL digest --push 承重：在线场景下 inbox 卷必须真的新增一行，且写入要拿账本根锁。
+    AL `digest --push` must be load-bearing: with an online peer the inbox volume really gains
+    a line, and the write takes the ledger-root lock."""
+    print('  -- AL digest --push 承重（inbox 真写·锁落账本根） --')
+    here = os.path.dirname(SRC_BIN)
+    if not os.path.exists(os.path.join(here, 'orchestrator.py')):
+        print('    [跳过] AL：当前盒无 orchestrator.py')
+        return
+    d = os.path.join(tmp, 'al')
+    os.makedirs(d)
+    for name in _MATRIX_COPY:
+        src = os.path.join(here, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(d, name))
+    conf = os.path.join(d, 'conf')
+    led = os.path.join(d, 'led')
+    os.makedirs(conf)
+    os.makedirs(led)
+    io.open(os.path.join(conf, 'daybook.conf'), 'w', encoding='utf-8').write(
+        '[volumes]\n账=账卷.txt\n消息=消息卷.txt\n\n[index]\nroot=%s\nout_dir=索引\n' % led)
+    io.open(os.path.join(led, '账卷.txt'), 'w', encoding='utf-8').write(
+        '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+    inbox = os.path.join(led, '消息卷.txt')
+    before = len(io.open(inbox, encoding='utf-8').read().splitlines()) \
+        if os.path.exists(inbox) else 0
+    rc, out = _al_push(d, conf, led)
+    after = len(io.open(inbox, encoding='utf-8').read().splitlines()) \
+        if os.path.exists(inbox) else 0
+    _ok('AL1 在线推送 rc=0', rc == 0, 'rc=%s %s' % (rc, out[-160:]))
+    _ok('AL2 inbox 卷（账本根内）真的新增一行（%d→%d）' % (before, after),
+        after > before and os.path.commonpath([os.path.realpath(inbox), os.path.realpath(led)])
+        == os.path.realpath(led), 'before=%d after=%d' % (before, after))
+    _ok('AL3 推送不回退「未找到 daybook.conf」', '未找到 daybook.conf' not in out, out[-120:])
+    # 持账本根锁时推送必须被挡住（锁落账本根，不是别处）
+    sys.path.insert(0, here)
+    import safeio
+    with safeio.locked(led):
+        rc2, out2 = _al_push(d, conf, led, hold_secs=2.0)
+    _ok('AL4 持账本根锁时推送被挡住（锁落账本根）', rc2 is None, 'rc=%s %s' % (rc2, out2[-120:]))
+    # 变异：inbox 路径改到账本根之外 ⇒ AL2 必须红
+    mut = os.path.join(tmp, 'al_mut')
+    shutil.copytree(d, mut)
+    ap = os.path.join(mut, 'agent_message.py')
+    src = io.open(ap, encoding='utf-8').read()
+    old = "    return _vp.resolve_volumes(root)['inbox']"
+    _ok('AL 变异前置：找到 inbox 路径解析', old in src)
+    io.open(ap, 'w', encoding='utf-8').write(src.replace(
+        old, "    return os.path.join(os.path.dirname(_vp.resolve_root(root)), 'outside_inbox.txt')"))
+    mconf = os.path.join(mut, 'conf')
+    mled = os.path.join(mut, 'led')
+    minbox = os.path.join(mled, '消息卷.txt')
+    mb = len(io.open(minbox, encoding='utf-8').read().splitlines()) \
+        if os.path.exists(minbox) else 0
+    _al_push(mut, mconf, mled)
+    ma = len(io.open(minbox, encoding='utf-8').read().splitlines()) \
+        if os.path.exists(minbox) else 0
+    _ok('AL 变异「inbox 改到账本根之外」⇒ 判据红（inbox 未新增）', ma == mb,
+        'mutant before=%d after=%d' % (mb, ma))
+
+
+
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+        shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), name), os.path.join(d, name))
 
 
 def _stage(d):
@@ -2091,6 +2661,9 @@ def main():
         _case_pad_notice(work)
         _case_write_paths(work)
         _case_home_flag(work)
+        _case_tail_no_truncate(work)
+        _case_lock_assert(work)
+        _case_push_load_bearing(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',
@@ -2116,7 +2689,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–AD 二十七组用例全绿')
+    print('PASS: A–AL 三十组用例全绿')
     return 0
 
 

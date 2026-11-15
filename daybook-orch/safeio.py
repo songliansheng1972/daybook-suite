@@ -121,15 +121,21 @@ def locked(path, timeout=None, shared=False):
         os.close(fd)
 
 
-def atomic_write(path, data):
+def atomic_write(path, data, mode=None):
     """原子替换写：同目录临时文件 + os.replace（★唯一实现，派生件一律走这里）。
     Atomic replace: a temp file in the same directory + os.replace (★ the single implementation;
-    every derived artifact goes through it). Readers never see a half-written file."""
+    every derived artifact goes through it). Readers never see a half-written file.
+    mode 给出时在 mkstemp 后 fchmod（如密钥 0600）；缺省沿用现有（默认 0600 受 umask 影响前的
+    mkstemp 语义，即替换后权限沿用临时件）。
+    With `mode`, fchmod the temp fd right after mkstemp (e.g. 0600 for keys); without it the
+    existing behaviour (the mkstemp temp file's mode) is kept."""
     if isinstance(data, str):
         data = data.encode('utf-8')
     d = os.path.dirname(os.path.abspath(path))
     fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=d)
     try:
+        if mode is not None:
+            os.fchmod(fd, mode)
         with os.fdopen(fd, 'wb') as f:
             f.write(data)
             f.flush()
@@ -141,38 +147,6 @@ def atomic_write(path, data):
         except OSError:
             pass
         raise
-
-
-def repair_partial_tail(path):
-    """锁内调用：末尾无换行即视为崩溃留下的半行，截到最后一个换行处。
-    返回被丢弃的字节数（0 表示完整）。非追加型派生件不走这里。
-    Called under the lock: a file whose last byte is not a newline ends in a half-written
-    line from a crash; truncate back to the last newline. Returns bytes dropped (0 = intact).
-    Only append-type artifacts use this; non-append artifacts keep atomic replacement."""
-    if not os.path.exists(path):
-        return 0
-    with open(path, 'r+b') as f:
-        f.seek(0, os.SEEK_END)
-        end = f.tell()
-        if end == 0:
-            return 0
-        f.seek(end - 1)
-        if f.read(1) == b'\n':
-            return 0
-        pos = end
-        keep = 0
-        while pos > 0:
-            step = min(1 << 16, pos)
-            f.seek(pos - step)
-            chunk = f.read(step)
-            idx = chunk.rfind(b'\n')
-            if idx >= 0:
-                keep = pos - step + idx + 1
-                break
-            pos -= step
-        f.truncate(keep)
-        return end - keep
-
 
 
 def atomic_append(path, data, root=None, ensure_newline=False):
@@ -256,21 +230,48 @@ def read_vol(path):
     return sniff_bytes(raw)
 
 
-def append_inplace(path, data):
-    """锁内原位追加（先截断崩溃半行）：索引等追加型派生件的唯一写入口。
-    In-place append under the caller's lock (truncating a crashed half-line first): the single
-    write entry for append-type artifacts such as indexes.
-    返回被截断的字节数。调用方必须已持账本根锁。
-    Returns bytes dropped. The caller must already hold the ledger-root lock."""
-    dropped = repair_partial_tail(path)
+def append_inplace(path, data, root):
+    """持账本根锁原位追加：追加型派生件的唯一写入口。
+    Single write entry for append-type artifacts, appending in place under the ledger-root lock.
+
+    语义只有一句：**追加到文件末尾；若末字节不是换行，先补一个换行，其余字节一概不动。**
+    Semantics, in one sentence: **append at end of file; if the last byte is not a newline,
+    first add one newline — every other byte is left untouched.**
+
+    ★ 不截断、不修复半行。末尾无换行既可能是崩溃残行，也可能是合法的完整行，静态无法区分；
+      增量路径由调用方先判、转全量重建（见 daybook.build）。
+    ★ No truncation and no half-line repair. A newline-less tail may be a crash residue or a
+      legal complete line; that cannot be told apart statically, so the incremental caller
+      detects it first and falls back to a full rebuild (see daybook.build).
+
+    前置：**调用方必须已持账本根锁**。本函数自检（不依赖调用方纪律），未持锁直接抛
+    RuntimeError 且零写。
+    Precondition: **the caller holds the ledger-root lock**. The function checks this itself
+    (not by caller discipline); without the lock it raises RuntimeError and writes nothing.
+
+    返回 True 表示补过换行（既有字节未动），False 表示末字节本来就是换行。
+    Returns True when a newline was padded (existing bytes untouched), False otherwise."""
+    lock_dir = _lock_dir(root)
+    if lock_dir not in _held_map():
+        raise RuntimeError('safeio.append_inplace: 未持账本根锁（%s）·拒绝写入（零写）'
+                           % lock_dir)
     if isinstance(data, str):
         data = data.encode('utf-8')
+    padded = False
+    if data and os.path.exists(path):
+        with open(path, 'rb') as f:
+            f.seek(0, os.SEEK_END)
+            if f.tell() > 0:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b'\n':
+                    data = b'\n' + data
+                    padded = True
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
         os.write(fd, data)
     finally:
         os.close(fd)
-    return dropped
+    return padded
 
 
 def read_modify_write(path, fn, root=None):

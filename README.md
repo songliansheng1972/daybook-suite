@@ -100,11 +100,11 @@ daybook-suite/            ← this repo
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v4.0.6  | 8                   | 3567         |
-| daybook-mcp  | v4.0.6  | 13                  | 5743         |
+| daybook      | v4.0.6  | 8                   | 3631         |
+| daybook-mcp  | v4.0.6  | 13                  | 5802         |
 | daybook-orch | v4.0.6  | 11                  | 3473         |
 
-**Code size**: **12,783 lines** across the three packages' product files (3,567 + 5,743 + 3,473).
+**Code size**: **12,906 lines** across the three packages' product files (3,631 + 5,802 + 3,473).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -191,6 +191,12 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 
 各包自包含，`daybook.conf` 可改卷路径。
 
+## 已知边界（不构成保证）
+
+- **单次追加的原子性只在 APFS 上实测过**：一次 `O_APPEND` 写入 32 MB、5179 次采样，未观察到半条。
+  更大的单次写入、以及跨文件系统（NFS/SMB/exFAT/网络盘等）**未验证**；这些场景下的落盘一致性
+  不作保证。增量追加型派生件另有兜底：末行无换行一律转全量重扫重建，不截断丢行。
+
 ## 许可
 
 > **仓根 `LICENSE` 是标准 MIT 全文，覆盖 `src/` 与 `daybook-mcp/`（以及由其生成的 `daybook/` 包）。**  
@@ -229,11 +235,11 @@ daybook-suite/            ← 本仓
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.6 | 8          | 3567         |
-| 璇玑  | v4.0.6 | 13         | 5743         |
+| 起居注 | v4.0.6 | 8          | 3631         |
+| 璇玑  | v4.0.6 | 13         | 5802         |
 | 司南  | v4.0.6 | 11         | 3473         |
 
-**代码规模**：三包产品件合计 **12,783 行**（3,567 ＋ 5,743 ＋ 3,473）。
+**代码规模**：三包产品件合计 **12,906 行**（3,631 ＋ 5,802 ＋ 3,473）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  

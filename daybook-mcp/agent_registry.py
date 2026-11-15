@@ -131,8 +131,10 @@ class Registry:
     def _write_secret(self, agent_id, secret):
         """写独立密钥文件（0600）·返回注册卷引用的相对路径。
         Write the standalone key file (0600) · return the relative path recorded in the registry volume.
-        文件与目录都用 os.open/chmod 显式收紧·不依赖 umask。
-        Both file and directory are tightened explicitly via os.open/chmod · no reliance on umask."""
+        文件走 safeio.atomic_write(mode=0o600)（在账本根内 ⇒ 只有这一套写路径）；
+        目录仍显式 0700，不依赖 umask。
+        The file goes through safeio.atomic_write(mode=0o600) (it lives inside the ledger root, so
+        there is exactly one write path); the directory stays explicitly 0700, never umask-dependent."""
         d = self._key_dir()
         os.makedirs(d, mode=0o700, exist_ok=True)
         try:
@@ -141,15 +143,8 @@ class Registry:
             pass
         fn = agent_id + '.key'
         p = os.path.join(d, fn)
-        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, (secret + '\n').encode('utf-8'))
-        finally:
-            os.close(fd)
-        try:
-            os.chmod(p, 0o600)
-        except OSError:
-            pass
+        from safeio import atomic_write
+        atomic_write(p, secret + '\n', mode=0o600)
         return KEY_DIR_NAME + '/' + fn
 
     def register(self, name):
