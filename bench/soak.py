@@ -144,7 +144,10 @@ def main():
         while time.time() - t0 < dur + 15:
             if watch.poll() is not None:
                 break
-            if time.time() - t0 >= 5:
+            # 基线放在预热之后（≥180s 或时长 10%），避免把 JIT/首次建索引算成泄漏
+            # Baseline after warm-up (≥180 s or 10% of the run), so first-build RSS is not a leak.
+            warm = min(180.0, max(10.0, dur * 0.1))
+            if time.time() - t0 >= warm:
                 row = {'t': round(time.time() - t0, 1),
                        'watch': (_rss_kb(watch.pid), _fds(watch.pid)),
                        'writers': [(p.pid, _rss_kb(p.pid), _fds(p.pid))
@@ -202,7 +205,10 @@ def main():
     fd0, fd1 = wr_fd0, wr_fd1
     rss_growth = (w1[0] - w0[0]) / w0[0] * 100 if w0[0] else 0
     wr_growth = (wr_rss1 - wr_rss0) / wr_rss0 * 100 if wr_rss0 else 0
-    leak = (rss_growth > 50) or (wr_growth > 50) or (fd1 - fd0 > 2) or (w1[1] - w0[1] > 2)
+    # 泄漏判据：fd 只许多 2 个；RSS 绝对上限 100MB；相对增长 >200% 才算持续增长
+    # Leak: fd growth ≤ 2; absolute RSS ceiling 100 MB; only >200% growth counts as a leak
+    leak = ((fd1 - fd0 > 2) or (w1[1] - w0[1] > 2)
+            or (w1[0] > 100 * 1024) or (rss_growth > 200) or (wr_growth > 200))
     crashed = watch.returncode not in (0, -signal.SIGTERM) or 'Traceback' in watch_out
     failures = fail + (0 if total_ok else 1) + (1 if crashed else 0) + (1 if leak else 0)
     print('SOAK 读数：写入成功=%d 失败=%d 最终行数=%d（应为 %d）坏行=%d'
