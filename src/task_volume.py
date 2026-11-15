@@ -114,22 +114,30 @@ class TaskVolume:
         State transition. Raises on violation."""
         if new_state not in ALL_STATES:
             raise ValueError('非法状态：%s' % new_state)
-        from safeio import atomic_append, locked
+        from safeio import atomic_append, exclusive_held, locked
+        if exclusive_held(self.root):
+            return self._transition_locked(tid, new_state, agent_id, note)
         with locked(self.root):
-            tasks = self._read_all()
-            hist = tasks.get(tid)
-            if not hist:
-                raise KeyError('任务 %s 不存在' % tid)
-            cur_state = hist[-1][1]
-            if cur_state in ('已审', '取消'):
-                raise PermissionError('终态不可迁移：%s' % cur_state)
-            legal_next = STATE_MACHINE.get(cur_state, set())
-            if new_state not in legal_next:
-                raise PermissionError('非法迁移：%s → %s（合法：%s）' % (
-                    cur_state, new_state, ' '.join(legal_next) or '无'))
-            rec = '[%s] [任务] [%s] [%s] [%s] %s\n' % (
-                _now(), tid, new_state, agent_id, note.rstrip('\n'))
-            atomic_append(self.path, rec, root=self.root)
+            return self._transition_locked(tid, new_state, agent_id, note)
+
+    def _transition_locked(self, tid, new_state, agent_id, note=''):
+        """已持账本根独占锁时执行迁移（不再取锁）。
+        Perform the transition while already holding the exclusive ledger-root lock."""
+        from safeio import atomic_append
+        tasks = self._read_all()
+        hist = tasks.get(tid)
+        if not hist:
+            raise KeyError('任务 %s 不存在' % tid)
+        cur_state = hist[-1][1]
+        if cur_state in ('已审', '取消'):
+            raise PermissionError('终态不可迁移：%s' % cur_state)
+        legal_next = STATE_MACHINE.get(cur_state, set())
+        if new_state not in legal_next:
+            raise PermissionError('非法迁移：%s → %s（合法：%s）' % (
+                cur_state, new_state, ' '.join(legal_next) or '无'))
+        rec = '[%s] [任务] [%s] [%s] [%s] %s\n' % (
+            _now(), tid, new_state, agent_id, note.rstrip('\n'))
+        atomic_append(self.path, rec, root=self.root)
         return True
 
     def list(self, state=None):

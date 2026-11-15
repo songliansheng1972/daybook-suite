@@ -65,10 +65,10 @@ class AgentLock:
     ★ No lock artifact at all (no lock file, no lock directory): a read-only install never
       fails on makedirs."""
 
-    def __init__(self, lock_dir=None, lease_vol=None, root=None):
-        # lock_dir 仅为旧签名兼容保留，不再使用（锁＝账本根目录本身）
-        # lock_dir is kept only for signature compatibility and is no longer used
-        self.lock_dir = lock_dir
+    def __init__(self, lease_vol=None, root=None):
+        # 只有两个形参：租约卷位置 + 账本根；不再有「锁目录」这种被静默丢弃的参数
+        # Only two parameters: lease volume location + ledger root. The old `lock_dir`
+        # parameter was silently ignored and has been removed.
         self.lease_vol = lease_vol or LEASE_VOL
         self.root = root or os.path.dirname(os.path.abspath(self.lease_vol))
         # 租约：lease_id -> {'cm': 已进入的锁上下文, 'tid': 获取线程 ident}
@@ -111,7 +111,15 @@ class AgentLock:
         ts = _now_ts()
         lease_id = self._lease_id(label, agent_id, ts)
         self._ctx[lease_id] = {'cm': cm, 'tid': threading.get_ident()}
-        self._log(lease_id, 'acquire', 'label=%s agent=%s' % (label, agent_id))
+        try:
+            self._log(lease_id, 'acquire', 'label=%s agent=%s' % (label, agent_id))
+        except BaseException:
+            # 记账失败不得泄漏根锁：摘掉登记并退锁，再抛
+            # A failed bookkeeping write must not leak the root lock: drop the registration,
+            # exit the context, then re-raise
+            self._ctx.pop(lease_id, None)
+            cm.__exit__(None, None, None)
+            raise
         return lease_id
 
     def release(self, lease_id):

@@ -554,7 +554,7 @@ class Hub:
         self.reg = _reg.Registry(self.vols['registry'])
         self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root)
         self.hb = _hb.Heartbeat(self.vols['heartbeat'])
-        self.lock = _lock.AgentLock(None, self.vols['leases'], root=self.root)
+        self.lock = _lock.AgentLock(self.vols['leases'], root=self.root)
         self.ledger = self.vols['ledger']
         self.rules = load_rules(rule or DEFAULT_RULE)
         self.roles = load_roles(roles or DEFAULT_ROLES)

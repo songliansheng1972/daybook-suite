@@ -414,7 +414,7 @@ def test_alarm_structure_and_exit_codes():
         hub.join('皮特')
         old = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() - 3600))
         _hb = os.path.join(root, os.path.basename(hub.vols['heartbeat']))   # 账本根（tempfile 派生）下
-        atomic_append(_hb, '[%s] [心跳] [ag-dead] alive\n' % old)
+        atomic_append(_hb, '[%s] [心跳] [ag-dead] alive\n' % old, root=root)
 
         hub.tv.create('ag-ghost', '幽灵单')
         tid_s = hub.tv.create(aid_t, '滞留单')
@@ -502,7 +502,7 @@ import os, sys, time
 sys.path.insert(0, sys.argv[1])
 from agent_lock import AgentLock
 lock_dir, lease, marker_dir, idx, n, result = sys.argv[2:8]
-lk = AgentLock(lock_dir, lease)
+lk = AgentLock(lease, root=os.path.dirname(lease))
 open(os.path.join(marker_dir, 'm%s' % idx), 'w').close()
 deadline = time.time() + 10
 while len(os.listdir(marker_dir)) < int(n) and time.time() < deadline:
@@ -636,7 +636,7 @@ def test_single_pass_reads():
         hb = os.path.join(root, os.path.basename(hub.vols['heartbeat']))   # 账本根（tempfile 派生）下
         for a in range(200):
             for _b in range(3):
-                atomic_append(hb, '[2026-11-14 09:00:00] [心跳] [ag-%03d] alive\n' % a)
+                atomic_append(hb, '[2026-11-14 09:00:00] [心跳] [ag-%03d] alive\n' % a, root=root)
         safeio.read_vol = counted
         try:
             stats.update(calls=0, bytes=0)

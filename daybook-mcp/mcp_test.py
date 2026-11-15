@@ -113,7 +113,7 @@ def _setup_tmp_root():
     for name in ('daybook.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py'):
         src = os.path.join(HERE, name)
         if os.path.exists(src):
-            shutil.copy2(src, os.path.join(tmp_root, name))
+            shutil.copy2(src, os.path.join(tmp_root, os.path.basename(name)))
     return tmp_root
 
 

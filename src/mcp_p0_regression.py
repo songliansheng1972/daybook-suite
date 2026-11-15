@@ -439,7 +439,7 @@ def _copy_server():
     tmproot = tempfile.mkdtemp(prefix='daybook_copy_')
     for f in os.listdir(HERE):
         if f.endswith('.py'):
-            shutil.copy2(os.path.join(HERE, f), os.path.join(tmproot, f))
+            shutil.copy2(os.path.join(HERE, f), os.path.join(tmproot, os.path.basename(f)))
     return tmproot, os.path.join(tmproot, 'mcp_server.py')
 
 

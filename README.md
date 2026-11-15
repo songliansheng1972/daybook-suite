@@ -100,11 +100,11 @@ daybook-suite/            ← this repo
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v4.0.6  | 8                   | 3690         |
-| daybook-mcp  | v4.0.6  | 13                  | 5860         |
-| daybook-orch | v4.0.6  | 11                  | 3545         |
+| daybook      | v4.0.6  | 8                   | 3726         |
+| daybook-mcp  | v4.0.6  | 13                  | 5896         |
+| daybook-orch | v4.0.6  | 11                  | 3597         |
 
-**Code size**: **13,095 lines** across the three packages' product files (3,690 + 5,860 + 3,545).
+**Code size**: **13,219 lines** across the three packages' product files (3,726 + 5,896 + 3,597).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -194,8 +194,10 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 ## 并发模型：同一账本根下所有写操作串行
 
 互斥范围是**整个账本根**，不是卷、不是任务、也不是 `AgentLock.acquire()` 的那个标签字符串。
-线程之间在进程内排队（每个账本根一把 `threading.Lock`），进程之间由账本根目录的独占
-`flock` 排队；没有任何共享锁模式，也不建锁件。
+锁的身份是账本根目录的 **inode**（`st_dev, st_ino`），不是路径字符串——大小写、NFD/NFC、
+软链、尾斜杠、`/private/tmp` 等写法只要指向同一 inode 就是同一把锁。线程之间在进程内排队
+（每个账本根一把 `threading.Lock`），进程之间由账本根目录的独占 `flock` 排队；没有任何共享
+锁模式，也不建锁件。
 
 - `AgentLock.acquire(label, agent_id)` 拿到的就是这把根锁：`label` 只用于记账/命名租约 id，
   不参与互斥范围的判定。同一线程在已持锁状态下再次获取（任意 label）会**立即抛错**，不等待。
@@ -252,11 +254,11 @@ daybook-suite/            ← 本仓
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.6 | 8          | 3690         |
-| 璇玑  | v4.0.6 | 13         | 5860         |
-| 司南  | v4.0.6 | 11         | 3545         |
+| 起居注 | v4.0.6 | 8          | 3726         |
+| 璇玑  | v4.0.6 | 13         | 5896         |
+| 司南  | v4.0.6 | 11         | 3597         |
 
-**代码规模**：三包产品件合计 **13,095 行**（3,690 ＋ 5,860 ＋ 3,545）。
+**代码规模**：三包产品件合计 **13,219 行**（3,726 ＋ 5,896 ＋ 3,597）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  

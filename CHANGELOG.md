@@ -56,10 +56,9 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    报告只抄判据输出。
 7. **已知边界**：单次 `O_APPEND` 的原子性仅在 APFS 上实测（32 MB 单写、5179 次采样未见半条）；
    更大写入与跨文件系统未验证，不构成保证。
-8. **追加锁语义收严**：`append_inplace` 只接受「该账本根上的**独占**持有」——共享锁、子目录锁、
-   别的根一律 RuntimeError 且零写；账本根不再由调用方自报，内部按 `ledger_root` 同一套解析
-   （`conf_path`）得出并与传入值逐字比对。`locked()` 记录 `(realpath, 是否独占)`，进程内另一
-   线程持锁时复用同一 fd（`_PROC` 表），同线程重入沿用深度。
+8. **追加锁语义收严**：`append_inplace` 只接受「该账本根上的**独占**持有」——子目录锁、
+   别的根、别的线程持有都不算，一律 RuntimeError 且零写；账本根不再由调用方自报，内部按
+   `ledger_root` 同一套解析（`conf_path`）得出并与传入值逐字比对。
 9. **`other` 桶彻底收窄**：只允许「目标由 tempfile 生成、规范化后仍在系统临时目录前缀内」；
    含 `..`/绝对段判红；`other` 条目不许跨文件调用（有跨文件调用即红）。租约卷、`keys/`、
    `backup/` 全部归 `ledger` 走 safeio。
@@ -79,14 +78,27 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     账本根一把 `threading.Lock` 排队，跨进程由目录 `flock` 独占。`exclusive_held()` 改为
     **本线程**持有才算（同进程别的线程不继承、不复用 fd）；`append_inplace` / `atomic_write`
     / `atomic_append` / `read_modify_write` 无任何降级路径。判据含「另一线程持锁时主线程必须
-    真等（>0 s 且 `exclusive_held=True`）」与五条变异（去根一致、进程级也算、去根一致、
-    删同线程检查、塞回 shared 分支）全部红→绿。
-14. **`other` 桶不许收路径参数**：写路径登记表的 `other` 条目形参表不得出现路径类参数
-    （名含 dir/path/root/home，或默认值为路径）；目标路径必须在函数体内由 `tempfile` 产生。
-    判定只看签名，与调用方式无关——即使经 `getattr` / 字典派发调用也照样红。需要收目录参数的
-    助手一律归 `ledger`（如随包夹具 `_make_volume` / `build_dataset` 改走 `safeio.atomic_write`）。
+    真等（>0 s 且 `exclusive_held=True`）」与六条变异（去根一致、进程级也算、去根一致、
+    删同线程检查、塞回 shared 分支、锁身份退回字符串）全部红→绿。
+14. **`other` 桶不许收路径参数**：`other` 条目形参表不得出现路径类参数——名含 dir/path/root/home，
+    或默认值是路径（`fn.args.defaults` 按位置与末段形参对齐、`kw_defaults` 对 kw-only）；出现
+    `*args` / `**kwargs` 一律红（可变参数等于「随便喂路径」）。目标侧要求 `join` 链的**每一个**
+    非字面组件都能证明是 tempfile 派生（不只看首元），闭包捕获的外部路径（模块常量/外层形参）
+    直接红。判定只看签名与函数体，与调用方式无关——经 `getattr` / 字典派发调用同样红。需要收
+    目录参数的助手归 `ledger`（如随包夹具 `_make_volume` / `build_dataset` 改走 `safeio.atomic_write`）。
 15. **三条保守行为写进 README**（不改代码）：临时目录前缀大小写变体（`/PRIVATE/TMP/…`）
     保守拒绝、`fork` 子进程继承已持有的锁、`exec` 后锁清零。三者都在安全侧，不提供开关。
+16. **锁身份改目录 inode**：`_PROC` / `_MUTEX` / `exclusive_held()` 统一用 `(st_dev, st_ino)`
+    作键，realpath 字符串只用于报错文案。大小写、NFD/NFC、软链、尾斜杠、`/private/tmp` 五种
+    写法指向同一 inode 即同一把锁：同线程再取**毫秒级 RuntimeError**，`blocking=True` 不挂起。
+    同线程重入不再放行（不加深、不静默通过）；临界区内写走 `atomic_append` / `append_inplace`
+    （检测到本线程已持锁就直接写）。
+17. **写原语不再兜底**：`atomic_append` / `read_modify_write` 的 `root` 改为必填，省略直接
+    RuntimeError——旧兜底「用目标所在目录取锁」会让异线程持根锁时零等待写入。`append_inplace`
+    另加归属断言：`commonpath(realpath(path), 账本根) == 账本根`，持 f 的锁不能往 g 写。
+18. **租约写失败不再泄漏根锁**：`acquire()` 的记账写包 try/finally——失败即摘登记并退锁；
+    只读租约目录下复测 `exclusive_held=False`、`_ctx=0`、他人可正常获取。`AgentLock` 形参只剩
+    `lease_vol` / `root`，被静默丢弃的 `lock_dir` 已删除。
 
 ## v4.0.5 · 2026-11-14
 

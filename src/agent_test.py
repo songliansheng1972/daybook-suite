@@ -171,7 +171,7 @@ def test_agent_lock(tmp):
     (signature: acquire(label, agent_id, blocking=False); the label never narrows the scope)."""
     from agent_lock import AgentLock
     import threading
-    lk = AgentLock(None, os.path.join(tmp, '租约卷.txt'), root=tmp)
+    lk = AgentLock(os.path.join(tmp, '租约卷.txt'), root=tmp)
     lid1 = lk.acquire('task:T001', 'ag-tom')
     if not _ok('5.1 Agent A 获取锁', bool(lid1)):
         return False
@@ -244,7 +244,7 @@ def test_agent_lock(tmp):
     orig = AgentLock.acquire
     AgentLock.acquire = lambda self, label, agent_id, blocking=False: 'fake-lease'
     try:
-        probe = AgentLock(None, os.path.join(tmp, '租约卷.txt'), root=tmp)
+        probe = AgentLock(os.path.join(tmp, '租约卷.txt'), root=tmp)
         first = probe.acquire('task:MUT', 'ag-x')
         second = probe.acquire('task:MUT', 'ag-y')
         excl_green = (first is not None and second is None)   # 5.3 形态，变异下必 False
