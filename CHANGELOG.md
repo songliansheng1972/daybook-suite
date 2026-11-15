@@ -116,8 +116,8 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     `root=` 即红；变异「删掉一处 root 实参」必须红。调用点残留的 `root or dirname(...)` 兜底
     全部删除（`daybook_hook.mark_processed`、`Heartbeat`），确定不了根就按根解析失败处理。
 22. **判据跳过显式化**：`[跳过]` 统一进跳过清单并在汇总打印数量与原因，不计入判据条数；
-    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 436 项（PASS 436；
-    跳过 0 项）`，`daybook/` 盒 `0 红 / 334 项（PASS 334；跳过 10 项）`。盒内 10 条跳过为
+    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 440 项（PASS 440；
+    跳过 0 项）`，`daybook/` 盒 `0 红 / 338 项（PASS 338；跳过 10 项）`。盒内 10 条跳过为
     AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）＋
     R10-3×3（缺 `orchestrator.py` ×2／`mcp_server.py`）；其余项数差异来自 AH 等按文件集扫描的
     判据随文件数变化。不手写换算，也不报「恒差 3」。
@@ -183,7 +183,8 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     NFC/NFD 混写、`/tmp` ↔ `/private/tmp`、尾斜杠四种写法都能写（`SPELL 4/4 escape=R`）；
     含 `..` 归一后逃逸仍拒绝且根外零写。`_open_parent_at` 的物理走查不变，两者同一 inode 口径。
 39. **追加只剩一条路（R12-3）**：删除 `O_RDWR → O_WRONLY` 的回退分支——写固定用
-    `O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW`；末字节检查另开 `O_RDONLY|O_NOFOLLOW` fd，
+    `O_WRONLY|O_APPEND|O_NOFOLLOW`（`atomic_append` 仍带 `O_CREAT`；`append_inplace` 去
+    `O_CREAT` 见第 43 条）；末字节检查另开 `O_RDONLY|O_NOFOLLOW` fd，
     打不开（只写/拒读）就跳过补换行。判据：`0200` 与 ACL 拒读目标仍可追加且 `padded=False`
     （`MODE200_OK`）；`0400`／`0000` 仍拒绝，ENOENT／EISDIR／ELOOP 不被吞（`REFUSE_OK`）。
 40. **读不到末字节的例外写进公开 docstring（R12-4）**：`append_inplace` 明确写明「读不到末字节
@@ -191,6 +192,17 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 41. **`daybook_session_hook --state` 越界收口（R12-5）**：`--state` 指到 `ROOT` 之外此前抛裸
     traceback、exit 1。现在顶层先捕 `RuntimeError`，打印 `★ 运行失败（rc=6）：<原因>` 并退 6，
     不抛 traceback、越界零写；判据注入越界路径断言 rc/文案/无 traceback/零写。
+42. **归属判回到 `realpath` 语义（R13-1）**：`_rel_parts` 不再先 `abspath` 词法折叠——目标的
+    父目录直接交 `os.path.realpath` 解释（`..` 先解软链再上跳），再从该点逐级爬 inode 找根。
+    `root/link/../x`（link→根外）按 POSIX 解析到根外 ⇒ 拒绝且零写；根内正常 `..` 不误拒
+    （`POSIX_OK`）。变异改回 `abspath` 词法折叠 ⇒ 静默改道、判据红。
+43. **`append_inplace` 去 `O_CREAT`（R13-2）**：追加不再隐式创建——目标不存在即
+    `RuntimeError`（文案写明「目标不存在·append 不创建」），要建新件走 `atomic_write`；
+    docstring 写明「目标必须已存在」。`append_inplace` 现直接复用 `_append_now(create=False)`，
+    与 `atomic_append` 共用同一条锁内追加实现。判据：目标不存在 ⇒ 报错且不产生文件。
+44. **写后复核 inode（R13-3）**：追加完成后 `stat(path)` 与写 fd 的 `fstat` 比对
+    `(st_dev, st_ino)`；不一致（追加期间被外部 `os.replace` 换掉）即 `RuntimeError`
+    「目标在追加期间被替换·数据可能未落盘」。判据注入替换 ⇒ 报错、不静默成功（`REPLACE_OK`）。
 
 ## v4.0.5 · 2026-11-14
 

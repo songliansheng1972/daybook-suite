@@ -175,19 +175,22 @@ def _real_root(root, who):
 
 
 def _rel_parts(path, root_real, who):
-    """算目标相对根的分量：从目标的父目录起逐级向上，按 (st_dev, st_ino) 找到与根同一 inode
-    的目录即止。归属判据是 **inode**，不是字符串前缀——大小写变体、NFC/NFD 混写、
-    `/tmp` ↔ `/private/tmp`、尾斜杠等写法只要指向同一 inode 都算根内；父目录 `realpath`
-    归一后仍找不到根 inode（含 `..` 归一后逃逸）即拒绝（零写）。末段保留原名，由
-    `O_NOFOLLOW` 拒绝软链。
-    Components are computed by walking **up by inode**: from the target's parent directory until
-    a directory with the same (st_dev, st_ino) as the root. Containment is judged by inode, not
-    a string prefix, so case variants, NFC/NFD spellings, `/tmp` ↔ `/private/tmp` and trailing
-    slashes all count as inside when they hit the same inode; a parent that (after realpath)
-    never reaches the root inode — including `..` escapes — is refused (zero write). The final
-    component keeps its original spelling and a symlink there is refused by O_NOFOLLOW."""
-    ap = os.path.abspath(path)
-    cur = os.path.realpath(os.path.dirname(ap))
+    """算目标相对根的分量：目标的父目录交给 `os.path.realpath` 解释（`..` 按真实文件系统
+    语义、先解软链再上跳），再从那一点起逐级向上，按 (st_dev, st_ino) 找到与根同一 inode
+    的目录即止。归属判据是 **inode**，不是字符串前缀，也不做 `abspath` 的词法折叠——
+    `root/link/../x`（link 指向根外）解析到根外即拒绝，不会被折成 root/x 静默改道。
+    大小写、NFC/NFD、`/tmp` ↔ `/private/tmp`、尾斜杠等写法只要指向同一 inode 都算根内。
+    末段保留原名，由 `O_NOFOLLOW` 拒绝软链。
+    Components are computed by resolving the target's parent through `os.path.realpath`
+    (`..` follows real filesystem semantics: symlinks first, then up), then walking **up by
+    inode** until a directory with the same (st_dev, st_ino) as the root. Containment is judged
+    by inode, not a string prefix, and `abspath` lexical folding is deliberately absent:
+    `root/link/../x` (link → outside) resolves outside and is refused instead of being silently
+    rerouted to root/x. Case variants, NFC/NFD spellings, `/tmp` ↔ `/private/tmp` and trailing
+    slashes all count as inside when they hit the same inode. The final component keeps its
+    original spelling and a symlink there is refused by O_NOFOLLOW."""
+    raw = path.rstrip(os.sep) or os.sep
+    cur = os.path.realpath(os.path.dirname(raw))
     try:
         rst = os.stat(root_real)
     except OSError as exc:
@@ -210,7 +213,10 @@ def _rel_parts(path, root_real, who):
         parts.append(os.path.basename(cur))
         cur = up
     parts.reverse()
-    parts.append(os.path.basename(ap))
+    name = os.path.basename(raw)
+    if name in ('', os.curdir, os.pardir):
+        raise RuntimeError('%s: 目标（%s）不是可写文件·拒绝写入（零写）' % (who, path))
+    parts.append(name)
     return parts
 
 
@@ -301,17 +307,28 @@ def atomic_write(path, data, mode=None, root=None):
         os.close(dfd)
 
 
-def _append_now(root, path, data, ensure_newline):
+def _append_now(root, path, data, ensure_newline, who='safeio.atomic_append', create=True):
     """已在临界区内：走 openat 唯一走查直接追加（不取锁）。Returns padded.
-    Inside the critical section: append through the single openat walk (no lock)."""
-    who = 'safeio.atomic_append'
+    Inside the critical section: append through the single openat walk (no lock).
+    create=False（append_inplace）：目标必须已存在，绝不隐式创建。写后复核
+    `stat(path)` 与写 fd 的 inode 一致；不一致即视为「追加期间被替换」，抛错不静默。
+    create=False (append_inplace): the target must already exist — never create implicitly.
+    After writing, `stat(path)` is compared with the write fd's inode; a mismatch means the
+    target was replaced mid-append and raises instead of failing silently."""
     root_real = _real_root(root, who)
     dfd, name = _open_parent_at(root_real, _rel_parts(path, root_real, who), who)
     try:
         padded = False
-        tfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                      0o644, dir_fd=dfd)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW
+        if create:
+            flags |= os.O_CREAT
         try:
+            tfd = os.open(name, flags, 0o644, dir_fd=dfd)
+        except FileNotFoundError:
+            raise RuntimeError('%s: 目标（%s）不存在·append 不创建（要建请用 atomic_write）'
+                               % (who, path)) from None
+        try:
+            wst = os.fstat(tfd)
             if ensure_newline and data:
                 # 末字节检查另开只读 fd；读不到（只写/拒读）就跳过补换行，不影响追加。
                 # The last-byte check uses a separate read-only fd; if it cannot be opened
@@ -329,6 +346,13 @@ def _append_now(root, path, data, ensure_newline):
                     finally:
                         os.close(rfd)
             os.write(tfd, data)
+            try:
+                now = os.stat(name, dir_fd=dfd, follow_symlinks=False)
+            except OSError:
+                now = None
+            if now is None or (now.st_dev, now.st_ino) != (wst.st_dev, wst.st_ino):
+                raise RuntimeError('%s: 目标（%s）在追加期间被替换·数据可能未落盘'
+                                   % (who, path))
         finally:
             os.close(tfd)
         return padded
@@ -430,6 +454,11 @@ def append_inplace(path, data, root=None, conf_path=None):
       legal complete line; that cannot be told apart statically, so the incremental caller
       detects it first and falls back to a full rebuild (see daybook.build).
 
+    ★ **目标必须已存在**：本函数不创建目标（无 `O_CREAT`）；不存在即 RuntimeError。
+      要建新件请用 `atomic_write`（它负责临时件 + 原子换入）。
+    ★ **The target must already exist**: this function never creates it (no `O_CREAT`); a
+      missing target raises RuntimeError. Create new artifacts with `atomic_write` instead.
+
     账本根**不许由调用方自报**：内部用 ledger_root 同一套解析（conf_path 指定，缺省按
     locate() 找当前 conf）得出根；传入 root 与解析结果逐字不同即 RuntimeError。
     The ledger root is **never taken on the caller's word**: it is resolved internally through
@@ -439,13 +468,15 @@ def append_inplace(path, data, root=None, conf_path=None):
     归属靠**物理走查**（与 atomic_append / read_modify_write / atomic_write 共用同一实现）：
     从账本根目录 fd 出发，用 openat（dir_fd）逐级 O_NOFOLLOW|O_DIRECTORY 走到目标所在目录，
     最后一级 openat 打开目标文件（O_APPEND|O_NOFOLLOW）。每级都必须是真目录，路径物理上出
-    不去；父目录先 realpath 归一，`/tmp` 与 `/private/tmp` 这类别名混写不会误拒。
+    不去；父目录先 `realpath` 按真实文件系统解释（`..` 先解软链再上跳，不做词法折叠），
+    大小写、NFC/NFD、`/tmp` 与 `/private/tmp` 等别名混写不会误拒。
     Containment is a **physical walk** (the same implementation shared by atomic_append,
     read_modify_write and atomic_write): from the ledger-root directory fd, openat each component
     with O_NOFOLLOW|O_DIRECTORY down to the target's directory, then openat the target with
     O_APPEND|O_NOFOLLOW. Every level must be a real directory, so the path physically cannot
-    leave; the parent is realpath-normalised first, so alias spellings (/tmp vs /private/tmp)
-    are not falsely rejected.
+    leave; the parent is resolved by `realpath` with real filesystem semantics (`..` follows
+    symlinks first, no lexical folding), so case, NFC/NFD and alias spellings
+    (/tmp vs /private/tmp) are not falsely rejected.
 
     ⚠ 威胁模型：防「路径重定向」（软链/别名把写入指向根外），**不防已进入目录被整体 rename
       搬走**——fd 语义固有，目录 fd 一旦取得，后续写入落在该 inode 上。这里不宣称「已封死」。
@@ -483,37 +514,7 @@ def append_inplace(path, data, root=None, conf_path=None):
                            % (who, resolved))
     if isinstance(data, str):
         data = data.encode('utf-8')
-    dfd, name = _open_parent_at(resolved, _rel_parts(path, resolved, who), who)
-    try:
-        padded = False
-        tfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                      0o644, dir_fd=dfd)
-        try:
-            if data:
-                # 末字节检查另开只读 fd；读不到（只写/拒读权限）就跳过补换行。
-                # The last-byte check uses a separate read-only fd; if it cannot be opened
-                # (write-only / read denied) padding is skipped.
-                try:
-                    rfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
-                except PermissionError:
-                    rfd = None
-                if rfd is not None:
-                    try:
-                        size = os.fstat(rfd).st_size
-                        if size > 0 and os.pread(rfd, 1, size - 1) != b'\n':
-                            data = b'\n' + data
-                            padded = True
-                    finally:
-                        os.close(rfd)
-            os.write(tfd, data)
-        finally:
-            os.close(tfd)
-        return padded
-    except OSError as exc:
-        raise RuntimeError('%s: 目标（%s）不可用（%s）·拒绝写入（零写）'
-                           % (who, path, exc)) from None
-    finally:
-        os.close(dfd)
+    return _append_now(resolved, path, data, True, who=who, create=False)
 
 
 def read_modify_write(path, fn, root=None):

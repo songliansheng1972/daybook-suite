@@ -137,7 +137,6 @@ WRITE_PATHS = (
     ('safeio.py', 'atomic_write', 'impl', 'safeio 实现本身'),
     ('safeio.py', '_append_now', 'impl', 'safeio 实现本身（临界区内追加）'),
     ('safeio.py', '_rmw', 'impl', 'safeio 实现本身（临界区内读改写）'),
-    ('safeio.py', 'append_inplace', 'impl', 'safeio 实现本身'),
     ('safeio.py', '_append_now', 'impl', 'safeio 实现本身（atomic_append 的锁内追加）'),
     ('safeio.py', '_atomic_replace_at', 'impl', 'safeio 实现本身（dir_fd 临时件 + replace）'),
     ('safeio.py', 'read_modify_write', 'impl', 'safeio 实现本身'),
@@ -2057,6 +2056,7 @@ elif mode == 'alias':
     # then the write still lands inside the root
     alias = os.path.join(d, 'alias_dir')
     os.symlink(d, alias)
+    open(os.path.join(d, 'alias_written.txt'), 'wb').write(b'')
     with safeio.locked(d):
         try:
             safeio.append_inplace(os.path.join(alias, 'alias_written.txt'), 'A\n', d, conf_path=cp)
@@ -2125,6 +2125,62 @@ elif mode == 'refuse':
         except RuntimeError:
             pass
     print('REFUSE_OK' if not bad else 'REFUSE_LEAK %s' % ','.join(bad))
+elif mode == 'posix':
+    # R13-1：`root/link/../x`（link→根外）按 POSIX 解析到根外 ⇒ 必须拒绝且零写；
+    # 正常 `..` 仍在根内的写法不得误拒
+    # R13-1: `root/link/../x` (link → outside) resolves outside per POSIX ⇒ refuse, zero write;
+    # a normal `..` that stays inside must still write
+    out = tempfile.mkdtemp(prefix='akposix_')
+    link = os.path.join(d, 'link')
+    os.symlink(out, link)
+    resolved = os.path.join(os.path.dirname(os.path.realpath(out)), 'escape.txt')
+    try:
+        safeio.atomic_write(os.path.join(link, '..', 'escape.txt'), b'X\n', root=d)
+        esc_ok = False
+    except RuntimeError:
+        esc_ok = not os.path.exists(resolved)
+    sub = os.path.join(d, 'realsub')
+    os.makedirs(sub, exist_ok=True)
+    try:
+        safeio.atomic_write(os.path.join(sub, '..', 'inner.txt'), b'I\n', root=d)
+        in_ok = os.path.exists(os.path.join(d, 'inner.txt'))
+    except RuntimeError:
+        in_ok = False
+    print('POSIX_OK' if esc_ok and in_ok else 'POSIX_BAD esc=%s in=%s' % (esc_ok, in_ok))
+elif mode == 'nofile':
+    # R13-2：append 不创建目标；不存在即报错且不产生文件
+    # R13-2: append never creates; a missing target raises and no file appears
+    miss = os.path.join(d, 'no_such_file.txt')
+    try:
+        with safeio.locked(d):
+            safeio.append_inplace(miss, 'x\n', d, conf_path=cp)
+        print('NOFILE_MISS')
+    except RuntimeError as exc:
+        print('NOFILE_OK' if not os.path.exists(miss) and '不存在' in str(exc)
+              else 'NOFILE_BAD %s' % exc)
+elif mode == 'replace':
+    # R13-3：追加期间目标被外部 os.replace 换掉 ⇒ 写后 inode 复核必须报错，不许静默成功
+    # R13-3: the target is swapped by an external os.replace mid-append ⇒ the post-write inode
+    # check must raise instead of silently succeeding
+    real_write = os.write
+
+    def hooked(fd, data):
+        n = real_write(fd, data)
+        tmp = os.path.join(d, 'repl.tmp')
+        with open(tmp, 'wb') as fh:
+            fh.write(b'NEW\n')
+        os.replace(tmp, p)
+        return n
+
+    os.write = hooked
+    try:
+        with safeio.locked(d):
+            safeio.append_inplace(p, 'b\n', d, conf_path=cp)
+        print('REPLACE_MISS')
+    except RuntimeError as exc:
+        print('REPLACE_OK' if '替换' in str(exc) else 'REPLACE_ERR %s' % exc)
+    finally:
+        os.write = real_write
 elif mode == 'missing':
     try:
         with safeio.locked(os.path.join(d, 'nope', 'missing')):
@@ -2340,11 +2396,12 @@ def _case_lock_assert(tmp):
     walk = ('def _open_parent_at' in safeio_src and 'dir_fd=fd' in safeio_src
             and 'os.O_NOFOLLOW | os.O_DIRECTORY' in safeio_src
             and 'for comp in parts[:-1]:' in safeio_src)
-    shared = safeio_src.count('_open_parent_at(') >= 5
+    shared = safeio_src.count('_open_parent_at(') >= 4
     legacy_gone = ('before is not None' not in safeio_src
                    and 'os.stat(rp)' not in safeio_src
                    and 'tempfile.mkstemp' not in safeio_src)
-    _ok('AK[R10-1/R11-1 静态] 唯一 openat 走查被四原语共用，旧字面路径/before 比对已删',
+    _ok('AK[R10-1/R11-1 静态] 唯一 openat 走查被四原语共用（append_inplace 经 _append_now），'
+        '旧字面路径/before 比对已删',
         walk and shared and legacy_gone,
         '走查=%s 共用=%s 旧法已删=%s' % (walk, shared, legacy_gone))
     # R11-1/R12-1：静态软链祖先下四个原语全部拒绝且根外零写
@@ -2366,6 +2423,21 @@ def _case_lock_assert(tmp):
     # R12-3: 0400/0000 still refuse; ENOENT/EISDIR/ELOOP are never swallowed
     got, err = _ak_scenario(here, 'refuse')
     _ok('AK[R12-3 0400/0000 仍拒绝，ENOENT/EISDIR/ELOOP 不被吞]', got == 'REFUSE_OK',
+        '%s %s' % (got, err[:120]))
+    # R13-1：`root/link/../x` 按 POSIX 解析到根外 ⇒ 拒绝零写；根内 `..` 不误拒
+    # R13-1: `root/link/../x` resolves outside per POSIX ⇒ refuse; an inside `..` still writes
+    got, err = _ak_scenario(here, 'posix')
+    _ok('AK[R13-1 root/link/../x 解析到根外 ⇒ 拒绝零写，根内 .. 不误拒]',
+        got == 'POSIX_OK', '%s %s' % (got, err[:120]))
+    # R13-2：append 目标不存在 ⇒ 报错且不创建
+    # R13-2: a missing append target raises and is never created
+    got, err = _ak_scenario(here, 'nofile')
+    _ok('AK[R13-2 append 目标不存在 ⇒ 报错且不产生文件]', got == 'NOFILE_OK',
+        '%s %s' % (got, err[:120]))
+    # R13-3：追加期间目标被替换 ⇒ 写后 inode 复核报错
+    # R13-3: the target replaced mid-append ⇒ post-write inode check raises
+    got, err = _ak_scenario(here, 'replace')
+    _ok('AK[R13-3 追加期间目标被 replace ⇒ 写后复核报错、不静默成功]', got == 'REPLACE_OK',
         '%s %s' % (got, err[:120]))
     # R11-4：根与目标混用别名拼写（软链别名目录）必须能写
     # R11-4: mixing alias spellings for root and target (symlinked alias directory) must write
@@ -2444,34 +2516,41 @@ def _case_lock_assert(tmp):
             pass
         return _ak_scenario(md, mode)
 
-    anc_anchor = "    dfd, name = _open_parent_at(resolved, _rel_parts(path, resolved, who), who)"
     anc_mut_line = ("    dfd = os.open(os.path.dirname(os.path.abspath(path)),\n"
                     "                  os.O_RDONLY | os.O_DIRECTORY)\n"
                     "    name = os.path.basename(path)")
-    if anc_anchor in safeio_src:
-        got, err = _mutant_run('r10', safeio_src.replace(anc_anchor, anc_mut_line, 1), 'ancestor')
-        _ok('AK 变异 R10-1 append_inplace 改回字面路径打开 ⇒ 祖先软链逃逸（判据红）',
+    # 变异⑤（R10-1）：追加原语改回字面路径打开 ⇒ 静态祖先软链下写到根外（判据必须红）
+    # Mutation 5 (R10-1): the append primitive reverts to a literal-path open ⇒ a static
+    # symlinked ancestor lets the write escape (the criterion must go red)
+    app_block = ("    root_real = _real_root(root, who)\n"
+                 "    dfd, name = _open_parent_at("
+                 "root_real, _rel_parts(path, root_real, who), who)\n"
+                 "    try:\n        padded = False\n"
+                 "        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW")
+    if app_block in safeio_src:
+        got, err = _mutant_run('r10', safeio_src.replace(
+            app_block, app_block.replace(
+                "    dfd, name = _open_parent_at("
+                "root_real, _rel_parts(path, root_real, who), who)",
+                anc_mut_line), 1), 'ancestor')
+        _ok('AK 变异 R10-1 追加原语改回字面路径打开 ⇒ 祖先软链逃逸（判据红）',
             got in ('WROTE', 'ANCESTOR_DIRTY'), '%s %s' % (got, err[:120]))
     else:
-        _ok('AK 变异 R10-1 append_inplace 改回字面路径打开 ⇒ 祖先软链逃逸（判据红）', False,
-            '找不到 append_inplace 走查锚点')
-    # 变异⑥（R11-1）：atomic_append 改回字面打开 ⇒ 软链祖先下只有它放行（判据必须红）
-    # Mutation 6 (R11-1): atomic_append reverts to a literal open ⇒ only it slips through under
-    # the symlinked ancestor (the criterion must go red)
-    app_block = ("    who = 'safeio.atomic_append'\n"
-                 "    root_real = _real_root(root, who)\n"
-                 "    dfd, name = _open_parent_at("
-                 "root_real, _rel_parts(path, root_real, who), who)")
+        _ok('AK 变异 R10-1 追加原语改回字面路径打开 ⇒ 祖先软链逃逸（判据红）', False,
+            '找不到 _append_now 走查锚点')
+    # 变异⑥（R11-1）：_append_now 改回字面打开 ⇒ 软链祖先下追加原语放行（判据必须红）
+    # Mutation 6 (R11-1): _append_now reverts to a literal open ⇒ the append primitives slip
+    # through under the symlinked ancestor (the criterion must go red)
     if app_block in safeio_src:
         got, err = _mutant_run('r11', safeio_src.replace(
             app_block, app_block.replace(
                 "    dfd, name = _open_parent_at("
                 "root_real, _rel_parts(path, root_real, who), who)",
                 anc_mut_line), 1), 'prims')
-        _ok('AK 变异 R11-1 atomic_append 改回字面打开 ⇒ 软链祖先下放行（判据红）',
+        _ok('AK 变异 R11-1 _append_now 改回字面打开 ⇒ 软链祖先下放行（判据红）',
             got.startswith('PRIMS_LEAK'), '%s %s' % (got, err[:120]))
     else:
-        _ok('AK 变异 R11-1 atomic_append 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
+        _ok('AK 变异 R11-1 _append_now 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
             '找不到 _append_now 走查锚点')
     # 变异⑦（R12-1）：atomic_write 改回字面打开 ⇒ 软链祖先下只有它放行（判据必须红）
     # Mutation 7 (R12-1): atomic_write reverts to a literal open ⇒ only it slips through
@@ -2503,6 +2582,21 @@ def _case_lock_assert(tmp):
     else:
         _ok('AK 变异 R12-1 read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
             '找不到 read_modify_write 走查锚点')
+    # 变异⑨（R13-1）：归属判改回 abspath 词法折叠 ⇒ `link/..` 被折成根内路径、静默改道
+    # Mutation 9 (R13-1): containment reverts to abspath lexical folding ⇒ `link/..` collapses
+    # to an in-root path and is silently rerouted (the criterion must go red)
+    lex_line = "    cur = os.path.realpath(os.path.dirname(raw))"
+    if lex_line in safeio_src:
+        got, err = _mutant_run(
+            'r13', safeio_src.replace(
+                lex_line,
+                "    cur = os.path.realpath(os.path.dirname(os.path.abspath(path)))", 1),
+            'posix')
+        _ok('AK 变异 R13-1 归属判改回 abspath 词法折叠 ⇒ link/.. 静默改道（判据红）',
+            got.startswith('POSIX_BAD'), '%s %s' % (got, err[:120]))
+    else:
+        _ok('AK 变异 R13-1 归属判改回 abspath 词法折叠 ⇒ link/.. 静默改道（判据红）', False,
+            '找不到 _rel_parts realpath 锚点')
     # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
     if not has_agent:
         _skip('AK 变异④：当前盒无 agent_lock.py')
