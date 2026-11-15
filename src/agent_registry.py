@@ -131,10 +131,10 @@ class Registry:
     def _write_secret(self, agent_id, secret):
         """写独立密钥文件（0600）·返回注册卷引用的相对路径。
         Write the standalone key file (0600) · return the relative path recorded in the registry volume.
-        文件走 safeio.atomic_write(mode=0o600)（在账本根内 ⇒ 只有这一套写路径）；
+        文件走 LockedRoot.write(REPLACE, 0600)（在账本根内 ⇒ 只有这一套写路径）；
         目录仍显式 0700，不依赖 umask。
-        The file goes through safeio.atomic_write(mode=0o600) (it lives inside the ledger root, so
-        there is exactly one write path); the directory stays explicitly 0700, never umask-dependent."""
+        The file goes through LockedRoot.write(REPLACE, 0600) (it lives inside the ledger root,
+        so there is exactly one write path); the directory stays explicitly 0700."""
         d = self._key_dir()
         os.makedirs(d, mode=0o700, exist_ok=True)
         try:
@@ -143,8 +143,10 @@ class Registry:
             pass
         fn = agent_id + '.key'
         p = os.path.join(d, fn)
-        from safeio import atomic_write
-        atomic_write(p, secret + '\n', mode=0o600, root=self.root)
+        from safeio import locked, WriteMode
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(p, 'agent_registry._write_secret'), secret + '\n',
+                     mode=WriteMode.REPLACE, perm=0o600)
         return KEY_DIR_NAME + '/' + fn
 
     def register(self, name):
@@ -156,8 +158,10 @@ class Registry:
         secret = secrets.token_hex(32)            # 64 字符 hex · 256bit · 64-char hex · 256-bit
         ref = self._write_secret(agent_id, secret)
         rec = '[%s] [注册] [%s] [%s] [%s]\n' % (_now(), agent_id, name, KEY_REF_PREFIX + ref)
-        from safeio import atomic_append
-        atomic_append(self.path, rec, root=self.root)
+        from safeio import locked, WriteMode
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(self.path, 'agent_registry.register'), rec,
+                     mode=WriteMode.APPEND_CREATE)
         try:
             os.chmod(self.path, 0o600)            # 旧卷可能含内联密钥·一并收紧 / legacy volumes may hold inline secrets · tighten too
         except OSError:
@@ -171,8 +175,10 @@ class Registry:
         if agent_id not in self._agents:
             raise KeyError('agent %s 不存在' % agent_id)
         rec = '[%s] [吊销] [%s]\n' % (_now(), agent_id)
-        from safeio import atomic_append
-        atomic_append(self.path, rec, root=self.root)
+        from safeio import locked, WriteMode
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(self.path, 'agent_registry.revoke'), rec,
+                     mode=WriteMode.APPEND_CREATE)
         self._agents[agent_id].revoked = True
 
     def lookup(self, agent_id):

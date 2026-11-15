@@ -142,8 +142,16 @@ def _audit(method, agent_id, detail):
             pass
         return
     try:
-        from safeio import atomic_append
-        atomic_append(_audit_vol(), rec, root=_root())
+        from safeio import WriteMode, exclusive_held, held, locked
+        rt = _root()
+        if exclusive_held(rt):
+            lr = held(rt, 'mcp_resources._audit')
+            lr.write(lr.root.rel_of(_audit_vol(), 'mcp_resources._audit'), rec,
+                     mode=WriteMode.APPEND_CREATE)
+        else:
+            with locked(rt) as lr:
+                lr.write(lr.root.rel_of(_audit_vol(), 'mcp_resources._audit'), rec,
+                         mode=WriteMode.APPEND_CREATE)
     except OSError:
         pass
 

@@ -39,8 +39,11 @@ def atomic_json(path, value, root):
     """写账本内的 json（root 为入口打开的 Root 句柄；越界即拒绝）。
     Write a json inside the ledger (root is the Root handle opened by the entry; out-of-root is
     refused)."""
-    from safeio import atomic_write
-    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True), root=root)
+    from safeio import locked, WriteMode
+    with locked(root) as lr:
+        lr.write(lr.root.rel_of(path, 'daybook_session_hook.atomic_json'),
+                 json.dumps(value, ensure_ascii=False, sort_keys=True),
+                 mode=WriteMode.REPLACE)
 
 
 def scan_code():

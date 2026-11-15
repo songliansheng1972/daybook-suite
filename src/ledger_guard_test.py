@@ -28,7 +28,7 @@ Cases
   V5 删游标+等长改写                            ⇒ rc=3（缺一名证人、另一名仍在 ⇒ 仍判违例），零落盘
   U rc=4 作者口径红                             ⇒ 照写且文案「已写回·只报不拦」（不是不可信）
   R2 两进程 20ms 错峰并发 index                 ⇒ 两侧 rc=0（一「只追加」一「未变」）
-  V safeio 原子替换/无锁读者                    ⇒ atomic_write 走 os.replace，read_vol 不取锁
+  V safeio 原子替换/无锁读者                    ⇒ LockedRoot.write 走 os.replace，read_vol 不取锁
   W 子目录卷 + 长条目 append                    ⇒ 与 index 争同一把账本根锁（不被子目录锁旁路）
   P 同一账本·两个不同 TMPDIR 并发持锁读改写     ⇒ 临界区不重叠、不丢更新（锁绑目录 inode）
   Q 持锁期间删除任何外部件                      ⇒ 仍互斥（账本内本无锁件可删）
@@ -91,13 +91,13 @@ WRITE_PATHS = (
     ('agent_heartbeat.py', 'beat', 'ledger', '账本内容/派生件'),
     ('agent_lock.py', '_log', 'ledger', '账本内容/派生件'),
     ('agent_message.py', '_append_inbox', 'ledger', '账本内容/派生件'),
-    ('agent_registry.py', '_write_secret', 'ledger', 'keys/ 在账本根内（atomic_write 0600）'),
+    ('agent_registry.py', '_write_secret', 'ledger', 'keys/ 在账本根内（REPLACE 0600）'),
     ('agent_registry.py', 'register', 'ledger', '账本内容/派生件'),
     ('agent_registry.py', 'revoke', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_write_cursor', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_run_ops', 'ledger', '账本内容/派生件'),
     ('daybook.py', 'build', 'ledger', '账本内容/派生件'),
-    ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（atomic_write）'),
+    ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（REPLACE）'),
     ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
     ('daybook_hook.py', 'mark_processed', 'ledger', '账本内容/派生件'),
     ('daybook_multidx.py', '_build_locked', 'ledger', '账本内容/派生件'),
@@ -115,21 +115,19 @@ WRITE_PATHS = (
     ('mcp_test.py', '_setup_tmp_root', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_test.py', 'test_daybook_index', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_test.py', 'test_subscribe_push', 'other', '随包测试：目标由 tempfile 生成'),
-    ('mcp_tools.py', '_audit', 'ledger', '账本内容/派生件'),
-    ('mcp_tools.py', '_record_signature', 'ledger', '账本内容/派生件'),
-    ('mcp_tools.py', '_write_cursor', 'ledger', '账本内容/派生件'),
+    ('mcp_tools.py', '_wal', 'ledger', '账本内容/派生件（临界区内复用 held）'),
     ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试：目标由 tempfile 生成'),
-    ('orch_fixes_test.py', '_make_volume', 'ledger', '随包测试夹具卷（atomic_write）'),
+    ('orch_fixes_test.py', '_write_fixture', 'ledger', '随包测试夹具卷（REPLACE）'),
+    ('orch_fixes_test.py', '_append_fixture', 'ledger', '随包测试夹具卷（APPEND_CREATE）'),
     ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_identity_signature', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_root_resolution', 'other', '随包测试：目标由 tempfile 生成'),
-    ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_single_pass_reads', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_mutation_check.py', 'make_mutant', 'other', '随包测试：目标由 tempfile 生成'),
-    ('orch_perf_bench.py', 'build_dataset', 'ledger', '随包压测夹具卷（atomic_write）'),
+    ('orch_perf_bench.py', 'build_dataset', 'ledger', '随包压测夹具卷（REPLACE）'),
     ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包压测：目标由 tempfile 生成'),
     ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
     ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
@@ -143,13 +141,11 @@ WRITE_PATHS = (
     ('task_volume.py', '_transition_locked', 'ledger', '账本内容/派生件'),
 )
 
-_WRITE_SAFE = frozenset(('safeio.atomic_write', 'safeio.atomic_append',
-                         'safeio.read_modify_write',
-                         'safeio.append_inplace',
-                         # safeio 内部的自调用（同模块裸名）
-                         # self-calls inside safeio (bare names in the same module)
-                         'atomic_write', 'atomic_append',
-                         'read_modify_write', 'append_inplace'))
+# 唯一写链的调用形态：持有 LockedRoot 的 `lr.write(...)` / `lr.update(...)`（步骤 3 起
+# 不存在模块级写原语）。判据据此把「走唯一写链」记为 safe。
+# The single write chain is `lr.write(...)` / `lr.update(...)` on a held LockedRoot (no
+# module-level write primitive exists since step 3); the audit records it as `safe`.
+_WRITE_SAFE = frozenset()
 _WRITE_SKIP = ('pack.py', 'ledger_guard_test.py')
 _WRITE_TEMP = ('tempfile.mkstemp', 'tempfile.NamedTemporaryFile',
                'tempfile.mkdtemp', 'tempfile.TemporaryFile')
@@ -394,7 +390,7 @@ def _write_call_targets(call, aliases):
     if t in _WRITE_TEMP:
         return []
     if t in _WRITE_SAFE:
-        # safeio 写的是「某个路径」，other 桶也必须证明这个路径来自 tempfile
+        # 模块级写原语（步骤 3 起已不存在；保留分支防回流），other 桶也必须证明这个路径来自 tempfile
         # safeio writes *some* path; the `other` bucket must prove that path comes from tempfile
         return [call.args[0]] if call.args else []
     if t.split('.')[-1] in ('run', 'Popen', 'call', 'check_call', 'check_output'):
@@ -691,106 +687,6 @@ def _other_param_reasons(fn):
     return bad
 
 
-_ROOT_POS = {'atomic_append': 2, 'read_modify_write': 2}
-
-
-def _kwargs_root_provable(v):
-    """`**expr` 能否证明含 root：仅字面 dict 且键全为常量、其中含 'root'。
-    Whether `**expr` provably carries root: only a literal dict with constant keys, one of them
-    'root'."""
-    if not isinstance(v, ast.Dict):
-        return False
-    for k in v.keys:
-        if k is None or not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
-            return False
-        if k.value == 'root':
-            return True
-    return False
-
-
-def _dynamic_write_calls(tree):
-    """动态取得写原语的调用（R10-5）：`functools.partial(atomic_append, …)` 与
-    `getattr(mod, 'atomic_append')`。判据看不到 root 时不该默认放行——动态取得即红。
-    Dynamic acquisition of a write primitive (R10-5): `functools.partial(atomic_append, …)`
-    and `getattr(mod, 'atomic_append')`. When root cannot be seen, never default to green."""
-    al = _write_aliases(tree)
-    out = []
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        last = _resolve_callee(n.func, al).split('.')[-1]
-        if last == 'partial':
-            if n.args and isinstance(n.args[0], (ast.Name, ast.Attribute)) \
-                    and _resolve_callee(n.args[0], al).split('.')[-1] in _ROOT_POS:
-                out.append(ast.unparse(n)[:70])
-        elif last == 'getattr':
-            if len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) \
-                    and isinstance(n.args[1].value, str) and n.args[1].value in _ROOT_POS:
-                out.append(ast.unparse(n)[:70])
-    return out
-
-
-def _rootless_write_calls(tree):
-    """写原语调用点漏传 root 的清单（atomic_append / read_modify_write）。
-    Calls to atomic_append / read_modify_write that omit the mandatory `root`.
-    按三种形态判定：显式 `root=`；按签名位置（第 3 参，0 基 2）；`**kwargs` 仅当字面 dict
-    可证明含 'root'。位置传参不是漏传，`**kwargs` 无法证明即判红。别名经 import 别名表还原。
-    Three forms are recognized: explicit `root=`; the signature position (3rd arg, 0-based 2);
-    and `**kwargs` only when a literal dict provably contains 'root'. Positional is not a miss;
-    an unprovable `**kwargs` is red. Aliases are resolved through the import alias table."""
-    al = _write_aliases(tree)
-    out = []
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        t = _resolve_callee(n.func, al)
-        name = t.split('.')[-1]
-        if name not in _ROOT_POS:
-            continue
-        if any(k.arg == 'root' for k in n.keywords):
-            continue
-        if len(n.args) > _ROOT_POS[name]:
-            continue
-        starred = [k.value for k in n.keywords if k.arg is None]
-        if starred and any(_kwargs_root_provable(v) for v in starred):
-            continue
-        if starred:
-            out.append(ast.unparse(n)[:60] + '（**kwargs 无法证明含 root）')
-            continue
-        out.append(ast.unparse(n)[:60])
-    return out
-
-
-def _mutant_drop_root(txt):
-    """把一处写原语调用的 root= 实参整段删掉（含前置逗号），供变异判据使用。
-    Drop one write-primitive call's `root=` argument (with its preceding comma) for mutation."""
-    try:
-        tree = ast.parse(txt)
-    except SyntaxError:
-        return None, None, None
-    al = _write_aliases(tree)
-    offs = [0]
-    for ln in txt.splitlines(True):
-        offs.append(offs[-1] + len(ln))
-    for n in ast.walk(tree):
-        if not isinstance(n, ast.Call):
-            continue
-        t = _resolve_callee(n.func, al)
-        if t.split('.')[-1] not in ('atomic_append', 'read_modify_write'):
-            continue
-        for kw in n.keywords:
-            if kw.arg != 'root':
-                continue
-            a = offs[kw.lineno - 1] + kw.col_offset
-            b = offs[kw.value.end_lineno - 1] + kw.value.end_col_offset
-            head = txt[:a].rstrip()
-            if head.endswith(','):
-                a = len(head) - 1
-            call_src = ast.get_source_segment(txt, n)
-            return txt[:a] + txt[b:], txt[a:b], call_src
-    return None, None, None
-
-
 def _find_func(tree, name):
     for n in ast.walk(tree):
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name:
@@ -838,6 +734,11 @@ def _scan_write_sites(d):
                     continue
                 t = _resolve_callee(sub.func, al)
                 if t in _WRITE_SAFE:
+                    kinds.add('safe')
+                elif (isinstance(sub.func, ast.Attribute)
+                      and sub.func.attr in ('write', 'update')
+                      and isinstance(sub.func.value, ast.Name)
+                      and sub.func.value.id in ('lr', '_lr', 'locked_root')):
                     kinds.add('safe')
                 elif t in ('os.replace', 'os.rename'):
                     kinds.add('replace')
@@ -992,33 +893,21 @@ def _case_write_paths(tmp):
         'listdir=%s literal=%s' % (
             _other_target_reasons(synth, _find_func(synth, '_emit_basename_listdir'))[:1],
             _other_target_reasons(synth, _find_func(synth, '_emit_basename_literal'))[:1]))
-    # R9-5：root 的三种传法都要认；漏传 / 不透明 **kwargs / as 别名漏传必须红
-    # R9-5: all three root forms count; missing, opaque **kwargs and alias-without-root are red
-    r95 = {
-        '位置传参·带 root': ('import safeio\nsafeio.atomic_append(p, b, r)\n', False),
-        '位置传参·漏 root': ('import safeio\nsafeio.atomic_append(p, b)\n', True),
-        '** 字面 dict 含 root': ('import safeio\nsafeio.atomic_append(p, b, **{"root": r})\n',
-                            False),
-        '** 不透明 kwargs': ('import safeio\nsafeio.atomic_append(p, b, **kw)\n', True),
-        'as 别名·带 root': ('from safeio import atomic_append as ap\nap(p, b, root=r)\n', False),
-        'as 别名·漏 root': ('from safeio import atomic_append as ap\nap(p, b)\n', True),
-    }
-    got95 = {k: bool(_rootless_write_calls(ast.parse(v[0]))) for k, v in r95.items()}
-    _ok('AH R9-5 root 三种传法（kw/位置/**字面）均认；漏传/**不透明/别名漏传 ⇒ 红',
-        all(got95[k] == v[1] for k, v in r95.items()),
-        '不符=%s' % [k for k, v in r95.items() if got95[k] != v[1]])
-    # R10-5：动态取得写原语即红（partial / getattr），静态直呼不误报
-    # R10-5: dynamic acquisition of a write primitive is red (partial / getattr); a static direct
-    # call is not a false positive
-    dyn_partial = bool(_dynamic_write_calls(
-        ast.parse('import functools\nfunctools.partial(atomic_append, root=r)\n')))
-    dyn_getattr = bool(_dynamic_write_calls(
-        ast.parse('getattr(mod, "atomic_append")(p, b)\n')))
-    dyn_clean = _dynamic_write_calls(
-        ast.parse('import safeio\nsafeio.atomic_append(p, b, root=r)\n'))
-    _ok('AH R10-5 functools.partial / getattr 动态取得写原语 ⇒ 红，静态直呼不误报',
-        dyn_partial and dyn_getattr and not dyn_clean,
-        'partial=%s getattr=%s 直呼=%s' % (dyn_partial, dyn_getattr, dyn_clean))
+    # P4 能力形态（步骤 3）：旧四原语在全部产品件中零残留；写方法只在 LockedRoot 上
+    # P4 capability shape (step 3): the four legacy primitives leave no trace in any product
+    # file; write methods exist only on LockedRoot
+    legacy = []
+    for f in files:
+        txt = io.open(os.path.join(d, f), encoding='utf-8').read()
+        for name in ('atomic_write', 'atomic_append', 'append_inplace', 'read_modify_write'):
+            if name in txt:
+                legacy.append((f, name))
+    _ok('P4[步骤3] 旧四原语零残留（产品件不提也不调）⇒ 红', not legacy,
+        '残留=%s' % legacy[:6])
+    cap = [n.name for n in ast.walk(trees.get('safeio.py', ast.parse(''))) 
+           if isinstance(n, ast.FunctionDef) and n.name in ('write', 'update')]
+    _ok('P4[步骤3] 写方法只定义在 LockedRoot（write/update）', sorted(cap) == ['update', 'write'],
+        'write/update 定义=%s' % cap)
     # other 桶条目不许被其他模块调用：跨文件调用 ⇒ 红（否则归回账本）
     # `other` entries must not be called from other modules: a cross-file call ⇒ red
     defs, callers = {}, {}
@@ -1065,56 +954,10 @@ def _case_write_paths(tmp):
                 shareref.append((f, token))
     _ok('AH 共享锁能力已删（无 LOCK_SH／共享形参）⇒ 红', not shareref,
         '仍出现=%s' % shareref[:6])
-    # 写原语必填 root：调用点必须显式带 root=（AST 级）
-    # Mandatory root on write primitives: call sites must pass root= explicitly (AST level)
-    rootless = []
-    for f in files:
-        for snip in _rootless_write_calls(trees[f]):
-            rootless.append((f, snip))
-    _ok('AH 写原语调用点必须显式带 root=（漏传 ⇒ 红）', not rootless,
-        '漏传=%s' % rootless[:4])
-    # 变异：把一处真实调用点的 root 实参删掉 ⇒ 扫描必须红
-    # Mutation: drop one real call site's root argument ⇒ the scan must go red
-    mut_file, mut_txt, mut_seg, mut_orig, mut_call = None, None, None, None, None
-    for f in files:
-        txt = io.open(os.path.join(d, f), encoding='utf-8').read()
-        mt, seg, call_src = _mutant_drop_root(txt)
-        if mt is not None:
-            mut_file, mut_txt, mut_seg, mut_orig, mut_call = f, mt, seg, txt, call_src
-            break
-    mut_bad = False
-    if mut_txt is not None:
-        try:
-            mut_bad = bool(_rootless_write_calls(ast.parse(mut_txt)))
-        except SyntaxError:
-            mut_bad = True
-    _ok('AH 变异：删掉一处 root 实参 ⇒ 判据红', mut_bad,
-        '变异件=%s 删段=%r 命中=%s' % (mut_file, mut_seg, mut_bad))
-    # 变异三种形态（R9-5）：位置传参不误报；**kwargs 不透明 / as 别名漏传 ⇒ 红
-    # Three R9-5 mutation forms: positional is not a false positive; opaque **kwargs and an
-    # alias call without root are red
-    r95m = {}
-    if mut_orig is not None:
-        pos_call = mut_call.replace('root=', '', 1)
-        kw_call = mut_call.replace(mut_seg, ', **kw', 1)
-        al_call = mut_call.replace('atomic_append(', '_r95ap(', 1).replace(mut_seg, '', 1)
-        pos_txt = mut_orig.replace(mut_call, pos_call, 1)
-        kw_txt = mut_orig.replace(mut_call, kw_call, 1)
-        al_txt = (mut_orig.replace(mut_call, al_call, 1)
-                  + '\nfrom safeio import atomic_append as _r95ap\n')
-        try:
-            r95m['位置传参·不误报'] = bool(_rootless_write_calls(ast.parse(pos_txt)))
-            r95m['**不透明 kwargs·红'] = bool(_rootless_write_calls(ast.parse(kw_txt)))
-            r95m['as 别名漏 root·红'] = bool(_rootless_write_calls(ast.parse(al_txt)))
-            _ok('AH 变异 R9-5 位置传参不误报、**不透明 kwargs 与 as 别名漏传 ⇒ 红',
-                (not r95m['位置传参·不误报']) and r95m['**不透明 kwargs·红']
-                and r95m['as 别名漏 root·红'],
-                '位置=%s kwargs=%s 别名=%s' % (r95m['位置传参·不误报'],
-                                             r95m['**不透明 kwargs·红'],
-                                             r95m['as 别名漏 root·红']))
-        except SyntaxError as exc:
-            _ok('AH 变异 R9-5 位置传参不误报、**不透明 kwargs 与 as 别名漏传 ⇒ 红', False,
-                'SyntaxError=%s' % exc)
+    # 写入口唯一性：产品件里的写调用只许出现在 safeio（impl 桶）与登记过的账本写点；
+    # AH 的 WRITE_PATHS 登记表已覆盖该约束，这里不再保留旧原语的 root= 扫描。
+    # Single write entry: product write calls appear only in safeio (impl) and the registered
+    # ledger write sites; that is already enforced by WRITE_PATHS.
     print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
           % (len(present), len(sites), len(unreg), len(absent), len(direct)))
     buckets = {}
@@ -1381,9 +1224,10 @@ def spy(a, b, **k):
     calls[0] += 1
     return real(a, b, **k)
 safeio.os.replace = spy
-safeio.atomic_write(p, '新内容', root=os.path.dirname(p))
-assert open(p, encoding='utf-8').read() == '新内容', 'atomic_write 内容不符'
-assert calls[0] >= 1, 'atomic_write 未走 os.replace'
+with safeio.locked(os.path.dirname(p)) as lr:
+    lr.write(lr.root.rel_of(p, 'guard'), '新内容', mode=safeio.WriteMode.REPLACE)
+assert open(p, encoding='utf-8').read() == '新内容', 'LockedRoot.write 内容不符'
+assert calls[0] >= 1, 'LockedRoot.write 未走 os.replace'
 assert not [n for n in os.listdir(os.path.dirname(p)) if n.endswith('.tmp')], '残留临时件'
 def _no_lock(*a, **k):
     raise AssertionError('read_vol 取了锁')
@@ -1531,7 +1375,7 @@ def _case_safeio(tmp):
                         os.path.dirname(SRC_BIN), p],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        universal_newlines=True)
-    _ok('V atomic_write 走 os.replace 且无临时残留 + read_vol 不取锁',
+    _ok('V LockedRoot.write 走 os.replace 且无临时残留 + read_vol 不取锁',
         r.returncode == 0 and r.stdout.strip() == 'OK',
         (r.stdout.strip() or r.stderr.strip())[:160])
 
@@ -1677,16 +1521,19 @@ import safeio
 cp = os.path.join(d, 'daybook.conf')
 open(cp, 'w', encoding='utf-8').write('[index]\nroot=\nout_dir=索引\n')
 before = open(p, 'rb').read()
-# 不持账本根锁直接调用 ⇒ 必须抛错且零写
+# 不持账本根锁直接调用 ⇒ 结构上拿不到写能力（held 抛错）且零写
 try:
-    safeio.append_inplace(p, 'x\n', d)
+    _rt = safeio.Root._from_dir_path(d, 'guard')
+    safeio.held(_rt, 'guard').write(_rt.rel_of(p, 'guard'), 'x\n',
+                                    mode=safeio.WriteMode.APPEND_EXISTING, pad_newline=True)
     print('NO_LOCK_NO_ERROR')
     sys.exit(3)
 except RuntimeError:
     pass
 assert open(p, 'rb').read() == before, '未持锁调用改动了文件'
-with safeio.locked(d):
-    padded = safeio.append_inplace(p, '账\t2\tt\t测试\ty\t皮特\n', d)
+with safeio.locked(d) as lr:
+    padded = lr.write(lr.root.rel_of(p, 'guard'), '账\t2\tt\t测试\ty\t皮特\n',
+                      mode=safeio.WriteMode.APPEND_EXISTING, pad_newline=True)
 data = open(p, 'rb').read()
 assert data.endswith(b'\n'), '追加后仍不是以换行结尾'
 assert '半'.encode('utf-8') in data, '合法的末行被截掉了'
@@ -1841,13 +1688,16 @@ def _case_tail_no_truncate(tmp):
     n_guard = "                    elif n_idx != cur.get('n', -1):"
     _ok('AJ 变异前置：找到「索引行数与游标不符」守卫', n_guard in src)
     src = src.replace(n_guard, '                    elif False:')
-    ap = ("""            if append_inplace(_idf, data, root) and report is not None:
+    ap = ("""            if lr.write(lr.root.rel_of(_idf, 'daybook._run_ops'), data,
+                        mode=WriteMode.APPEND_EXISTING, pad_newline=True) and report is not None:
                 report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))""")
     mut_ap = ("""            if os.path.exists(_idf):
                 _d0 = open(_idf, 'rb').read()
                 if _d0 and not _d0.endswith(b'\\n'):
                     open(_idf, 'wb').write(_d0[:_d0.rfind(b'\\n') + 1])
-            append_inplace(_idf, data, root)""")
+            if lr.write(lr.root.rel_of(_idf, 'daybook._run_ops'), data,
+                        mode=WriteMode.APPEND_EXISTING, pad_newline=True) and report is not None:
+                report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))""")
     _ok('AJ 变异前置：找到增量追加行', ap in src)
     src = src.replace(ap, mut_ap)
     io.open(os.path.join(mut, 'daybook.py'), 'w', encoding='utf-8').write(src)
@@ -1885,10 +1735,73 @@ sub = os.path.join(d, 'sub'); os.makedirs(sub, exist_ok=True)
 other = os.path.join(d, 'other'); os.makedirs(other, exist_ok=True)
 
 
+def _scope(root):
+    """Root 句柄（路径则临时打开）；返回 (rt, 是否本函数新开)。"""
+    if isinstance(root, safeio.Root):
+        return root, False
+    return safeio.Root._from_dir_path(root, 'guard'), True
+
+
+def _w(path, data, root, pad=True):
+    """已持锁写（APPEND_EXISTING）：无锁 ⇒ held 抛错（结构上拿不到写能力）。"""
+    rt, opened = _scope(root)
+    try:
+        lr = safeio.held(rt, 'guard')
+        return lr.write(rt.rel_of(path, 'guard'), data,
+                        mode=safeio.WriteMode.APPEND_EXISTING, pad_newline=pad)
+    finally:
+        if opened:
+            rt.close()
+
+
+def _wp(path, data, root):
+    """追加创建（APPEND_CREATE）：已有临界区就用 held，否则自己取锁。"""
+    rt, opened = _scope(root)
+    try:
+        if safeio.exclusive_held(rt):
+            safeio.held(rt, 'guard').write(rt.rel_of(path, 'guard'), data,
+                                           mode=safeio.WriteMode.APPEND_CREATE)
+        else:
+            with safeio.locked(rt) as lr:
+                lr.write(rt.rel_of(path, 'guard'), data, mode=safeio.WriteMode.APPEND_CREATE)
+    finally:
+        if opened:
+            rt.close()
+
+
+def _wr(path, data, root):
+    """原子替换（REPLACE）：已有临界区就用 held，否则自己取锁。"""
+    rt, opened = _scope(root)
+    try:
+        if safeio.exclusive_held(rt):
+            safeio.held(rt, 'guard').write(rt.rel_of(path, 'guard'), data,
+                                           mode=safeio.WriteMode.REPLACE)
+        else:
+            with safeio.locked(rt) as lr:
+                lr.write(rt.rel_of(path, 'guard'), data, mode=safeio.WriteMode.REPLACE)
+    finally:
+        if opened:
+            rt.close()
+
+
+def _wrmw(path, fn, root):
+    """读-改-写（update）：已有临界区就用 held，否则自己取锁。"""
+    rt, opened = _scope(root)
+    try:
+        if safeio.exclusive_held(rt):
+            safeio.held(rt, 'guard').update(rt.rel_of(path, 'guard'), fn)
+        else:
+            with safeio.locked(rt) as lr:
+                lr.update(rt.rel_of(path, 'guard'), fn)
+    finally:
+        if opened:
+            rt.close()
+
+
 def attempt(root):
     before = open(p, 'rb').read()
     try:
-        safeio.append_inplace(p, 'b\n', root)
+        _w(p, 'b\n', root)
     except RuntimeError:
         return 'RAISED_ZERO' if open(p, 'rb').read() == before else 'RAISED_DIRTY'
     return 'WROTE'
@@ -1927,7 +1840,7 @@ elif mode == 'outside':
     with safeio.locked(d):
         before = open(p2, 'rb').read()
         try:
-            safeio.append_inplace(p2, 'b\n', d)
+            _w(p2, 'b\n', d)
             print('WROTE')
         except RuntimeError:
             print('RAISED_ZERO' if open(p2, 'rb').read() == before else 'RAISED_DIRTY')
@@ -1941,7 +1854,7 @@ elif mode == 'hardlink':
     os.link(secret, p3)
     with safeio.locked(d):
         try:
-            safeio.append_inplace(p3, 'b\n', d)
+            _w(p3, 'b\n', d)
             print('WROTE_BOTH' if open(secret, 'rb').read() == b'a\nb\n' else 'WROTE_ONE')
         except RuntimeError:
             print('RAISED')
@@ -1959,7 +1872,7 @@ elif mode == 'ancestor':
     os.symlink(out, sub)
     with safeio.locked(d):
         try:
-            safeio.append_inplace(os.path.join(sub, 'leak.tsv'), 'b\n', d)
+            _w(os.path.join(sub, 'leak.tsv'), 'b\n', d)
             print('WROTE')
         except RuntimeError:
             print('ANCESTOR_ZERO' if open(leak, 'rb').read() == b'a\n' else 'ANCESTOR_DIRTY')
@@ -1992,7 +1905,7 @@ elif mode == 'race':
     with safeio.locked(d):
         for _ in range(300):
             try:
-                safeio.append_inplace(os.path.join(sub, 'leak.tsv'), b'x\n', d)
+                _w(os.path.join(sub, 'leak.tsv'), b'x\n', d)
                 ok += 1
             except RuntimeError:
                 rej += 1
@@ -2001,8 +1914,8 @@ elif mode == 'race':
     esc = 0 if open(leak, 'rb').read() == b'ORIG\n' else 1
     print('RACE ok=%d rej=%d esc=%d' % (ok, rej, esc))
 elif mode == 'prims':
-    # R11-1/R12-1：软链祖先下四个原语（含 atomic_write / read_modify_write）都必须拒绝
-    # R11-1/R12-1: under a symlinked ancestor all four primitives must refuse
+    # R11-1/R12-1：软链祖先下四种写入语义（已存在追加/创建追加/读写改/替换）都必须拒绝
+    # R11-1/R12-1: under a symlinked ancestor all four write semantics must refuse
     out = tempfile.mkdtemp(prefix='akprims_')
     sub = os.path.join(d, 'psub')
     os.makedirs(sub, exist_ok=True)
@@ -2013,13 +1926,13 @@ elif mode == 'prims':
         for fn in ('x.txt', 'y.txt', 'z.txt', 'w.txt'):
             try:
                 if fn == 'x.txt':
-                    safeio.append_inplace(os.path.join(sub, fn), 'APP\n', d)
+                    _w(os.path.join(sub, fn), 'APP\n', d)
                 elif fn == 'y.txt':
-                    safeio.atomic_append(os.path.join(sub, fn), 'APP\n', root=d)
+                    _wp(os.path.join(sub, fn), 'APP\n', d)
                 elif fn == 'z.txt':
-                    safeio.read_modify_write(os.path.join(sub, fn), lambda b: b'RMW\n', root=d)
+                    _wrmw(os.path.join(sub, fn), lambda b: b'RMW\n', d)
                 else:
-                    safeio.atomic_write(os.path.join(sub, fn), b'ATW\n', root=d)
+                    _wr(os.path.join(sub, fn), b'ATW\n', d)
             except RuntimeError:
                 bad += 1
     leak = len(os.listdir(out))
@@ -2037,7 +1950,7 @@ elif mode == 'spellings':
 
     def _spell(tag, target, root):
         try:
-            safeio.atomic_write(target, b'W\n', root=root)
+            _wr(target, b'W\n', root)
             ok = os.path.exists(target) and open(target, 'rb').read() == b'W\n'
         except RuntimeError:
             ok = False
@@ -2053,7 +1966,7 @@ elif mode == 'spellings':
             os.unlink(os.path.join(junk, name))
         os.rmdir(junk)
     try:
-        safeio.atomic_write(os.path.join(d, '..', os.path.basename(esc)), b'X\n', root=d)
+        _wr(os.path.join(d, '..', os.path.basename(esc)), b'X\n', d)
         escape = 'E'
     except RuntimeError:
         escape = 'R'
@@ -2069,7 +1982,7 @@ elif mode == 'alias':
     open(os.path.join(d, 'alias_written.txt'), 'wb').write(b'')
     with safeio.locked(d):
         try:
-            safeio.append_inplace(os.path.join(alias, 'alias_written.txt'), 'A\n', d)
+            _w(os.path.join(alias, 'alias_written.txt'), 'A\n', d)
             print('ALIAS_OK' if os.path.exists(os.path.join(d, 'alias_written.txt')) else 'ALIAS_LOST')
         except RuntimeError as exc:
             print('ALIAS_REJECT %s' % exc)
@@ -2090,10 +2003,10 @@ elif mode == 'mode200':
     acl_readable = os.access(p8, os.R_OK)
     with safeio.locked(d):
         try:
-            padded7 = safeio.append_inplace(p7, 'b\n', d)
+            padded7 = _w(p7, 'b\n', d)
             size7 = os.stat(p7).st_size
             os.chmod(p7, 0o600)
-            padded8 = safeio.append_inplace(p8, 'b\n', d)
+            padded8 = _w(p8, 'b\n', d)
             size8 = os.stat(p8).st_size
             ok = (size7 == 4 and padded7 is False and not acl_readable
                   and size8 == 4 and padded8 is False)
@@ -2114,7 +2027,7 @@ elif mode == 'refuse':
         os.close(fd)
         os.chmod(q, perm)
         try:
-            safeio.append_inplace(q, 'b\n', d)
+            _w(q, 'b\n', d)
             bad.append(tag)
         except RuntimeError:
             pass
@@ -2125,12 +2038,11 @@ elif mode == 'refuse':
     for tag in cases:
         try:
             if tag == 'enoent':
-                safeio.append_inplace(os.path.join(d, 'nope_dir', 'x.txt'), 'b\n',
-                                      d)
+                _w(os.path.join(d, 'nope_dir', 'x.txt'), 'b\n', d)
             elif tag == 'eisdir':
-                safeio.append_inplace(os.path.join(d, 'eisdir'), 'b\n', d)
+                _w(os.path.join(d, 'eisdir'), 'b\n', d)
             else:
-                safeio.append_inplace(os.path.join(d, 'eloop'), 'b\n', d)
+                _w(os.path.join(d, 'eloop'), 'b\n', d)
             bad.append(tag)
         except RuntimeError:
             pass
@@ -2145,7 +2057,7 @@ elif mode == 'posix':
     os.symlink(out, link)
     resolved = os.path.join(os.path.dirname(os.path.realpath(out)), 'escape.txt')
     try:
-        safeio.atomic_write(os.path.join(link, '..', 'escape.txt'), b'X\n', root=d)
+        _wr(os.path.join(link, '..', 'escape.txt'), b'X\n', d)
         esc_ok = False
     except RuntimeError:
         # 零写：根外解析点与根内同名点都不得出现（防「折成根内」也算通过）。
@@ -2156,7 +2068,7 @@ elif mode == 'posix':
     sub = os.path.join(d, 'realsub')
     os.makedirs(sub, exist_ok=True)
     try:
-        safeio.atomic_write(os.path.join(sub, '..', 'inner.txt'), b'I\n', root=d)
+        _wr(os.path.join(sub, '..', 'inner.txt'), b'I\n', d)
         in_ok = os.path.exists(os.path.join(d, 'inner.txt'))
     except RuntimeError:
         in_ok = False
@@ -2167,7 +2079,7 @@ elif mode == 'nofile':
     miss = os.path.join(d, 'no_such_file.txt')
     try:
         with safeio.locked(d):
-            safeio.append_inplace(miss, 'x\n', d)
+            _w(miss, 'x\n', d)
         print('NOFILE_MISS')
     except RuntimeError as exc:
         print('NOFILE_OK' if not os.path.exists(miss) and '不存在' in str(exc)
@@ -2189,7 +2101,7 @@ elif mode == 'replace':
     os.write = hooked
     try:
         with safeio.locked(d):
-            safeio.append_inplace(p, 'b\n', d)
+            _w(p, 'b\n', d)
         print('REPLACE_MISS')
     except RuntimeError as exc:
         print('REPLACE_OK' if '替换' in str(exc) else 'REPLACE_ERR %s' % exc)
@@ -2380,10 +2292,11 @@ def _swap():
     open(os.path.join(B, 'vol.txt'), 'wb').write(b'b-original\n')
     rt = safeio.Root._from_dir_path(A)
     try:
-        with rt.lock():
+        with rt.lock() as lr:
             os.rename(A, os.path.join(base, 'A-moved'))
             os.rename(B, A)
-            safeio.atomic_write(os.path.join(A, 'vol.txt'), b'written-after-swap\n', root=rt)
+            lr.write(rt.rel_of(os.path.join(A, 'vol.txt'), 'guard'),
+                     b'written-after-swap\n', mode=safeio.WriteMode.REPLACE)
     finally:
         rt.close()
     new = open(os.path.join(A, 'vol.txt'), 'rb').read()
@@ -2436,12 +2349,12 @@ def _split():
     def writer_a():
         rt_a = safeio.Root._from_dir_path(A)
         try:
-            with rt_a.lock():
+            with rt_a.lock() as lr:
                 gate.set()
                 old = open(os.path.join(A, 'derived.txt'), 'rb').read()
                 time.sleep(0.6)
-                safeio.atomic_write(os.path.join(A, 'derived.txt'), old + b'v2-from-A\n',
-                                    root=rt_a)
+                lr.write(rt_a.rel_of(os.path.join(A, 'derived.txt'), 'guard'),
+                         old + b'v2-from-A\n', mode=safeio.WriteMode.REPLACE)
         finally:
             rt_a.close()
 
@@ -2449,7 +2362,9 @@ def _split():
         gate.wait()
         rt_b = safeio.Root._from_dir_path(A)     # 换根后按新路径开 ⇒ 新 inode、新锁（显式）
         try:
-            safeio.atomic_append(os.path.join(A, 'derived.txt'), b'v1-from-B\n', root=rt_b)
+            with rt_b.lock() as lr:
+                lr.write(rt_b.rel_of(os.path.join(A, 'derived.txt'), 'guard'),
+                         b'v1-from-B\n', mode=safeio.WriteMode.APPEND_CREATE)
         finally:
             rt_b.close()
 
@@ -2647,15 +2562,16 @@ def _case_lock_assert(tmp):
     # R11-5: a write-only (0200) target can still be appended
     got, err = _ak_scenario(here, 'mode200')
     _ok('AK[R11-5 0200 只写目标仍可追加]', got == 'MODE200_OK', '%s %s' % (got, err[:120]))
-    # 步骤 1 静态：atomic_write 适配器只做「Rel + 走唯一写链」，replace/fsync 在 LockedRoot
-    # Step-1 static: the atomic_write adapter only builds a Rel and enters the single write
-    # chain; the replace/fsync live on LockedRoot
-    aw = ('def atomic_write(path, data, mode=None, root=None):' in safeio_src
-          and 'mode=WriteMode.REPLACE' in safeio_src
-          and 'os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)' in safeio_src
-          and 'os.fsync(dfd)' in safeio_src)
-    _ok('AK[步骤1 静态] atomic_write 走唯一写链（dir_fd 临时件 + replace + fsync(dfd)）',
-        aw, 'ok=%s' % aw)
+    # 步骤 3 静态：四个旧原语已删除（无 shim），写链只剩 LockedRoot；replace/fsync 在其上
+    # Step-3 static: the four legacy primitives are gone (no shim) and the only write chain is
+    # LockedRoot, which owns replace/fsync
+    gone = all(('def %s(' % n) not in safeio_src
+               for n in ('atomic_write', 'atomic_append', 'append_inplace',
+                         'read_modify_write'))
+    chain = ('os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)' in safeio_src
+             and 'os.fsync(dfd)' in safeio_src)
+    _ok('AK[步骤3 静态] 旧四原语已删除且写链只剩 LockedRoot（replace + fsync(dfd)）',
+        gone and chain, 'gone=%s chain=%s' % (gone, chain))
     # R8-3：账本根不存在 ⇒ 明确报错（不是 FileNotFoundError）
     # R8-3: a missing ledger root ⇒ explicit error (not a bare FileNotFoundError)
     got, err = _ak_scenario(here, 'missing')
@@ -2735,13 +2651,14 @@ def _case_lock_assert(tmp):
         got, err = _ak_scenario(md, 'posix')
         _mut_ok('M3 归属判改 abspath 词法折叠 ⇒ link/.. 静默改道（判据红）',
                 got != 'POSIX_OK', '%s %s' % (got, err[:120]))
-    # M5：删掉 append_inplace 的持锁前置 ⇒ 无锁也能写
-    # M5: drop append_inplace's lock precondition ⇒ an unlocked write is allowed
-    md = _mut("        lr = _held_for_root(rt)\n        if lr is None:",
-              "        lr = _held_for_root(rt)\n        if False:", 'M5 去持锁前置')
+    # M5：held() 无锁时不再拒绝，改为就地取锁 ⇒ 无锁调用也能写（判据红）
+    # M5: held() no longer refuses when unlocked but acquires the lock ⇒ an unlocked call writes
+    md = _mut("    if lr is None:\n        raise RuntimeError('%s: 未在本线程于账本根（%s）持独占锁'",
+              "    if lr is None:\n        return rt.lock()\n        raise RuntimeError('%s: 未在本线程于账本根（%s）持独占锁'",
+              'M5 去持锁前置')
     if md:
         got, err = _ak_scenario(md, 'nolock')
-        _mut_ok('M5 去掉 append_inplace 持锁前置 ⇒ 无锁写放行（判据红）',
+        _mut_ok('M5 去掉 held() 的持锁前置 ⇒ 无锁写放行（判据红）',
                 got != 'RAISED_ZERO', '%s %s' % (got, err[:120]))
     # M-root：写链按 label 重新打开根 ⇒ 换根后写落新 inode（fd 语义被破坏）
     # M-root: the write chain re-opens the root by label ⇒ after a swap it writes the new inode
@@ -2818,18 +2735,20 @@ def _case_root_handle(tmp):
     got, err = _root_case(here, 'swapnest')
     _ok('P1 句柄身份在 open 时固定（换根后同线程重入仍毫秒级报错）',
         got == 'SWAPNEST_OK', '%s %s' % (got, err[:120]))
-    # 步骤 2 静态：没有以路径为键的持有表，exclusive_held 只接受句柄，append_inplace 不再解析 conf
-    # Step-2 static: no path-keyed held table, exclusive_held takes handles only, and
-    # append_inplace no longer resolves a conf
+    # 步骤 2+3 静态：没有以路径为键的持有表，exclusive_held 只接受句柄，旧原语已不存在
+    # Step-2+3 static: no path-keyed held table, exclusive_held takes handles only, and the
+    # legacy primitives no longer exist
     safeio_src2 = io.open(os.path.join(here, 'safeio.py'), encoding='utf-8').read()
     nopath = ('def _held_for(' not in safeio_src2
               and 'def _held_for_root(' in safeio_src2
               and 'def exclusive_held(root):' in safeio_src2
               and 'isinstance(root, Root)' in safeio_src2
               and 'def root_scope(' in safeio_src2
-              and 'def append_inplace(path, data, root):' in safeio_src2
+              and all(('def %s(' % n) not in safeio_src2
+                      for n in ('atomic_write', 'atomic_append', 'append_inplace',
+                                'read_modify_write'))
               and 'read_conf_value' not in safeio_src2)
-    _ok('P1[步骤2 静态] 持有表只按 dev_ino / exclusive_held 只收句柄 / append_inplace 不解析 conf',
+    _ok('P1[步骤2+3 静态] 持有表只按 dev_ino / exclusive_held 只收句柄 / 旧原语已删',
         nopath, 'ok=%s' % nopath)
 
 
@@ -2966,52 +2885,32 @@ def _case_lease_leak(tmp):
 
 
 _NOROOT = r'''
-import os, sys, threading, time
+import sys
 sys.path.insert(0, sys.argv[1])
-d = sys.argv[2]
-import safeio
-os.makedirs(os.path.join(d, 'sub'), exist_ok=True)
-res = []
-
-
-def other():
-    t0 = time.time()
-    try:
-        safeio.atomic_append(os.path.join(d, 'sub', 'x'), b'a')
-        res.append('WROTE_APPEND')
-    except RuntimeError:
-        res.append('RAISED_APPEND')
-    try:
-        safeio.read_modify_write(os.path.join(d, 'sub', 'y'), lambda b: b + b'z')
-        res.append('WROTE_RMW')
-    except RuntimeError:
-        res.append('RAISED_RMW')
-    print('NOROOT %s %.3f' % (','.join(res), time.time() - t0))
-
-
-with safeio.locked(d):
-    t = threading.Thread(target=other)
-    t.start()
-    t.join(5)
+import inspect, safeio
+gone = [n for n in ('atomic_write', 'atomic_append', 'append_inplace', 'read_modify_write')
+        if hasattr(safeio, n)]
+cls = sorted(n for n, o in vars(safeio).items()
+             if inspect.isclass(o) and callable(getattr(o, 'write', None))
+             and getattr(getattr(o, 'write', None), '__qualname__', '').split('.')[0] == n)
+print('NOROOT gone=%d write_classes=%s' % (len(gone), ','.join(cls) or '-'))
 '''
 
 
 def _case_no_root(tmp):
-    """AO 省略 root 不得零等待写入：异线程持根锁时，缺 root 必须直接拒绝。
-    AO omitting root must not write with zero wait: while another thread holds the root,
-    a missing root must be rejected outright."""
-    print('  -- AO 写原语省略 root ⇒ 拒绝（不兜底、零等待） --')
+    """P4 能力形态：模块级写原语不存在；写方法只在 LockedRoot 上。
+    P4 capability shape: no module-level write primitive exists; write methods live only on
+    LockedRoot."""
+    print('  -- P4 能力形态：写方法只在 LockedRoot --')
     here = os.path.dirname(SRC_BIN)
     d = tempfile.mkdtemp(prefix='ao_')
     try:
-        r = subprocess.run([sys.executable, '-B', '-c', _NOROOT, here, d],
+        r = subprocess.run([sys.executable, '-B', '-c', _NOROOT, here],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True, timeout=60)
         got = (r.stdout.strip().splitlines() or ['ERR'])[-1]
-        parts = got.split()
-        fast = len(parts) == 3 and float(parts[2]) < 0.5 if len(parts) == 3 else False
-        _ok('AO atomic_append/read_modify_write 省略 root ⇒ 立即拒绝（RAISED×2）',
-            got.startswith('NOROOT RAISED_APPEND,RAISED_RMW') and fast,
+        _ok('P4 模块级写原语零残留，write 只属于 LockedRoot',
+            got == 'NOROOT gone=0 write_classes=LockedRoot',
             '%s %s' % (got, (r.stderr or '')[-100:]))
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -4012,8 +3911,8 @@ def _case_cli_write_fail(tmp):
         before = io.open(tgt, 'rb').read()
         with io.open(os.path.join(d, '账卷.txt'), 'a', encoding='utf-8') as f:
             f.write('[2026-11-13 10:05:00] [测试] [新增] [皮特] 写入\n')
-        # 增量追加的 TSV 是符号链接到根外 ⇒ append_inplace 必拒绝（RuntimeError）
-        # The incremental TSV symlinks outside the root ⇒ append_inplace must refuse
+        # 增量追加的 TSV 是符号链接到根外 ⇒ 追加写必须拒绝（RuntimeError）
+        # The incremental TSV symlinks outside the root ⇒ the append must refuse
         r = _run(d)
         txt = r.stdout + r.stderr
         _ok('R9-2/R10-2 运行期拒绝 ⇒ rc=6（与配置错 2 分码）', r.returncode == 6,
@@ -4736,7 +4635,7 @@ def main():
         daybook_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'daybook.py'),
                               encoding='utf-8').read()
         _ok('静态：派生件只有一个原子替换实现（daybook 不自己 os.replace）',
-            'def atomic_write' in safeio_src and 'os.replace(' not in daybook_src)
+            'def _replace(' in safeio_src and 'os.replace(' not in daybook_src)
         leftovers = [k for k in _snapshot(work) if k.endswith('.tmp')]
         _ok('派生件无 .tmp 残留', not leftovers, '残留=%s' % leftovers)
 

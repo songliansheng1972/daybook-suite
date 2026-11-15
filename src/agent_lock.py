@@ -80,9 +80,11 @@ class AgentLock:
         return '%s:%s:%d' % (agent_id, label, int(ts))
 
     def _log(self, lease_id, action, extra='', root=None):
-        from safeio import atomic_append
+        from safeio import held, WriteMode
         rec = ('[%s] [租约] [%s] %s %s\n' % (_now(), lease_id, action, extra)).rstrip() + '\n'
-        atomic_append(self.lease_vol, rec, root=root)
+        lr = held(root, 'agent_lock._log')
+        lr.write(lr.root.rel_of(self.lease_vol, 'agent_lock._log'), rec,
+                 mode=WriteMode.APPEND_CREATE)
 
     def acquire(self, label, agent_id, blocking=False):
         """获取**账本根锁**。返回 lease_id 或 None。

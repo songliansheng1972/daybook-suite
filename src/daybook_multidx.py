@@ -301,16 +301,16 @@ def build(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
     Multilevel entry: holds the ledger-root exclusive lock for the whole build
     (serialized with index/append)."""
     from safeio import locked as _safe_locked
-    with _safe_locked(root):
-        return _build_locked(conf, root, now=now, only_vol=only_vol, orders=orders)
+    with _safe_locked(root) as lr:
+        return _build_locked(conf, root, now=now, only_vol=only_vol, orders=orders, lr=lr)
 
 
-def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
+def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '集'), lr=None):
     """读各卷平铺 TSV → 写三件。only_vol 指定时只出该卷目录（跳总目录）。
     Read each volume's flat TSV → write the three artifacts. With only_vol, write
     just that volume's catalogue (digest skipped).
     返回 (per_vol_counts, total)。Returns (per_vol_counts, total)."""
-    from safeio import atomic_write as _atomic_write
+    from safeio import WriteMode
     now = now or datetime.now().strftime('%Y-%m-%d %H:%M')
     vols = conf.get('volumes', {})
     outdir = (conf.get('index', {}).get('out_dir', '') or '').strip()
@@ -341,8 +341,9 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
         _header, rows = read_tsv(idf)
         vol_rows[vol] = rows
         per[vol] = len(rows)
-        _atomic_write(os.path.join(mdir, '%s_catalog.md' % vol),
-                      build_vol_md(vol, rows, now, l2name), root=root)
+        lr.write(lr.root.rel_of(os.path.join(mdir, '%s_catalog.md' % vol),
+                                'daybook_multidx.catalog'),
+                 build_vol_md(vol, rows, now, l2name), mode=WriteMode.REPLACE)
         # 机读目录是只追加型：锁内原位追加新行（O(1)）；末行无换行则转整卷重建
         # （不截断：末行可能是合法的完整行）。Markdown 是摘要，仍原子替换。
         # The machine-readable catalogue is append-type: append the new rows in place under the
@@ -353,17 +354,19 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
         k = prev.get('rows') if isinstance(prev, dict) else None
         if isinstance(k, int) and 0 <= k <= len(rows) and os.path.exists(tpath) \
                 and not _tail_missing_newline(tpath):
-            from safeio import append_inplace
             if len(rows) > k:
-                append_inplace(tpath, '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n',
-                               root)
+                lr.write(lr.root.rel_of(tpath, 'daybook_multidx.tsv'),
+                         '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n',
+                         mode=WriteMode.APPEND_EXISTING, pad_newline=True)
         else:
-            _atomic_write(tpath, build_vol_tsv(vol, rows, l2name), root=root)
+            lr.write(lr.root.rel_of(tpath, 'daybook_multidx.tsv'),
+                     build_vol_tsv(vol, rows, l2name), mode=WriteMode.REPLACE)
         state[vol] = {'rows': len(rows)}
     if not only_vol:
-        _atomic_write(os.path.join(mdir, 'catalog.md'),
-                      build_total_md(vol_rows, now, orders), root=root)
-    _atomic_write(state_path, json.dumps(state, ensure_ascii=False, sort_keys=True), root=root)
+        lr.write(lr.root.rel_of(os.path.join(mdir, 'catalog.md'), 'daybook_multidx.catalog'),
+                 build_total_md(vol_rows, now, orders), mode=WriteMode.REPLACE)
+    lr.write(lr.root.rel_of(state_path, 'daybook_multidx.state'),
+             json.dumps(state, ensure_ascii=False, sort_keys=True), mode=WriteMode.REPLACE)
     return per, sum(per.values())
 
 

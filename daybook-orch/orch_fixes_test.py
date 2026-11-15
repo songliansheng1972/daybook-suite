@@ -296,19 +296,32 @@ def test_read_locking():
 # ── 批次二：路由 / digest / alarm / CLI / 跨进程锁 / 引用校验 / 单遍性能 ──
 # Batch 2: route / digest / alarm / CLI / cross-process lock / reference verification / single-pass performance
 
+def _write_fixture(path, data, root):
+    """夹具写（REPLACE）：Root + LockedRoot.write，唯一写链。Fixture write via the single chain."""
+    from safeio import locked, WriteMode
+    with locked(root) as lr:
+        lr.write(lr.root.rel_of(path, 'orch_fixes_test.fixture'), data, mode=WriteMode.REPLACE)
+
+
+def _append_fixture(path, data, root):
+    """夹具追加（APPEND_CREATE）：Root + LockedRoot.write。Fixture append via the single chain."""
+    from safeio import locked, WriteMode
+    with locked(root) as lr:
+        lr.write(lr.root.rel_of(path, 'orch_fixes_test.fixture'), data,
+                 mode=WriteMode.APPEND_CREATE)
+
+
 def _make_volume(path, n, hour=10, kind='报', author='汤姆'):
     """造 n 条条目（每条 3 行）·返回条目头行号（1 起）。
     Build n entries (3 lines each) · return the entry-head line numbers (1-based).
-    写账本夹具件 ⇒ 走 safeio.atomic_write（账本桶只许 safeio）。
-    Writes a ledger fixture ⇒ through safeio.atomic_write (the ledger bucket allows safeio only)."""
-    from safeio import atomic_write
+    写账本夹具件 ⇒ 走 LockedRoot.write（账本桶只许 safeio）。
+    Writes a ledger fixture ⇒ through LockedRoot.write (the ledger bucket allows safeio only)."""
     lines = []
     for i in range(n):
         lines.append('[2026-11-14 %02d:%02d:00] [%s] [条目%02d] [%s]' % (hour, i, kind, i, author))
         lines.append('正文 %d' % i)
         lines.append('')
-    atomic_write(path, '\n'.join(lines) + '\n',
-                 root=os.path.dirname(os.path.abspath(path)))
+    _write_fixture(path, '\n'.join(lines) + '\n', os.path.dirname(os.path.abspath(path)))
     return [1 + i * 3 for i in range(n)]
 
 
@@ -407,7 +420,6 @@ def test_digest_visibility_and_limit():
 def test_alarm_structure_and_exit_codes():
     print('== 7. alarm：结构判据 + 退出码拆分 ==')
     from orchestrator import Hub
-    from safeio import atomic_append
     root = _fresh_root('alarm')
     try:
         hub = Hub(root=root)
@@ -415,7 +427,7 @@ def test_alarm_structure_and_exit_codes():
         hub.join('皮特')
         old = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() - 3600))
         _hb = os.path.join(root, '心跳卷.txt')   # 账本根（tempfile 派生）下的默认卷名
-        atomic_append(_hb, '[%s] [心跳] [ag-dead] alive\n' % old, root=root)
+        _append_fixture(_hb, '[%s] [心跳] [ag-dead] alive\n' % old, root)
 
         hub.tv.create('ag-ghost', '幽灵单')
         tid_s = hub.tv.create(aid_t, '滞留单')
@@ -608,7 +620,6 @@ def test_single_pass_reads():
     print('== 12. 性能：digest 每卷一读 / dead_agents 单遍 ==')
     import safeio
     from orchestrator import Hub
-    from safeio import atomic_append
     root = _fresh_root('perf')
     orig = safeio.read_vol
     stats = {'calls': 0, 'bytes': 0}
@@ -637,7 +648,7 @@ def test_single_pass_reads():
         hb = os.path.join(root, '心跳卷.txt')   # 账本根（tempfile 派生）下的默认卷名
         for a in range(200):
             for _b in range(3):
-                atomic_append(hb, '[2026-11-14 09:00:00] [心跳] [ag-%03d] alive\n' % a, root=root)
+                _append_fixture(hb, '[2026-11-14 09:00:00] [心跳] [ag-%03d] alive\n' % a, root)
         safeio.read_vol = counted
         try:
             stats.update(calls=0, bytes=0)

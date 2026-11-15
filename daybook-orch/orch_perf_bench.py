@@ -65,23 +65,25 @@ OLD_DEAD = (
 def build_dataset(root, n_entries=24, body_bytes=900):
     """造同一批数据：1 卷 / n_entries 条；心跳卷 200 agent × 5 次。
     Build the shared dataset: one volume with n_entries; a heartbeat volume with 200 agents × 5 beats.
-    写账本夹具件 ⇒ 走 safeio.atomic_write（账本桶只许 safeio）。
-    Writes ledger fixtures ⇒ through safeio.atomic_write (the ledger bucket allows safeio only)."""
-    from safeio import atomic_write
-    atomic_write(os.path.join(root, 'daybook.conf'), '[volumes]\n协作=协作卷.txt\n',
-                 root=root)
-    body = 'x' * body_bytes
-    buf = []
-    for i in range(n_entries):
-        buf.append('[2026-11-14 10:%02d:%02d] [报] [条目%02d] [汤姆] %s\n\n'
-                   % ((i // 60) % 60, i % 60, i, body))
-    atomic_write(os.path.join(root, '协作卷.txt'), ''.join(buf), root=root)
-    hb = os.path.join(root, '心跳卷.txt')
-    buf = []
-    for a in range(200):
-        for b in range(5):
-            buf.append('[2026-11-14 09:%02d:%02d] [心跳] [ag-%03d] alive\n' % (b, a % 60, a))
-    atomic_write(hb, ''.join(buf), root=root)
+    写账本夹具件 ⇒ 走 LockedRoot.write（账本桶只许 safeio）。
+    Writes ledger fixtures ⇒ through LockedRoot.write (the ledger bucket allows safeio only)."""
+    from safeio import locked, WriteMode
+    with locked(root) as lr:
+        lr.write(lr.root.rel_of(os.path.join(root, 'daybook.conf'), 'orch_perf_bench'),
+                 '[volumes]\n协作=协作卷.txt\n', mode=WriteMode.REPLACE)
+        body = 'x' * body_bytes
+        buf = []
+        for i in range(n_entries):
+            buf.append('[2026-11-14 10:%02d:%02d] [报] [条目%02d] [汤姆] %s\n\n'
+                       % ((i // 60) % 60, i % 60, i, body))
+        lr.write(lr.root.rel_of(os.path.join(root, '协作卷.txt'), 'orch_perf_bench'),
+                 ''.join(buf), mode=WriteMode.REPLACE)
+        hb = os.path.join(root, '心跳卷.txt')
+        buf = []
+        for a in range(200):
+            for b in range(5):
+                buf.append('[2026-11-14 09:%02d:%02d] [心跳] [ag-%03d] alive\n' % (b, a % 60, a))
+        lr.write(lr.root.rel_of(hb, 'orch_perf_bench'), ''.join(buf), mode=WriteMode.REPLACE)
     return {
         'volume_bytes': os.path.getsize(os.path.join(root, '协作卷.txt')),
         'volume_entries': n_entries,

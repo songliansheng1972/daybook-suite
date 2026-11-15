@@ -71,6 +71,21 @@ def _root():
     return _mr._root()
 
 
+def _wal(path, data, mode, who='mcp_tools'):
+    """账本写：已在临界区内用 held 取回本线程已持的 LockedRoot，否则取锁。
+    Ledger write: inside a critical section fetch this thread's held LockedRoot, else lock.
+    写链仍然只有 `LockedRoot.write` 一条；这里只决定「是否要取锁」。
+    The write chain is still the single `LockedRoot.write`; this only decides whether to lock."""
+    from safeio import exclusive_held, held, locked
+    rt = _root()
+    if exclusive_held(rt):
+        lr = held(rt, who)
+        lr.write(lr.root.rel_of(path, who), data, mode=mode)
+        return
+    with locked(rt) as lr:
+        lr.write(lr.root.rel_of(path, who), data, mode=mode)
+
+
 def _audit(method, agent_id, detail, ok=True):
     """MCP 调用记入审计卷·append-only·白箱可审计（P1-2）。
     detail 含参数摘要与结果摘要·不含全量原文（防爆）。
@@ -89,8 +104,8 @@ def _audit(method, agent_id, detail, ok=True):
             pass
         return
     try:
-        from safeio import atomic_append
-        atomic_append(_audit_vol(), rec, root=_root())
+        from safeio import WriteMode
+        _wal(_audit_vol(), rec, WriteMode.APPEND_CREATE, 'mcp_tools._audit')
     except OSError:
         pass  # 审计失败不阻塞主流程
               # an audit failure does not block the main flow
@@ -106,10 +121,10 @@ def _record_signature(tool, agent_id, signature, payload, **fields):
     rec = {'at': _now(), 'tool': tool, 'agent_id': agent_id,
            'signature': signature, 'payload': payload}
     rec.update(fields)
-    from safeio import atomic_append
-    atomic_append(os.path.join(_root(), SIG_SIDECAR),
-                  json.dumps(rec, ensure_ascii=False, sort_keys=True) + '\n',
-                  root=_root())
+    from safeio import WriteMode
+    _wal(os.path.join(_root(), SIG_SIDECAR),
+         json.dumps(rec, ensure_ascii=False, sort_keys=True) + '\n',
+         WriteMode.APPEND_CREATE, 'mcp_tools._record_signature')
 
 
 def _append_payload(volume, tag, subtag, to, ts, content):
@@ -177,8 +192,8 @@ def _write_cursor(agent_id, vol, resume_byte):
     import json
     cp = os.path.join(_root(), '.已读_%s_%s.json' % (agent_id, vol))
     cur = {'resume_byte': resume_byte, 'mtime': time.time()}
-    from safeio import atomic_write
-    atomic_write(cp, json.dumps(cur, ensure_ascii=False), root=_root())
+    from safeio import WriteMode
+    _wal(cp, json.dumps(cur, ensure_ascii=False), WriteMode.REPLACE, 'mcp_tools._write_cursor')
 
 
 # ── v3.1 多级目录下钻（四库式：部=卷／类·作者／属=条目）──────

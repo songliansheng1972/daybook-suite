@@ -63,8 +63,10 @@ class TaskVolume:
         # The ledger root is always explicit (realpath-normalised); no fallback to the volume dir.
         self.root = os.path.realpath(root or HERE)
         if not os.path.exists(self.path):
-            from safeio import atomic_write
-            atomic_write(self.path, b'', root=self.root)
+            from safeio import locked, WriteMode
+            with locked(self.root) as lr:
+                lr.write(lr.root.rel_of(self.path, 'task_volume.init'), b'',
+                         mode=WriteMode.REPLACE)
 
     def _read_all(self):
         """单遍扫描任务卷·构建 (tid -> list of (时间, 状态, agent, 内容))。
@@ -103,10 +105,12 @@ class TaskVolume:
     def create(self, agent_id, content):
         """创建任务·状态=待办。返回 task_id。
         Create a task · state=待办. Returns task_id."""
-        from safeio import atomic_append
+        from safeio import locked, WriteMode
         tid = self._next_tid()
         rec = '[%s] [任务] [%s] [待办] [%s] %s\n' % (_now(), tid, agent_id, content.rstrip('\n'))
-        atomic_append(self.path, rec, root=self.root)
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(self.path, 'task_volume.create'), rec,
+                     mode=WriteMode.APPEND_CREATE)
         return tid
 
     def transition(self, tid, new_state, agent_id, note=''):
@@ -114,7 +118,7 @@ class TaskVolume:
         State transition. Raises on violation."""
         if new_state not in ALL_STATES:
             raise ValueError('非法状态：%s' % new_state)
-        from safeio import atomic_append, exclusive_held, root_scope
+        from safeio import exclusive_held, root_scope
         with root_scope(self.root, 'task_volume.transition') as rt:
             if exclusive_held(rt):
                 return self._transition_locked(tid, new_state, agent_id, note)
@@ -124,7 +128,7 @@ class TaskVolume:
     def _transition_locked(self, tid, new_state, agent_id, note=''):
         """已持账本根独占锁时执行迁移（不再取锁）。
         Perform the transition while already holding the exclusive ledger-root lock."""
-        from safeio import atomic_append
+        from safeio import held, WriteMode
         tasks = self._read_all()
         hist = tasks.get(tid)
         if not hist:
@@ -138,7 +142,9 @@ class TaskVolume:
                 cur_state, new_state, ' '.join(legal_next) or '无'))
         rec = '[%s] [任务] [%s] [%s] [%s] %s\n' % (
             _now(), tid, new_state, agent_id, note.rstrip('\n'))
-        atomic_append(self.path, rec, root=self.root)
+        lr = held(self.root, 'task_volume.transition')
+        lr.write(lr.root.rel_of(self.path, 'task_volume.transition'), rec,
+                 mode=WriteMode.APPEND_CREATE)
         return True
 
     def list(self, state=None):

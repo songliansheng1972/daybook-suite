@@ -143,11 +143,13 @@ def load_processed(record_path):
 def mark_processed(record_path, line_no, root=None):
     """标记行号已处理。append-only；经 safeio 原子追加，锁账本根。
     Mark a line number as processed. append-only, via safeio atomic append on the ledger root."""
-    from safeio import atomic_append
+    from safeio import locked, WriteMode
     if not root:
         raise RuntimeError('daybook_hook.mark_processed: 缺少账本根（root）·拒绝写入'
                            '（不猜目标所在目录）')
-    atomic_append(record_path, '%d\n' % line_no, root=root)
+    with locked(root) as lr:
+        lr.write(lr.root.rel_of(record_path, 'daybook_hook.mark_processed'),
+                 '%d\n' % line_no, mode=WriteMode.APPEND_CREATE)
 
 
 def run(dialog_path, kw_path, root='.'):

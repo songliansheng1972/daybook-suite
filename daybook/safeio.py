@@ -12,9 +12,14 @@ SafeIO · root handle + the single write chain (W-75 · build ①)
   LockedRoot  持锁凭证；写方法只存在于此类型上。
   WriteMode   追加创建 / 追加已存在 / 原子替换，三选一，不再有布尔参数分叉。
 
-旧四原语（locked / atomic_append / append_inplace / read_modify_write / atomic_write）
-保留为**薄适配器**：只做「路径 → Rel」和「取锁/复用本线程已持锁」，写链一律进
-LockedRoot.write。适配器在步骤 3 删除，不是第二套实现。
+写入口只有 `LockedRoot.write` / `LockedRoot.update`。步骤 3 已删除上一版四个模块级
+适配器（追加/替换/读写改/持锁四类）：调用方要么自己
+`with locked(x) as lr` 再 `lr.write(...)`，要么在已有临界区内用 `held(x)` 取回本线程已持的
+`LockedRoot`。取锁/复用 + 路径 → Rel 是这两步，不是第二套实现。
+The only write entry points are `LockedRoot.write` / `LockedRoot.update`. Step 3 removed the
+four legacy primitives: callers either take the lock themselves (`with locked(x) as lr`) and
+call `lr.write(...)`, or, inside an existing critical section, fetch this thread's held
+`LockedRoot` via `held(x)`.
 
 锁粒度：账本根级。POSIX：flock 根目录本身的 fd（O_RDONLY|O_DIRECTORY），全程不新建文件；
 Windows：按根的 (dev, ino) 命名互斥量（CreateMutexW），进程崩溃由系统自动放弃，也不落锁件。
@@ -32,12 +37,12 @@ captured when Root was opened. If the path is swapped mid-run, a held LockedRoot
 the old inode; entries that need "the path is still me" call root.revalidate() explicitly.
 
 入口与句柄（架构收口版 · 步骤 2）：每个进程入口在启动时 `Root.open()` 一次，向下传 Root，
-不再传根路径字符串；没有以路径为键的全局状态。`locked(x)` / 四个旧原语既能接 Root（入口
-持有，**不关闭**），也能接路径（临时打开、退出关闭，供步骤 3 前的回归判据使用）。
+不再传根路径字符串；没有以路径为键的全局状态。`locked(x)` / `held(x)` 既能接 Root（入口
+持有，**不关闭**），也能接路径（临时打开、退出关闭）。
 Entries and handles (step 2): every process entry calls `Root.open()` once and passes the Root
-down instead of a root path string; no path-keyed global state remains. `locked(x)` and the four
-legacy primitives accept either a Root (owned by the caller — never closed here) or a path
-(opened and closed here, for the pre-step-3 regression criteria).
+down instead of a root path string; no path-keyed global state remains. `locked(x)` / `held(x)`
+accept either a Root (owned by the caller — never closed here) or a path (opened and closed
+here).
 
 读者：`read_vol` 不取任何锁。卷是 append-only，派生件一律「同目录临时文件 + os.replace」
 原子换入，读者拿到的永远是一致快照，且不会被写者的临界区整段阻塞。
@@ -404,6 +409,12 @@ class Root:
         Build a validated relative path; construction is the only validation point."""
         return Rel(segs)
 
+    def rel_of(self, path, who='safeio'):
+        """根内路径 → Rel（归属判在 `_rel_from_path`：inode 语义，不做词法折叠）。
+        In-root path → Rel (containment is decided by `_rel_from_path`: inode semantics, no
+        lexical folding)."""
+        return _rel_from_path(self, path, who)
+
     def read(self, rel):
         """无锁读：POSIX 用 openat 逐级 O_NOFOLLOW；Windows 用 realpath 归属判 + 直接打开。
         Lock-free read: openat with O_NOFOLLOW on POSIX; realpath containment + plain open on
@@ -550,7 +561,7 @@ class LockedRoot:
                 tfd = os.open(name, flags, perm, dir_fd=dfd)
             except FileNotFoundError:
                 raise RuntimeError('safeio.write: 目标（%s）不存在·append 不创建'
-                                   '（要建请用 atomic_write）'
+                                   '（要建请用 WriteMode.REPLACE）'
                                    % os.path.join(*rel.parts)) from None
             try:
                 wst = os.fstat(tfd)
@@ -642,7 +653,7 @@ class LockedRoot:
         try:
             tfd = os.open(full, flags, 0o644)
         except FileNotFoundError:
-            raise RuntimeError('%s: 目标（%s）不存在·append 不创建（要建请用 atomic_write）'
+            raise RuntimeError('%s: 目标（%s）不存在·append 不创建（要建请用 WriteMode.REPLACE）'
                                % (who, name)) from None
         except OSError as exc:
             raise RuntimeError('%s: 目标（%s）不可用（%s）·拒绝写入（零写）'
@@ -807,155 +818,36 @@ def locked(x, timeout=None):
     Re-acquiring in the same thread (any spelling that hits the same inode) ⇒ immediate
     RuntimeError — no waiting, no silent pass-through.
     timeout 秒内拿不到则超时；None=阻塞等待。
-    `x` 可以是 Root（入口持有）或账本根路径（临时打开）。"""
+    `x` 可以是 Root（入口持有）或账本根路径（临时打开）。
+    产出 LockedRoot（唯一写能力），调用方 `lr.write(...)`。
+    `x` may be a Root (owned by the entry) or a ledger-root path (opened here). Yields the
+    LockedRoot (the only write capability); the caller calls `lr.write(...)`."""
     with root_scope(x, 'safeio.locked') as ro:
         lr = ro.lock(timeout)
         try:
-            yield ro._fd
+            yield lr
         finally:
             lr.release()
 
 
-def _require_root(root, who):
-    """root 必填（账本根句柄或路径）；不再回退到目标所在目录（那会绕过根锁）。
-    `root` is mandatory (a root handle or path); no fallback to the target's directory (that
-    would bypass the root lock)."""
-    if not root:
-        raise RuntimeError('%s: 必须显式传 root（账本根）·'
-                           '不再回退到目标所在目录（那会绕过根锁）' % who)
-
-
-def atomic_write(path, data, mode=None, root=None):
-    """原子替换写：临时件 + os.replace（dir_fd 两端）+ fsync(dfd)。
-    Atomic replace: temp file + os.replace (both dir_fd) + fsync(dfd).
-    ★ root 必填（账本根句柄或路径）。本线程已持该根锁时复用已持有的 LockedRoot（换根后仍写
-      打开时的 inode）；否则在同一句柄上取锁，写完释放。
-    ★ `root` is mandatory (a root handle or path). When this thread already holds that root, the
-      held LockedRoot is reused (after a root swap it still writes the inode it opened);
-      otherwise the same handle is locked and released.
-    过渡适配器（步骤 3 删除）：写链在 LockedRoot.write。
-    Transitional adapter (removed in step 3): the write chain lives in LockedRoot.write."""
-    who = 'safeio.atomic_write'
-    _require_root(root, who)
-    if isinstance(data, str):
-        data = data.encode('utf-8')
-    with root_scope(root, who) as ro:
-        lr = _held_for_root(ro)
-        if lr is not None:
-            lr.write(_rel_from_path(lr.root, path, who), data, mode=WriteMode.REPLACE, perm=mode)
-            return
-        with ro.lock() as lr:
-            lr.write(_rel_from_path(ro, path, who), data, mode=WriteMode.REPLACE, perm=mode)
-
-
-def atomic_append(path, data, root=None, ensure_newline=False):
-    """持账本根锁追加（O_APPEND + 单次 write）。
-    Append while holding the ledger-root lock (O_APPEND + a single write).
-    ★ root 必须显式给出（账本根句柄或路径；子目录卷也争同一把锁）。省略不再回退到「目标所在目录」。
-    ★ `root` is mandatory (a root handle or path; sub-directory volumes contend on it too).
-    ensure_newline=True：锁内看末字节，不是 \\n 就先补一个（既有字节不动），返回 True 表示
-    补过；读不到末字节（只写/拒读）时跳过补换行并返回 False。
-    ensure_newline=True: under the lock, check the last byte and prepend one \\n when missing
-    (existing bytes untouched); True means it padded. When the tail cannot be read (write-only /
-    read denied) padding is skipped and False is returned.
-    过渡适配器（步骤 3 删除）。"""
-    who = 'safeio.atomic_append'
-    _require_root(root, who)
-    if isinstance(data, str):
-        data = data.encode('utf-8')
-    with root_scope(root, who) as ro:
-        lr = _held_for_root(ro)
-        if lr is None:
-            with ro.lock() as lr:
-                return lr.write(_rel_from_path(ro, path, who), data,
-                                mode=WriteMode.APPEND_CREATE, pad_newline=ensure_newline)
-        return lr.write(_rel_from_path(lr.root, path, who), data,
-                        mode=WriteMode.APPEND_CREATE, pad_newline=ensure_newline)
-
-
-def append_inplace(path, data, root):
-    """持账本根锁原位追加：追加型派生件的唯一写入口（过渡适配器，步骤 3 删除）。
-    Single write entry for append-type artifacts (transitional adapter).
-
-    语义只有一句：**追加到文件末尾；若末字节不是换行，先补一个换行，其余字节一概不动。**
-    Semantics, in one sentence: **append at end of file; if the last byte is not a newline,
-    first add one newline — every other byte is left untouched.**
-
-    ★ 不截断、不修复半行。末尾无换行既可能是崩溃残行，也可能是合法的完整行，静态无法区分；
-      增量路径由调用方先判、转全量重建（见 daybook.build）。
-    ★ No truncation and no half-line repair. A newline-less tail may be a crash residue or a
-      legal complete line; that cannot be told apart statically, so the incremental caller
-      detects it first and falls back to a full rebuild (see daybook.build).
-
-    ★ **目标必须已存在**：本函数不创建目标（无 `O_CREAT`）；不存在即 RuntimeError。
-      要建新件请用 `atomic_write`（它负责临时件 + 原子换入）。
-    ★ **The target must already exist**: this function never creates it (no `O_CREAT`); a
-      missing target raises RuntimeError. Create new artifacts with `atomic_write` instead.
-
-    账本根**来自入口句柄，本函数不做任何 conf 解析**：`root` 必填，可为 Root（入口启动时
-    `Root.open()` 的那一个）或账本根路径（判据里的临时句柄）。不再 locate／读 conf／比对
-    字符串——根不自报，也不需要比对；归属与锁都只看这个句柄的 inode。
-    The ledger root **comes from the entry handle; nothing is resolved here**: `root` is
-    mandatory and may be a Root (the one the entry opened at startup) or a ledger-root path (a
-    temporary handle in criteria). No locate / conf read / string comparison — the root is not
-    self-reported and needs no cross-check; containment and the lock use this handle's inode.
-
-    归属靠**物理走查**：从账本根目录 fd 出发，用 openat（dir_fd）逐级 O_NOFOLLOW|O_DIRECTORY
-    走到目标所在目录，最后一级 openat 打开目标文件（O_APPEND|O_NOFOLLOW）。每级都必须是真
-    目录，路径物理上出不去；父目录先 `realpath` 按真实文件系统解释（`..` 先解软链再上跳，
-    不做词法折叠），大小写、NFC/NFD、`/tmp` 与 `/private/tmp` 等别名混写不会误拒。
-    Containment is a **physical walk**: from the ledger-root directory fd, openat each component
-    with O_NOFOLLOW|O_DIRECTORY down to the target's directory, then openat the target with
-    O_APPEND|O_NOFOLLOW. Every level must be a real directory, so the path physically cannot
-    leave; the parent is resolved by `realpath` with real filesystem semantics (`..` follows
-    symlinks first, no lexical folding), so case/NFC-NFD/alias spellings are not falsely
-    rejected.
-
-    ⚠ 威胁模型：防「路径重定向」（软链/别名把写入指向根外），**不防已进入目录被整体 rename
-      搬走**——fd 语义固有，目录 fd 一旦取得，后续写入落在该 inode 上。这里不宣称「已封死」。
-    ⚠ Threat model: it stops **path redirection** (symlink/alias pointing outside), but not a
-      directory that is renamed away after it was entered — that is inherent to fd semantics:
-      once the directory fd is held, writes land on that inode. No "fully sealed" claim.
-
-    锁前置：**本线程**必须在**该句柄**上持**独占**锁（别的线程持锁、子目录锁、别的根都不算）。
-    先判后开文件 ⇒ 不满足时零写。返回 True 表示补过换行，False 表示末字节本来是换行。
-    读不到末字节时（只写目标，或 ACL／权限拒读）**跳过补换行**：只追加、不加前缀换行，
-    此时返回 False——不看末字节就无法判定是否需要补。
-    Lock precondition: **this thread** must hold an **exclusive** lock on **that handle**
-    (a lock held by another thread, a sub-directory lock and another root do not count). All
-    checks run before the file is opened ⇒ nothing is written when they fail. Returns True when
-    a newline was padded, False when the last byte already was one. When the last byte cannot be
-    read (write-only target, or read denied by ACL/permissions) padding is **skipped**: the data
-    is appended as-is and False is returned."""
-    who = 'safeio.append_inplace'
-    _require_root(root, who)
-    with root_scope(root, who) as rt:
+def held(x, who='safeio'):
+    """本线程在该账本根上**已持**的 LockedRoot；没有 ⇒ RuntimeError。
+    The LockedRoot **already held by this thread** on that ledger root; RuntimeError otherwise.
+    ★ 用于已在临界区内的调用点：不重新取锁（同线程重入必自死锁），也不绕过锁——
+      能力凭证只有这一个来源。
+    ★ For call sites already inside a critical section: no re-acquisition (same-thread re-entry
+      would deadlock) and no lock bypass — this is the only source of the capability token."""
+    rt, opened = as_root(x, who)
+    try:
         lr = _held_for_root(rt)
-        if lr is None:
-            raise RuntimeError('%s: 未在本线程于账本根（%s）持独占锁'
-                               '（别的线程持锁/子目录锁/别的根都不算）·拒绝写入（零写）'
-                               % (who, rt.label))
-        if isinstance(data, str):
-            data = data.encode('utf-8')
-        return lr.write(_rel_from_path(lr.root, path, who), data,
-                        mode=WriteMode.APPEND_EXISTING, pad_newline=True)
-
-
-def read_modify_write(path, fn, root=None):
-    """持账本根锁读-改-写（过渡适配器，步骤 3 删除）。fn(old_bytes) -> new_bytes。
-    Locked read-modify-write (transitional adapter). fn(old_bytes) -> new_bytes.
-    只走独占锁：本线程已持则直接读写（临界区内），否则排队；无共享锁降级路径。
-    ★ root 必须显式给出（账本根），省略即报错；不再回退到目标所在目录。
-    ★ `root` is mandatory; omitting it raises instead of falling back."""
-    who = 'safeio.read_modify_write'
-    _require_root(root, who)
-    with root_scope(root, who) as ro:
-        lr = _held_for_root(ro)
-        if lr is None:
-            with ro.lock() as lr:
-                lr.update(_rel_from_path(ro, path, who), fn)
-            return
-        lr.update(_rel_from_path(lr.root, path, who), fn)
+    finally:
+        if opened:
+            rt.close()
+    if lr is None:
+        raise RuntimeError('%s: 未在本线程于账本根（%s）持独占锁'
+                           '（别的线程持锁/子目录锁/别的根都不算）·拒绝写入（零写）'
+                           % (who, rt.label))
+    return lr
 
 
 def sniff_bytes(raw):

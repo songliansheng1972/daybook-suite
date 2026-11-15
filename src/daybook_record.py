@@ -29,11 +29,13 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
     archive_path = os.path.join(archive_dir, name)
     relative_path = os.path.relpath(archive_path, HERE)
 
-    # 每个原件都是独立的 UTF-8 产物；统一走 safeio.atomic_write（唯一原子替换实现）。
-    # Each original is a separate UTF-8 artifact; it goes through safeio.atomic_write
+    # 每个原件都是独立的 UTF-8 产物；统一走 LockedRoot.write(REPLACE)（唯一原子替换实现）。
+    # Each original is a separate UTF-8 artifact; it goes through LockedRoot.write(REPLACE)
     # (the single atomic-replace implementation).
-    from safeio import atomic_write
-    atomic_write(archive_path, content, root=root or HERE)
+    from safeio import locked, WriteMode
+    with locked(root or HERE) as lr:
+        lr.write(lr.root.rel_of(archive_path, 'daybook_record.archive'), content,
+                 mode=WriteMode.REPLACE)
 
     entry_title = '%s %s' % (role, stamp)
     reference = '%s\nSHA256: %s' % (relative_path, digest)

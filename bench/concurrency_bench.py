@@ -63,9 +63,11 @@ def run_point(root, n_writers, per_writer, threshold):
             for i in range(per_writer):
                 t0 = time.perf_counter()
                 try:
-                    safeio.atomic_append(os.path.join(root, '账卷.txt'),
-                                         '[2026-11-15 12:00:00] [并发] [写者%03d-%03d] [皮特] 正文\n'
-                                         % (w, i), root=rt, ensure_newline=True)
+                    with rt.lock() as lr:
+                        lr.write(rt.rel_of(os.path.join(root, '账卷.txt'), 'concurrency_bench'),
+                                 '[2026-11-15 12:00:00] [并发] [写者%03d-%03d] [皮特] 正文\n'
+                                 % (w, i), mode=safeio.WriteMode.APPEND_CREATE,
+                                 pad_newline=True)
                     dt = time.perf_counter() - t0
                     with lock:
                         lat.append(dt)

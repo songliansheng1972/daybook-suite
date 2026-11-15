@@ -44,18 +44,22 @@ class Heartbeat:
         self.period = period
         self.dead_after = dead_after
         if not os.path.exists(self.path):
-            from safeio import atomic_write
-            atomic_write(self.path, b'', root=self.root)
+            from safeio import locked, WriteMode
+            with locked(self.root) as lr:
+                lr.write(lr.root.rel_of(self.path, 'agent_heartbeat.init'), b'',
+                         mode=WriteMode.REPLACE)
 
     def beat(self, agent_id):
         """Agent 自报心跳·append-only。
         Agent reports its own heartbeat · append-only."""
-        from safeio import atomic_append
+        from safeio import locked, WriteMode
         if not self.root:
             raise RuntimeError('Heartbeat.beat: 缺少账本根（root）·拒绝写入'
                                '（不猜目标所在目录）')
         rec = '[%s] [心跳] [%s] alive\n' % (_now(), agent_id)
-        atomic_append(self.path, rec, root=self.root)
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(self.path, 'agent_heartbeat.beat'), rec,
+                     mode=WriteMode.APPEND_CREATE)
         return True
 
     def _last_beats(self):

@@ -342,7 +342,7 @@ def append_one(path, kind, title, msg, author='未标', to=None,
         # must turn this into rc=2.
         sys.stderr.write('★ 未能确定账本根（请在账本目录下调用或设置 DAYBOOK_HOME）\n')
         return 2
-    from safeio import atomic_append, atomic_write, root_scope
+    from safeio import root_scope, WriteMode
     # ★ 步骤 2：根句柄由入口给出（Root）或由本函数临时打开；锁与写共用同一 inode。
     # ★ Step 2: the root handle comes from the entry (Root) or is opened here; the lock and
     #   the write share one inode.
@@ -352,7 +352,7 @@ def append_one(path, kind, title, msg, author='未标', to=None,
             # W-75 fix ③: over PIPE_BUF takes the ledger-root exclusive lock and swaps the whole
             # file in atomically, so a lock-free reader never observes a torn entry.
             sys.stderr.write('★ 超限 %d 字节·走加锁写入路径\n' % len(b))
-            with rt.lock():
+            with rt.lock() as lr:
                 old = b''
                 if os.path.exists(path):
                     with open(path, 'rb') as f:
@@ -369,13 +369,15 @@ def append_one(path, kind, title, msg, author='未标', to=None,
                     if _notice:
                         sys.stderr.write(_notice)
                     old += b'\n'
-                atomic_write(path, old + b, root=rt)
+                lr.write(rt.rel_of(path, 'daybook_append.append_one'), old + b,
+                         mode=WriteMode.REPLACE)
             return 0
-        with rt.lock():
+        with rt.lock() as lr:
             _need, _notice = pad_notice(path)
             if _notice:
                 sys.stderr.write(_notice)
-            atomic_append(path, b, root=rt, ensure_newline=_need)
+            lr.write(rt.rel_of(path, 'daybook_append.append_one'), b,
+                     mode=WriteMode.APPEND_CREATE, pad_newline=_need)
         return 0
 
 
