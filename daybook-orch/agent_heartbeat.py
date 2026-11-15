@@ -37,7 +37,9 @@ class Heartbeat:
         """period：心跳周期（秒）。dead_after：缺多少周期判定 dead。
         period: heartbeat period (in seconds). dead_after: how many missed periods count as dead."""
         self.path = path or os.path.join(HERE, '心跳卷.txt')
-        self.root = root or os.path.dirname(os.path.abspath(self.path))
+        # 不自报根失败即报错；不再用目标目录猜账本根
+        # No guessing the ledger root from the target directory: leave it None and fail on write
+        self.root = root
         self.period = period
         self.dead_after = dead_after
         if not os.path.exists(self.path):
@@ -48,6 +50,9 @@ class Heartbeat:
         """Agent 自报心跳·append-only。
         Agent reports its own heartbeat · append-only."""
         from safeio import atomic_append
+        if not self.root:
+            raise RuntimeError('Heartbeat.beat: 缺少账本根（root）·拒绝写入'
+                               '（不猜目标所在目录）')
         rec = '[%s] [心跳] [%s] alive\n' % (_now(), agent_id)
         atomic_append(self.path, rec, root=self.root)
         return True
@@ -110,7 +115,7 @@ class Heartbeat:
 def main():
     if len(sys.argv) < 2:
         print(__doc__); return 1
-    hb = Heartbeat()
+    hb = Heartbeat(root=os.environ.get('DAYBOOK_HOME') or HERE)
     cmd = sys.argv[1]
     if cmd == 'beat' and len(sys.argv) >= 3:
         hb.beat(sys.argv[2])

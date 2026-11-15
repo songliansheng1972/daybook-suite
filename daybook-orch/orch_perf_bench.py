@@ -142,7 +142,7 @@ def make_old_pkg():
     shutil.copytree(HERE, dest, ignore=IGNORE)
     for fn, (old, new) in (('orchestrator.py', OLD_DIGEST),
                            ('agent_heartbeat.py', OLD_DEAD)):
-        p = os.path.join(dest, fn)
+        p = os.path.join(dest, os.path.basename(fn))
         with open(p, encoding='utf-8') as f:
             src = f.read()
         if old not in src:

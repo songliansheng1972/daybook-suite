@@ -553,7 +553,7 @@ class Hub:
                 os.makedirs(parent, exist_ok=True)
         self.reg = _reg.Registry(self.vols['registry'])
         self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root)
-        self.hb = _hb.Heartbeat(self.vols['heartbeat'])
+        self.hb = _hb.Heartbeat(self.vols['heartbeat'], root=self.root)
         self.lock = _lock.AgentLock(self.vols['leases'], root=self.root)
         self.ledger = self.vols['ledger']
         self.rules = load_rules(rule or DEFAULT_RULE)

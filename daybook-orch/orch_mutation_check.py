@@ -220,7 +220,7 @@ def make_mutant(n, subs):
     dest = os.path.join(pkg, 'pkg')
     shutil.copytree(HERE, dest, ignore=IGNORE)
     for fn, old, new in subs:
-        path = os.path.join(dest, fn)
+        path = os.path.join(dest, os.path.basename(fn))
         with open(path, encoding='utf-8') as f:
             src = f.read()
         if old not in src:

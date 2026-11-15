@@ -75,11 +75,18 @@ def _lock_dir(path):
 def _ident(path):
     """锁身份＝(st_dev, st_ino)：realpath 字符串不归一大小写、NFD/NFC、软链、尾斜杠，
     不能当键；字符串只用于报错文案。两条写法指向同一 inode 即同一把锁。
+    路径不存在 ⇒ 明确报「账本根不存在」（不退回父目录去锁）。
     Lock identity = (st_dev, st_ino): a realpath string does not normalize case, NFD/NFC,
     symlinks or trailing slashes, so it cannot be the key; the string is error text only.
-    Two spellings of one inode are one lock."""
+    Two spellings of one inode are one lock. A missing path ⇒ explicit "ledger root missing"
+    error (never fall back to locking the parent)."""
+    if not os.path.exists(path):
+        raise RuntimeError('safeio.locked: 账本根不存在（%s）·拒绝加锁（不退回父目录）' % path)
     lp = _lock_dir(path)
-    st = os.stat(lp)
+    try:
+        st = os.stat(lp)
+    except OSError as e:
+        raise RuntimeError('safeio.locked: 账本根不可访问（%s）：%s' % (lp, e.strerror))
     return (st.st_dev, st.st_ino), lp
 
 
@@ -330,9 +337,35 @@ def append_inplace(path, data, root=None, conf_path=None):
         raise RuntimeError('safeio.append_inplace: 未在本线程于账本根（%s）持独占锁'
                            '（别的线程持锁/子目录锁/别的根都不算）·拒绝写入（零写）' % resolved)
     rp = os.path.realpath(path)
-    if os.path.commonpath([rp, resolved]) != resolved:
+    # 归属：inode 口径——逐级 stat 父目录，与锁身份（R1）一致；realpath 字符串会被硬链接/
+    # 大小写绕过。
+    # Ownership: inode-based — walk parent directories and compare (st_dev, st_ino) with the
+    # root's identity, consistent with the lock identity (R1). realpath strings can be fooled by
+    # hard links and case variants.
+    root_id = _ident(resolved)[0]
+    d = rp if os.path.isdir(rp) else os.path.dirname(rp)
+    inside = False
+    while True:
+        try:
+            st = os.stat(d)
+        except OSError:
+            break
+        if (st.st_dev, st.st_ino) == root_id:
+            inside = True
+            break
+        nd = os.path.dirname(d)
+        if nd == d:
+            break
+        d = nd
+    if not inside:
         raise RuntimeError('safeio.append_inplace: 目标（%s）不在账本根（%s）内'
                            '·持别处的锁不能往这里写·拒绝写入（零写）' % (rp, resolved))
+    # 账本卷是普通文件，不靠硬链接：目标已存在且 st_nlink>1 ⇒ 可能是指向根外的硬链接
+    # Ledger volumes are regular files that never rely on hard links: an existing target with
+    # st_nlink > 1 may point outside the root
+    if os.path.exists(rp) and os.stat(rp).st_nlink > 1:
+        raise RuntimeError('safeio.append_inplace: 目标（%s）是硬链接（st_nlink=%d）'
+                           '·账本卷不靠硬链接·拒绝写入（零写）' % (rp, os.stat(rp).st_nlink))
     if isinstance(data, str):
         data = data.encode('utf-8')
     padded = False

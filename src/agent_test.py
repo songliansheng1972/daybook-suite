@@ -262,7 +262,7 @@ def test_agent_heartbeat(tmp):
     Acceptance 6: heartbeat missing > 3 periods → marked dead."""
     from agent_heartbeat import Heartbeat
     # 用 1 秒周期·3 周期后死 · use a 1-second period · dead after 3 periods
-    hb = Heartbeat(path=os.path.join(tmp, '心跳卷.txt'), period=1, dead_after=3)
+    hb = Heartbeat(path=os.path.join(tmp, '心跳卷.txt'), period=1, dead_after=3, root=tmp)
     hb.beat('ag-tom')
     if not _ok('6.1 心跳写入后 alive', hb.is_alive('ag-tom')):
         return False

@@ -82,23 +82,42 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     删同线程检查、塞回 shared 分支、锁身份退回字符串）全部红→绿。
 14. **`other` 桶不许收路径参数**：`other` 条目形参表不得出现路径类参数——名含 dir/path/root/home，
     或默认值是路径（`fn.args.defaults` 按位置与末段形参对齐、`kw_defaults` 对 kw-only）；出现
-    `*args` / `**kwargs` 一律红（可变参数等于「随便喂路径」）。目标侧要求 `join` 链的**每一个**
-    非字面组件都能证明是 tempfile 派生（不只看首元），闭包捕获的外部路径（模块常量/外层形参）
-    直接红。判定只看签名与函数体，与调用方式无关——经 `getattr` / 字典派发调用同样红。需要收
-    目录参数的助手归 `ledger`（如随包夹具 `_make_volume` / `build_dataset` 改走 `safeio.atomic_write`）。
+    `*args` / `**kwargs` 一律红（可变参数等于「随便喂路径」）。目标侧要求 `join` 链**每个**组件
+    都能证明 tempfile 派生（绝对段直接红，`..` 上跳红）；`basename(常量)` 按实际结果判
+    （`basename("x/..") == ".."` 红）、`basename(变量)` 视为单段名、`dirname` 一律红。判定只看
+    签名与函数体，与调用方式无关——经 `getattr` / 字典派发调用同样红。需要收目录参数的助手归
+    `ledger`（如随包夹具 `_make_volume` / `build_dataset` 改走 `safeio.atomic_write`）。
 15. **三条保守行为写进 README**（不改代码）：临时目录前缀大小写变体（`/PRIVATE/TMP/…`）
     保守拒绝、`fork` 子进程继承已持有的锁、`exec` 后锁清零。三者都在安全侧，不提供开关。
 16. **锁身份改目录 inode**：`_PROC` / `_MUTEX` / `exclusive_held()` 统一用 `(st_dev, st_ino)`
-    作键，realpath 字符串只用于报错文案。大小写、NFD/NFC、软链、尾斜杠、`/private/tmp` 五种
-    写法指向同一 inode 即同一把锁：同线程再取**毫秒级 RuntimeError**，`blocking=True` 不挂起。
-    同线程重入不再放行（不加深、不静默通过）；临界区内写走 `atomic_append` / `append_inplace`
-    （检测到本线程已持锁就直接写）。
+    作键，realpath 字符串只用于报错文案。大小写、尾斜杠、软链、`/private/tmp`、NFD/NFC 等写法
+    只要指向同一 inode 即同一把锁；判据逐种验证**环境实际支持**的写法（本机 4/4，NFD 不被
+    归一到同 inode 时打印 `[跳过]` 与原因），同线程再取**毫秒级 RuntimeError**，
+    `blocking=True` 不挂起。同线程重入不再放行（不加深、不静默通过）；临界区内写走
+    `atomic_append` / `append_inplace`（检测到本线程已持锁就直接写）。
 17. **写原语不再兜底**：`atomic_append` / `read_modify_write` 的 `root` 改为必填，省略直接
     RuntimeError——旧兜底「用目标所在目录取锁」会让异线程持根锁时零等待写入。`append_inplace`
-    另加归属断言：`commonpath(realpath(path), 账本根) == 账本根`，持 f 的锁不能往 g 写。
+    的归属判定见第 19 条（inode 口径 + 硬链接拒绝）。
 18. **租约写失败不再泄漏根锁**：`acquire()` 的记账写包 try/finally——失败即摘登记并退锁；
     只读租约目录下复测 `exclusive_held=False`、`_ctx=0`、他人可正常获取。`AgentLock` 形参只剩
     `lease_vol` / `root`，被静默丢弃的 `lock_dir` 已删除。
+19. **归属判定改 inode 口径 + 拒绝硬链接**：`append_inplace` 不再用 `commonpath` 比字符串，而是
+    逐级 stat 父目录、比对 `(st_dev, st_ino)` 与账本根身份；目标已存在且 `st_nlink > 1` 直接
+    拒绝（账本卷是普通文件，不靠硬链接）。判据：根内硬链接指向根外文件 ⇒ `RAISED_ZERO` 且
+    根外内容零改动。
+20. **`locked()` 缺路径明确报错**：路径不存在时抛 `RuntimeError('账本根不存在…不退回父目录')`，
+    不再是裸 `FileNotFoundError`，也不再静默退到父目录去锁。
+21. **必填 root 有静态判据**：AST 级扫描 `atomic_append` / `read_modify_write` 的调用点，漏传
+    `root=` 即红；变异「删掉一处 root 实参」必须红。调用点残留的 `root or dirname(...)` 兜底
+    全部删除（`daybook_hook.mark_processed`、`Heartbeat`），确定不了根就按根解析失败处理。
+22. **判据跳过显式化**：`[跳过]` 统一进跳过清单并在汇总打印数量与原因，不计入判据条数；
+    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 404 项（PASS 404；
+    跳过 0 项）`，`daybook/` 盒 `0 红 / 305 项（PASS 305；跳过 7 项）`。盒内 7 条跳过为
+    AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）；
+    其余项数差异来自 AH 等按文件集扫描的判据随文件数变化。不手写换算，也不报「恒差 3」。
+23. **文档口径修正**：README 的串行保证限定为三条取锁原语（`append_inplace` / `atomic_append`
+    / `read_modify_write`），并写明 `atomic_write` 是纯原子替换、不取锁、由调用方决定临界区；
+    「五种写法」改为「环境支持的写法逐种验证，跳过的打印原因」。
 
 ## v4.0.5 · 2026-11-14
 

@@ -292,7 +292,7 @@ def _local_temp_names(fn, helpers, aliases, seed=()):
                 targets, value = [n.target], n.value
             else:
                 continue
-            if _expr_temp(value, names, helpers, aliases):
+            if _expr_all_temp(value, names, helpers, aliases):
                 for t in targets:
                     elts = t.elts if isinstance(t, ast.Tuple) else [t]
                     for el in elts:
@@ -303,12 +303,39 @@ def _local_temp_names(fn, helpers, aliases, seed=()):
 
 
 def _module_temp_names(tree):
-    """模块级 temp 名（含任何函数里赋值）：`ROOT = _setup_tmp_root()` 这类固定点。
-    Module-level temp names (including assignments inside any function): a fixed point for
-    patterns like `ROOT = _setup_tmp_root()`."""
+    """模块级 temp 名：只收「模块顶层赋值」与「函数内 `global` 声明的名字」。
+    Module-level temp names: only top-level assignments and names declared `global` inside
+    functions — function-local names must not leak into module scope (that would let any one
+    function's local `p` whitelist every other function's `p`)."""
+    allowed = set()
+    for n in tree.body:
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    allowed.add(t.id)
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            allowed.add(n.target.id)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Global):
+            allowed |= set(n.names)
     aliases = _write_aliases(tree)
     helpers = _module_temp_helpers(tree)
     names = set()
+    # `global ROOT` 的函数里 `ROOT = <本地 temp 名>`：先按该函数的本地 temp 集传播
+    # Inside a function declaring `global ROOT`, `ROOT = <local temp name>` propagates first
+    for fn in [n for n in ast.walk(tree)
+               if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+        decl = {g for n in ast.walk(fn) if isinstance(n, ast.Global) for g in n.names}
+        if not decl:
+            continue
+        local = _local_temp_names(fn, helpers, aliases, set())
+        for n in ast.walk(fn):
+            if not isinstance(n, ast.Assign):
+                continue
+            if isinstance(n.value, ast.Name) and n.value.id in local:
+                for t in n.targets:
+                    if isinstance(t, ast.Name) and t.id in decl:
+                        names.add(t.id)
     for _ in range(4):
         changed = False
         for n in ast.walk(tree):
@@ -318,13 +345,11 @@ def _module_temp_names(tree):
                 targets, value = [n.target], n.value
             else:
                 continue
-            if _expr_temp(value, names, helpers, aliases):
+            if _expr_all_temp(value, names, helpers, aliases):
                 for t in targets:
-                    elts = t.elts if isinstance(t, ast.Tuple) else [t]
-                    for el in elts:
-                        if isinstance(el, ast.Name) and el.id not in names:
-                            names.add(el.id)
-                            changed = True
+                    if isinstance(t, ast.Name) and t.id in allowed and t.id not in names:
+                        names.add(t.id)
+                        changed = True
         if not changed:
             break
     return names
@@ -470,10 +495,24 @@ def _expr_all_temp(e, names, helpers, aliases):
     `names` and therefore fail."""
     if isinstance(e, ast.Call):
         t = _resolve_callee(e.func, aliases)
+        last = t.split('.')[-1]
+        # basename/dirname 先于通用路径助手处理：dirname 一律红（上跳父目录）
+        # basename/dirname are handled before the generic path helper: dirname is always red
+        # (it walks up to the parent), basename keeps one segment.
+        if last == 'dirname':
+            return False
+        if last == 'basename':
+            # 常量入参按实际结果判（`basename("x/..") == ".."` ⇒ 红）；变量/表达式视为单段名。
+            # Constants are judged by their actual result (`basename("x/..") == ".."` ⇒ red);
+            # variables/expressions count as a single segment.
+            if not e.args:
+                return False
+            a0 = e.args[0]
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                return os.path.basename(a0.value) not in ('', '.', '..')
+            return True
         if _is_path_helper(t):
             return bool(e.args) and all(_expr_all_temp(a, names, helpers, aliases) for a in e.args)
-        if t.split('.')[-1] == 'basename':
-            return True       # basename 不含分隔符，作为单段相对名无法逃出
         return _expr_temp(e, names, helpers, aliases)
     if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
         return _expr_all_temp(e.left, names, helpers, aliases) \
@@ -570,6 +609,51 @@ def _other_param_reasons(fn):
         if r:
             bad.append(r)
     return bad
+
+
+def _rootless_write_calls(tree):
+    """写原语调用点漏传 root= 的清单（atomic_append / read_modify_write）。
+    Calls to atomic_append / read_modify_write that omit the mandatory `root=`."""
+    al = _write_aliases(tree)
+    out = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        t = _resolve_callee(n.func, al)
+        if t.split('.')[-1] not in ('atomic_append', 'read_modify_write'):
+            continue
+        if not any(k.arg == 'root' for k in n.keywords):
+            out.append(ast.unparse(n)[:60])
+    return out
+
+
+def _mutant_drop_root(txt):
+    """把一处写原语调用的 root= 实参整段删掉（含前置逗号），供变异判据使用。
+    Drop one write-primitive call's `root=` argument (with its preceding comma) for mutation."""
+    try:
+        tree = ast.parse(txt)
+    except SyntaxError:
+        return None, None
+    al = _write_aliases(tree)
+    offs = [0]
+    for ln in txt.splitlines(True):
+        offs.append(offs[-1] + len(ln))
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        t = _resolve_callee(n.func, al)
+        if t.split('.')[-1] not in ('atomic_append', 'read_modify_write'):
+            continue
+        for kw in n.keywords:
+            if kw.arg != 'root':
+                continue
+            a = offs[kw.lineno - 1] + kw.col_offset
+            b = offs[kw.value.end_lineno - 1] + kw.value.end_col_offset
+            head = txt[:a].rstrip()
+            if head.endswith(','):
+                a = len(head) - 1
+            return txt[:a] + txt[b:], txt[a:b]
+    return None, None
 
 
 def _find_func(tree, name):
@@ -705,6 +789,18 @@ def _case_write_paths(tmp):
         '    open(os.path.join(tempfile.mkdtemp(), "x"), "w").write(str(a))\n'
         'def _emit_closure():\n'
         '    open(os.path.join(BASE, "x"), "w").write("z")\n'
+        'def _emit_abs_seg():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = os.path.join(d, "/tmp/probes/escape_demo.txt")\n'
+        '    open(p, "w").write("x")\n'
+        'def _emit_basename_up():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = os.path.join(d, os.path.basename("x/.."), "evil.txt")\n'
+        '    open(p, "w").write("x")\n'
+        'def _emit_dirname():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = os.path.dirname(d)\n'
+        '    open(os.path.join(p, "evil.txt"), "w").write("x")\n'
         'def _dispatch(fn_name, directory):\n'
         '    return getattr(__import__(__name__), fn_name)(directory)\n')
     reason_plain = _other_param_reasons(_find_func(synth, '_emit'))
@@ -719,8 +815,11 @@ def _case_write_paths(tmp):
         '**kw': _other_param_reasons(_find_func(synth, '_emit_kw')),
         '*a': _other_param_reasons(_find_func(synth, '_emit_var')),
         '闭包捕获 BASE': _other_target_reasons(synth, _find_func(synth, '_emit_closure')),
+        'join 绝对段在第二元': _other_target_reasons(synth, _find_func(synth, '_emit_abs_seg')),
+        'basename("x/..")': _other_target_reasons(synth, _find_func(synth, '_emit_basename_up')),
+        'dirname(d)': _other_target_reasons(synth, _find_func(synth, '_emit_dirname')),
     }
-    _ok('AH R2 四反例全红（默认路径/**kw/*a/闭包捕获）',
+    _ok('AH R2/R8 七反例全红（默认路径/**kw/*a/闭包/绝对段/basename 上跳/dirname）',
         all(bool(v) for v in reds.values()),
         '空=%s' % [k for k, v in reds.items() if not v])
     # other 桶条目不许被其他模块调用：跨文件调用 ⇒ 红（否则归回账本）
@@ -769,6 +868,31 @@ def _case_write_paths(tmp):
                 shareref.append((f, token))
     _ok('AH 共享锁能力已删（无 LOCK_SH／共享形参）⇒ 红', not shareref,
         '仍出现=%s' % shareref[:6])
+    # 写原语必填 root：调用点必须显式带 root=（AST 级）
+    # Mandatory root on write primitives: call sites must pass root= explicitly (AST level)
+    rootless = []
+    for f in files:
+        for snip in _rootless_write_calls(trees[f]):
+            rootless.append((f, snip))
+    _ok('AH 写原语调用点必须显式带 root=（漏传 ⇒ 红）', not rootless,
+        '漏传=%s' % rootless[:4])
+    # 变异：把一处真实调用点的 root 实参删掉 ⇒ 扫描必须红
+    # Mutation: drop one real call site's root argument ⇒ the scan must go red
+    mut_file, mut_txt, mut_seg = None, None, None
+    for f in files:
+        txt = io.open(os.path.join(d, f), encoding='utf-8').read()
+        mt, seg = _mutant_drop_root(txt)
+        if mt is not None:
+            mut_file, mut_txt, mut_seg = f, mt, seg
+            break
+    mut_bad = False
+    if mut_txt is not None:
+        try:
+            mut_bad = bool(_rootless_write_calls(ast.parse(mut_txt)))
+        except SyntaxError:
+            mut_bad = True
+    _ok('AH 变异：删掉一处 root 实参 ⇒ 判据红', mut_bad,
+        '变异件=%s 删段=%r 命中=%s' % (mut_file, mut_seg, mut_bad))
     print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
           % (len(present), len(sites), len(unreg), len(absent), len(direct)))
     buckets = {}
@@ -810,6 +934,14 @@ incremental=是
 
 FAILS = []
 CHECKS = [0]
+SKIPS = []
+
+
+def _skip(reason):
+    """显式跳过：计入跳过清单并在汇总打印数量（不计入判据条数）。
+    Explicit skip: recorded and its count printed in the summary (not counted as a check)."""
+    SKIPS.append(reason)
+    print('    [跳过] %s' % reason)
 
 
 def _ok(name, cond, detail=''):
@@ -1561,6 +1693,26 @@ elif mode == 'outside':
             print('WROTE')
         except RuntimeError:
             print('RAISED_ZERO' if open(p2, 'rb').read() == before else 'RAISED_DIRTY')
+elif mode == 'hardlink':
+    out = tempfile.mkdtemp(prefix='akhl_')
+    secret = os.path.join(out, 'secret.tsv')
+    open(secret, 'wb').write(b'a\n')
+    p3 = os.path.join(d, 'linked.tsv')
+    os.link(secret, p3)
+    with safeio.locked(d):
+        try:
+            safeio.append_inplace(p3, 'b\n', d, conf_path=cp)
+            print('WROTE')
+        except RuntimeError:
+            print('RAISED_ZERO' if open(secret, 'rb').read() == b'a\n' else 'RAISED_DIRTY')
+elif mode == 'missing':
+    try:
+        with safeio.locked(os.path.join(d, 'nope', 'missing')):
+            print('LOCKED')
+    except FileNotFoundError:
+        print('FILEERROR')
+    except RuntimeError as e:
+        print('MISSING_OK' if '账本根不存在' in str(e) else 'OTHER_MSG')
 elif mode == 'variants':
     # R1：同一 inode 的多种写法，同线程嵌套必须在毫秒级 RuntimeError（不得等超时）
     # R1: many spellings of one inode — same-thread nesting must raise RuntimeError in ms
@@ -1571,19 +1723,30 @@ elif mode == 'variants':
         os.symlink(base, link)
     uni = os.path.join(d, 'caf\u00e9')
     os.makedirs(uni, exist_ok=True)
-    cands = [('大写', base.upper()), ('尾斜杠', base + '/'), ('软链', link),
-             ('NFD', os.path.join(d, 'cafe\u0301'))]
+    pairs = [('大写', base, base.upper()), ('尾斜杠', base, base + '/'),
+             ('软链', base, link), ('NFD', base, os.path.join(d, 'cafe\u0301'))]
+    try:
+        t2 = tempfile.mkdtemp(dir='/tmp', prefix='akv_')
+        pairs.append(('private-tmp', t2, '/private' + t2))
+    except OSError as e:
+        pairs.append(('private-tmp', None, 'OSError:%s' % e.errno))
     ok = total = 0
-    for name, spell in cands:
+    skipped = []
+    for name, hold, spell in pairs:
+        if hold is None:
+            skipped.append(name)
+            continue
         try:
-            same = os.stat(spell).st_ino == os.stat(base).st_ino
+            same = os.stat(spell).st_ino == os.stat(hold).st_ino
+            why = None if same else '不同 inode'
         except OSError:
-            same = False
+            same, why = False, '路径不可达'
         if not same:
+            skipped.append('%s(%s)' % (name, why))
             continue
         total += 1
         t0 = time.time()
-        with safeio.locked(base):
+        with safeio.locked(hold):
             try:
                 with safeio.locked(spell, timeout=1.0):
                     print('VARIANT %s 放行 %.3f' % (name, time.time() - t0))
@@ -1595,7 +1758,7 @@ elif mode == 'variants':
             ok += 1
         else:
             print('VARIANT %s 慢 %.3f' % (name, dt))
-    print('VARIANTS %d/%d' % (ok, total))
+    print('VARIANTS %d/%d skip=%d %s' % (ok, total, len(skipped), ','.join(skipped) or '-'))
 elif mode == 'wait':
     # 另一线程持根锁 0.4s：主线程必须真的等（>0s），进来时 exclusive_held 必须为 True
     # Another thread holds the root for 0.4s: the main thread must really wait (>0s) and, once
@@ -1658,6 +1821,20 @@ def _ak_scenario(src, mode, timeout=40, code=None):
 _SHARED_TOKEN = 'sha' + 'red='          # 不写出整词，便于「全仓 grep」保持干净
 
 
+def _variants_ok(got):
+    """`VARIANTS ok/total skip=n ...`：支持的写法必须全红；跳过数/原因随行打印。
+    `VARIANTS ok/total skip=n ...`: every supported spelling must be caught; the skip count and
+    reasons are printed on the same line."""
+    parts = got.split()
+    if len(parts) < 3 or parts[0] != 'VARIANTS':
+        return False
+    try:
+        a, b = parts[1].split('/')
+        return int(a) == int(b) and int(b) >= 3
+    except ValueError:
+        return False
+
+
 def _case_lock_assert(tmp):
     """AK 锁语义：只认「账本根 + 本线程独占」；无锁/子目录/异根/另一线程/同线程重复全红。
     AK lock semantics: only "ledger root + exclusive in this thread" counts; no lock,
@@ -1705,23 +1882,30 @@ def _case_lock_assert(tmp):
         _ok('AK[同线程持 task:A 再要 task:B·含同 inode 大写写法] ⇒ 立即报错（<50ms·不挂起）',
             _agent_verdict(got), '%s %s' % (got, err[:120]))
     else:
-        print('    [跳过] AK 同线程重复获取：当前盒无 agent_lock.py')
-    # R1 五种写法：大小写/NFD/软链/尾斜杠/private-tmp，同线程嵌套必须毫秒级报错
-    # R1 five spellings: case / NFD / symlink / trailing slash / private-tmp — same-thread
-    # nesting must raise in milliseconds
+        _skip('AK 同线程重复获取：当前盒无 agent_lock.py')
+    # R1 候选五种写法（大小写/NFD/软链/尾斜杠/private-tmp）：环境能归到同 inode 的逐种验证，
+    # 归不到的打印进跳过清单并给出原因；同线程嵌套必须毫秒级报错
+    # R1 five candidate spellings (case / NFD / symlink / trailing slash / private-tmp): each
+    # one the environment really maps to the same inode is verified; the rest are listed as
+    # skipped with a reason. Same-thread nesting must raise in milliseconds.
     got, err = _ak_scenario(here, 'variants')
-    parts = got.split()
-    vok = (len(parts) == 2 and parts[0] == 'VARIANTS')
-    if vok:
-        a, b = parts[1].split('/')
-        vok = int(a) == int(b) and int(b) >= 3
-    _ok('AK[R1 同一 inode 多种写法 ⇒ 同线程嵌套毫秒级 RuntimeError]', vok,
+    _ok('AK[R1 同一 inode 多种写法 ⇒ 同线程嵌套毫秒级 RuntimeError]', _variants_ok(got),
         '%s %s' % (got, err[:120]))
     # R7：持 f 的锁往 f 外的 g 写 ⇒ 抛错零写
     # R7: holding f's lock and writing g outside f ⇒ raise, zero write
     got, err = _ak_scenario(here, 'outside')
     _ok('AK[R7 持 f 锁往 g 写] ⇒ 抛错且零写（RAISED_ZERO）', got == 'RAISED_ZERO',
         '%s %s' % (got, err[:120]))
+    # R8-2：根内硬链接指向根外文件 ⇒ 拒绝（st_nlink>1），根外内容零改动
+    # R8-2: a hard link inside the root pointing outside ⇒ reject (st_nlink>1), outer content intact
+    got, err = _ak_scenario(here, 'hardlink')
+    _ok('AK[R8-2 根内硬链接指向根外] ⇒ 抛错且根外零改动', got == 'RAISED_ZERO',
+        '%s %s' % (got, err[:120]))
+    # R8-3：账本根不存在 ⇒ 明确报错（不是 FileNotFoundError）
+    # R8-3: a missing ledger root ⇒ explicit error (not a bare FileNotFoundError)
+    got, err = _ak_scenario(here, 'missing')
+    _ok('AK[R8-3 账本根不存在] ⇒ 明确 RuntimeError（非 FileNotFoundError）',
+        got == 'MISSING_OK', '%s %s' % (got, err[:120]))
     # R5：AgentLock 不得保留被静默丢弃的 lock_dir 形参
     # R5: AgentLock must not keep a silently ignored lock_dir parameter
     if has_agent:
@@ -1734,7 +1918,7 @@ def _case_lock_assert(tmp):
         _ok('AK[R5] AgentLock 形参只有 lease_vol/root（无被丢弃的 lock_dir）',
             pnames == ['self', 'lease_vol', 'root'], '%r' % (pnames,))
     else:
-        print('    [跳过] AK R5：当前盒无 agent_lock.py')
+        _skip('AK R5：当前盒无 agent_lock.py')
 
     # 变异：逐一破坏约束 ⇒ 对应场景必须被放行/走样（判据红）
     # Mutations: break one constraint at a time ⇒ the matching scenario must slip through (red)
@@ -1767,7 +1951,7 @@ def _case_lock_assert(tmp):
             '%s %s' % (got, err[:120]))
     # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
     if not has_agent:
-        print('    [跳过] AK 变异④：当前盒无 agent_lock.py')
+        _skip('AK 变异④：当前盒无 agent_lock.py')
     else:
         agent_src = io.open(os.path.join(here, 'agent_lock.py'), encoding='utf-8').read()
         dup_anchor = """        if exclusive_held(self.root):
@@ -1808,24 +1992,17 @@ def _case_lock_assert(tmp):
     # 变异⑥：锁身份退回 realpath 字符串 ⇒ 同 inode 不同写法不再视为同一把锁（等超时/挂起）⇒ 红
     # Mutation ⑥: identity back to the realpath string ⇒ different spellings of one inode stop
     # being the same lock (timeout/hang) ⇒ red
-    ident_anchor = """    lp = _lock_dir(path)
-    st = os.stat(lp)
-    return (st.st_dev, st.st_ino), lp"""
+    ident_anchor = "    return (st.st_dev, st.st_ino), lp"
     assert ident_anchor in safeio_src
     md = os.path.join(tmp, 'ak_mut_ident')
     os.makedirs(md)
     io.open(os.path.join(md, 'safeio.py'), 'w', encoding='utf-8').write(
-        safeio_src.replace(ident_anchor, "    lp = _lock_dir(path)\n    return lp, lp"))
+        safeio_src.replace(ident_anchor, "    return lp, lp"))
     io.open(os.path.join(md, 'ledger_root.py'), 'w', encoding='utf-8').write(
         io.open(os.path.join(here, 'ledger_root.py'), encoding='utf-8').read())
     got, err = _ak_scenario(md, 'variants')
-    parts = got.split()
-    vok = len(parts) == 2 and parts[0] == 'VARIANTS'
-    if vok:
-        a, b = parts[1].split('/')
-        vok = int(a) == int(b) and int(b) >= 3
-    _ok('AK 变异⑥：锁身份退回字符串 ⇒ 同 inode 写法不再互认（判据红）', not vok,
-        '%s %s' % (got, err[:120]))
+    _ok('AK 变异⑥：锁身份退回字符串 ⇒ 同 inode 写法不再互认（判据红）',
+        not _variants_ok(got), '%s %s' % (got, err[:120]))
 
 
 _HOLD = r'''
@@ -1887,7 +2064,7 @@ def _case_serial_cost(tmp):
     # 跨 label：P1 持 task:A 1.2s，P2 要 task:B 实际等待（互斥范围是账本根，不是 label）
     # Cross-label: P1 holds task:A 1.2s; P2 asks task:B and really waits (the scope is the root)
     if not os.path.exists(os.path.join(here, 'agent_lock.py')):
-        print('    [跳过] AM 跨 label 读数：当前盒无 agent_lock.py')
+        _skip('AM 跨 label 读数：当前盒无 agent_lock.py')
         return
     hold2 = 1.2
     holder2 = subprocess.Popen([sys.executable, '-B', '-c', _AG_HOLD, here, d, str(hold2)],
@@ -1942,7 +2119,7 @@ def _case_lease_leak(tmp):
     print('  -- AN 租约写失败⇒根锁不泄漏 --')
     here = os.path.dirname(SRC_BIN)
     if not os.path.exists(os.path.join(here, 'agent_lock.py')):
-        print('    [跳过] AN：当前盒无 agent_lock.py')
+        _skip('AN：当前盒无 agent_lock.py')
         return
     d = tempfile.mkdtemp(prefix='an_')
     try:
@@ -2075,7 +2252,7 @@ def _case_push_load_bearing(tmp):
     print('  -- AL digest --push 承重（inbox 真写·内容可辨认·锁落账本根） --')
     here = os.path.dirname(SRC_BIN)
     if not os.path.exists(os.path.join(here, 'orchestrator.py')):
-        print('    [跳过] AL：当前盒无 orchestrator.py')
+        _skip('AL：当前盒无 orchestrator.py')
         return
     d = os.path.join(tmp, 'al')
     os.makedirs(d)
@@ -2443,7 +2620,7 @@ def _case_five_roots(tmp):
         kinds.append('orch')
     missing = sorted({'daybook', 'cli', 'hook', 'mcp', 'orch'}.difference(kinds))
     if missing:
-        print('    [跳过] 本包缺 %s，AE 只测 %d 个入口' % ('、'.join(missing), len(kinds)))
+        _skip('本包缺 %s，AE 只测 %d 个入口' % ('、'.join(missing), len(kinds)))
     # 源树必须硬断言五个入口全部在场：否则源里真少一件时只会静默少测、依旧全绿，
     # 而 pack.py --verify 在「盒也少」时同样抓不到。
     # The source tree must assert all five entries are present: otherwise a real missing file
@@ -2620,7 +2797,7 @@ def _case_root_matrix(tmp):
     if 'volume_paths.py' in present and 'orchestrator.py' in present:
         kinds.append('orch')
     missing = sorted(set(('daybook', 'cli', 'hook', 'mcp', 'orch')) - set(kinds))
-    print('    [跳过] %s；固定测 %d 个入口' % ('、'.join(missing) or '无', len(kinds)))
+    print('    [信息] %s；固定测 %d 个入口' % ('、'.join(missing) or '无', len(kinds)))
     inst = os.path.join(base, 'inst')
     os.makedirs(inst)
     for name in present:
@@ -3403,7 +3580,11 @@ def main():
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    print('\n=== 判据回归 === %d 红 / %d 项' % (len(FAILS), CHECKS[0]))
+    print('\n=== 判据回归 === %d 红 / %d 项（PASS %d；跳过 %d 项不计入）'
+          % (len(FAILS), CHECKS[0], CHECKS[0] - len(FAILS), len(SKIPS)))
+    if SKIPS:
+        for _r in SKIPS:
+            print('  [跳过] %s' % _r)
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
