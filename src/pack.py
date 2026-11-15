@@ -133,6 +133,9 @@ PACKAGES = {
                      # 明文可查验判据（只用标准库）·不计构建号
                      # plain-text verification criterion (standard library only) · not counted
                      'verify_plain.py',
+                     # 裸终端判据（POSIX sh + tail/grep/awk/od，无 Python）
+                     # bare-terminal criterion (POSIX sh + tail/grep/awk/od, no Python)
+                     'verify_plain.sh',
                      ],
         'conf_rename': [
             # 判_478 甲/乙·旗舰包改走发行 conf（零绝对路径·卷表只挂 sample/ 三卷）

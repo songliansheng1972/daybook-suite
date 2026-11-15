@@ -4227,6 +4227,63 @@ def _case_plain_migrate(work):
         and 'Traceback' not in out, out[-240:])
 
 
+def _case_shell_plain(work):
+    """SH：裸终端判据——只用 POSIX sh + tail/grep/awk/od（PATH 里没有 python）读出
+    最后一条记录的时间/类别/标题/作者，并按手工步骤给出完整性结论。
+    SH: bare-terminal criterion — POSIX sh + tail/grep/awk/od only (no python on PATH) reads the
+    last record's time/category/title/author and reaches an integrity conclusion."""
+    d = os.path.join(work, 'shplain')
+    bindir = os.path.join(d, 'bin')
+    os.makedirs(bindir)
+    for name in ('tail', 'grep', 'awk', 'od', 'tr', 'cat'):
+        src = shutil.which(name)
+        if not src:
+            _ok('SH 裸终端：环境缺少 %s' % name, False, '未找到该命令')
+            return
+        os.symlink(src, os.path.join(bindir, name))
+    sh = shutil.which('sh') or '/bin/sh'
+    script = os.path.join(os.path.dirname(SRC_BIN), 'verify_plain.sh')
+    if not os.path.exists(script):
+        _ok('SH 裸终端：verify_plain.sh 随包', False, '缺少 %s' % script)
+        return
+    vol = os.path.join(d, '账卷.txt')
+    idx = os.path.join(d, 'index_账.tsv')
+    with io.open(vol, 'w', encoding='utf-8') as f:
+        f.write('[2026-11-15 09:01:00] [科研] [第一条] [老宋] 甲\n')
+        f.write('[2026-11-15 09:02:00] [审计] [第二条] [老宋] 乙\n')
+    with io.open(idx, 'w', encoding='utf-8') as f:
+        f.write('账\t1\t2026-11-15 09:01:00\t科研\t第一条\t老宋\n')
+        f.write('账\t2\t2026-11-15 09:02:00\t审计\t第二条\t老宋\n')
+    env = {'PATH': bindir, 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8'}
+    r = subprocess.run([sh, script, vol, idx], cwd='/', env=env,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True, timeout=120)
+    out = (r.stdout + r.stderr).strip()
+    _ok('SH 裸终端（无 Python，PATH 只有 sh/tail/grep/awk/od）：rc=0 且读出时间/类别/标题/作者',
+        r.returncode == 0 and '时间=2026-11-15 09:02:00' in out and '类别=审计' in out
+        and '标题=第二条' in out and '作者=老宋' in out, out[-220:])
+    _ok('SH 裸终端：完整性结论 OK（坏行 0、索引一致）',
+        '完整性：OK' in out and '坏行=0' in out, out[-220:])
+    # 坏行 ⇒ 必须 BAD 且给出下一步；不许静默当通过
+    with io.open(vol, 'a', encoding='utf-8') as f:
+        f.write('这一行没有五段头\n')
+    r2 = subprocess.run([sh, script, vol, idx], cwd='/', env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        universal_newlines=True, timeout=120)
+    out2 = (r2.stdout + r2.stderr).strip()
+    _ok('SH 裸终端：坏行 ⇒ rc=1 且 完整性 BAD（坏行 1）',
+        r2.returncode == 1 and '完整性：BAD（坏行 1' in out2, out2[-220:])
+    # 末字节不是换行 ⇒ 视为可能截断，必须 BAD
+    with io.open(vol, 'wb') as f:
+        f.write(u'[2026-11-15 09:01:00] [科研] [x] [老宋] y'.encode('utf-8'))
+    r3 = subprocess.run([sh, script, vol], cwd='/', env=env,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        universal_newlines=True, timeout=120)
+    out3 = (r3.stdout + r3.stderr).strip()
+    _ok('SH 裸终端：末字节非换行 ⇒ rc=1 且判「可能被截断」',
+        r3.returncode == 1 and '末字节不是换行' in out3, out3[-220:])
+
+
 def main():
     if not os.path.exists(SRC_BIN):
         print('找不到被测 daybook.py：%s' % SRC_BIN, file=sys.stderr)
@@ -4646,6 +4703,7 @@ def main():
         _case_q(work)
         _case_win_path(work)
         _case_plain_migrate(work)
+        _case_shell_plain(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
