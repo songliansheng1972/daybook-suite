@@ -138,6 +138,7 @@ WRITE_PATHS = (
     ('safeio.py', '_append_now', 'impl', 'safeio 实现本身（临界区内追加）'),
     ('safeio.py', '_rmw', 'impl', 'safeio 实现本身（临界区内读改写）'),
     ('safeio.py', 'append_inplace', 'impl', 'safeio 实现本身'),
+    ('safeio.py', '_open_target_at', 'impl', 'safeio 实现本身（openat 物理走查）'),
     ('safeio.py', 'read_modify_write', 'impl', 'safeio 实现本身'),
     ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
     ('task_volume.py', 'create', 'ledger', '账本内容/派生件'),
@@ -596,17 +597,13 @@ def _expr_all_temp(e, names, helpers, aliases, segs=()):
         return _expr_all_temp(e.left, names, helpers, aliases, segs) \
             and _expr_all_temp(e.right, names, helpers, aliases, segs)
     if isinstance(e, ast.JoinedStr):
-        for v in e.values:
-            if isinstance(v, ast.FormattedValue):
-                if not _expr_all_temp(v.value, names, helpers, aliases, segs):
-                    return False
-            elif isinstance(v, ast.Constant) and isinstance(v.value, str):
-                # f-string 的字面段同样按路径段判定：绝对段或 `..` 直接红
-                # Literal f-string segments are path segments too: absolute or `..` ⇒ red
-                s = v.value
-                if os.path.isabs(s) or '..' in s.replace('\\', '/').split('/'):
-                    return False
-        return True
+        # `other` 桶**禁用 f-string 拼路径**（R10-4 选定①）：字面段与插值混在一个表达式里，
+        # 静态层面无法证明整体留在临时目录；即便是 `f"{d}/ok.txt"` 也判红，拼路径请用
+        # os.path.join 逐元表达。文档与判据文案一致，无「行为禁、文档不说」。
+        # The `other` bucket **bans f-string path building** (R10-4 option ①): literal and
+        # interpolated segments are mixed in one expression and cannot be proven to stay in the
+        # temp dir; even `f"{d}/ok.txt"` is red. Use os.path.join with explicit components.
+        return False
     if isinstance(e, ast.Constant) and isinstance(e.value, str):
         v = e.value
         return not (os.path.isabs(v) or v == '..' or os.path.normpath(v).startswith('..'))
@@ -711,6 +708,28 @@ def _kwargs_root_provable(v):
         if k.value == 'root':
             return True
     return False
+
+
+def _dynamic_write_calls(tree):
+    """动态取得写原语的调用（R10-5）：`functools.partial(atomic_append, …)` 与
+    `getattr(mod, 'atomic_append')`。判据看不到 root 时不该默认放行——动态取得即红。
+    Dynamic acquisition of a write primitive (R10-5): `functools.partial(atomic_append, …)`
+    and `getattr(mod, 'atomic_append')`. When root cannot be seen, never default to green."""
+    al = _write_aliases(tree)
+    out = []
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        last = _resolve_callee(n.func, al).split('.')[-1]
+        if last == 'partial':
+            if n.args and isinstance(n.args[0], (ast.Name, ast.Attribute)) \
+                    and _resolve_callee(n.args[0], al).split('.')[-1] in _ROOT_POS:
+                out.append(ast.unparse(n)[:70])
+        elif last == 'getattr':
+            if len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) \
+                    and isinstance(n.args[1].value, str) and n.args[1].value in _ROOT_POS:
+                out.append(ast.unparse(n)[:70])
+    return out
 
 
 def _rootless_write_calls(tree):
@@ -830,6 +849,8 @@ def _scan_write_sites(d):
                     kinds.add('open')
                 elif t == 'os.open' and _osopen_writes(sub):
                     kinds.add('osopen')
+                elif t in ('os.write', 'os.pwrite', 'os.writev'):
+                    kinds.add('osopen')
                 elif t in _WRITE_TEMP:
                     kinds.add('temp')
                 elif isinstance(sub.func, ast.Attribute) \
@@ -922,6 +943,10 @@ def _case_write_paths(tmp):
         '    d = tempfile.mkdtemp()\n'
         '    p = f"{d}/../../escaped_fstring.txt"\n'
         '    open(p, "w").write("x")\n'
+        'def _emit_fstring_ok():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = f"{d}/ok.txt"\n'
+        '    open(p, "w").write("x")\n'
         'def _emit_basename_var(n):\n'
         '    d = tempfile.mkdtemp()\n'
         '    p = os.path.join(d, os.path.basename(n), "evil.txt")\n'
@@ -954,9 +979,12 @@ def _case_write_paths(tmp):
         'basename("x/..")': _other_target_reasons(synth, _find_func(synth, '_emit_basename_up')),
         'dirname(d)': _other_target_reasons(synth, _find_func(synth, '_emit_dirname')),
         'f-string 字面段 ..': _other_target_reasons(synth, _find_func(synth, '_emit_fstring')),
+        'f-string 正常拼接（政策①禁用）': _other_target_reasons(
+            synth, _find_func(synth, '_emit_fstring_ok')),
         'basename(变量)': _other_target_reasons(synth, _find_func(synth, '_emit_basename_var')),
     }
-    _ok('AH R2/R8/R9 九反例全红（默认路径/**kw/*a/闭包/绝对段/basename 上跳/dirname/f-string/basename 变量）',
+    _ok('AH R2/R8/R9/R10 十反例全红（默认路径/**kw/*a/闭包/绝对段/basename 上跳/dirname/'
+        'f-string 两种/basename 变量）',
         all(bool(v) for v in reds.values()),
         '空=%s' % [k for k, v in reds.items() if not v])
     _ok('AH R9-4 basename(listdir 元素)/basename(字面容器元素) 不误报',
@@ -980,6 +1008,18 @@ def _case_write_paths(tmp):
     _ok('AH R9-5 root 三种传法（kw/位置/**字面）均认；漏传/**不透明/别名漏传 ⇒ 红',
         all(got95[k] == v[1] for k, v in r95.items()),
         '不符=%s' % [k for k, v in r95.items() if got95[k] != v[1]])
+    # R10-5：动态取得写原语即红（partial / getattr），静态直呼不误报
+    # R10-5: dynamic acquisition of a write primitive is red (partial / getattr); a static direct
+    # call is not a false positive
+    dyn_partial = bool(_dynamic_write_calls(
+        ast.parse('import functools\nfunctools.partial(atomic_append, root=r)\n')))
+    dyn_getattr = bool(_dynamic_write_calls(
+        ast.parse('getattr(mod, "atomic_append")(p, b)\n')))
+    dyn_clean = _dynamic_write_calls(
+        ast.parse('import safeio\nsafeio.atomic_append(p, b, root=r)\n'))
+    _ok('AH R10-5 functools.partial / getattr 动态取得写原语 ⇒ 红，静态直呼不误报',
+        dyn_partial and dyn_getattr and not dyn_clean,
+        'partial=%s getattr=%s 直呼=%s' % (dyn_partial, dyn_getattr, dyn_clean))
     # other 桶条目不许被其他模块调用：跨文件调用 ⇒ 红（否则归回账本）
     # `other` entries must not be called from other modules: a cross-file call ⇒ red
     defs, callers = {}, {}
@@ -1887,29 +1927,61 @@ elif mode == 'hardlink':
             print('WROTE_BOTH' if open(secret, 'rb').read() == b'a\nb\n' else 'WROTE_ONE')
         except RuntimeError:
             print('RAISED')
-elif mode == 'swap':
-    # R9-1 TOCTOU：判定后、打开前把目标换成另一个 inode ⇒ fstat 复核必须拒绝且零写
-    # R9-1 TOCTOU: swap the target to another inode between check and open ⇒ fstat mismatch
-    # must reject before any byte is written
-    p4 = os.path.join(d, 'swap.tsv')
-    open(p4, 'wb').write(b'a\n')
-    real_open = os.open
-
-    def _swap_open(path, flags, *a, **k):
-        if os.path.realpath(path) == os.path.realpath(p4) and (flags & os.O_APPEND):
-            os.unlink(p4)
-            open(p4, 'wb').write(b'z\n')
-        return real_open(path, flags, *a, **k)
-
+elif mode == 'ancestor':
+    # R10-1 确定性注入：把根的一级子目录换成指向根外的软链，旧的字面祖先链会跟随并写到根外
+    # R10-1 deterministic injection: replace a first-level sub-directory with a symlink to the
+    # outside; the old literal ancestry walk followed it and wrote outside
+    out = tempfile.mkdtemp(prefix='akanc_')
+    leak = os.path.join(out, 'leak.tsv')
+    open(leak, 'wb').write(b'a\n')
+    sub = os.path.join(d, 'subdir')
+    os.makedirs(sub, exist_ok=True)
+    open(os.path.join(sub, 'leak.tsv'), 'wb').write(b'a\n')
+    os.rename(sub, sub + '_real')
+    os.symlink(out, sub)
     with safeio.locked(d):
-        os.open = _swap_open
         try:
-            safeio.append_inplace(p4, 'b\n', d, conf_path=cp)
+            safeio.append_inplace(os.path.join(sub, 'leak.tsv'), 'b\n', d, conf_path=cp)
             print('WROTE')
         except RuntimeError:
-            print('SWAP_ZERO' if open(p4, 'rb').read() == b'z\n' else 'SWAP_DIRTY')
-        finally:
-            os.open = real_open
+            print('ANCESTOR_ZERO' if open(leak, 'rb').read() == b'a\n' else 'ANCESTOR_DIRTY')
+elif mode == 'race':
+    # R10-1 自然竞态：另一个线程不停在真目录与「指向根外的软链」之间切换，主线程反复追加
+    # R10-1 natural race: a flipper thread keeps switching between the real dir and a symlink to
+    # the outside while the main thread appends repeatedly
+    out = tempfile.mkdtemp(prefix='akrace_')
+    leak = os.path.join(out, 'leak.tsv')
+    open(leak, 'wb').write(b'ORIG\n')
+    sub = os.path.join(d, 'subrace')
+    os.makedirs(sub, exist_ok=True)
+    open(os.path.join(sub, 'leak.tsv'), 'wb').write(b'')
+    stop = threading.Event()
+
+    def _flip():
+        while not stop.is_set():
+            try:
+                os.rename(sub, sub + '_r')
+                os.symlink(out, sub)
+                os.unlink(sub)
+                os.rename(sub + '_r', sub)
+            except OSError:
+                pass
+
+    th = threading.Thread(target=_flip)
+    th.daemon = True
+    th.start()
+    ok = rej = 0
+    with safeio.locked(d):
+        for _ in range(300):
+            try:
+                safeio.append_inplace(os.path.join(sub, 'leak.tsv'), b'x\n', d, conf_path=cp)
+                ok += 1
+            except RuntimeError:
+                rej += 1
+    stop.set()
+    th.join()
+    esc = 0 if open(leak, 'rb').read() == b'ORIG\n' else 1
+    print('RACE ok=%d rej=%d esc=%d' % (ok, rej, esc))
 elif mode == 'missing':
     try:
         with safeio.locked(os.path.join(d, 'nope', 'missing')):
@@ -2106,18 +2178,28 @@ def _case_lock_assert(tmp):
     got, err = _ak_scenario(here, 'hardlink')
     _ok('AK[R9-1 根内硬链接 ⇒ 不拒绝，追加经两个名字都可见]', got == 'WROTE_BOTH',
         '%s %s' % (got, err[:120]))
-    # R9-1 TOCTOU：打开前换掉目标 ⇒ fstat 复核拒绝且零写
-    # R9-1 TOCTOU: replacing the target before the open ⇒ fstat mismatch rejects with zero write
-    got, err = _ak_scenario(here, 'swap')
-    _ok('AK[R9-1 打开前目标被换 ⇒ 拒绝且零写（SWAP_ZERO）]', got == 'SWAP_ZERO',
+    # R10-1 确定性注入：根的一级子目录被换成根外软链 ⇒ openat 走查拒绝且零写
+    # R10-1 deterministic injection: a first-level sub-directory swapped to an outside symlink ⇒
+    # the openat walk rejects with zero write
+    got, err = _ak_scenario(here, 'ancestor')
+    _ok('AK[R10-1 祖先目录换成根外软链（确定性注入）⇒ 拒绝且零写]', got == 'ANCESTOR_ZERO',
         '%s %s' % (got, err[:120]))
-    # R9-1 静态：打开必须 O_NOFOLLOW，且对同一个 fd 复核 inode 与打开前一致
-    # R9-1 static: the open must use O_NOFOLLOW, and the same fd's inode must be re-checked
-    nofollow = 'os.O_APPEND | os.O_NOFOLLOW' in safeio_src
-    idcheck = ('if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:'
-               in safeio_src)
-    _ok('AK[R9-1 静态] append_inplace 打开用 O_NOFOLLOW 且对同一 fd 复核 inode',
-        nofollow and idcheck, 'NOFOLLOW=%s fstat复核=%s' % (nofollow, idcheck))
+    # R10-1 自然竞态：软链/真目录来回切换 300 次追加 ⇒ 零逃逸（esc=0）
+    # R10-1 natural race: flip symlink/real dir while appending 300 times ⇒ zero escapes
+    got, err = _ak_scenario(here, 'race', timeout=60)
+    _ok('AK[R10-1 自然竞态 300 次追加 ⇒ 零逃逸且观察到拒绝]',
+        got.startswith('RACE ') and got.strip().endswith('esc=0')
+        and 'rej=0' not in got, '%s %s' % (got, err[:120]))
+    # R10-1 静态：openat 物理走查在场；旧的「字面祖先 stat + 事后 before 比对」必须已删
+    # R10-1 static: the openat physical walk is present; the old literal-stat ancestry and the
+    # post-open `before` comparison must be gone
+    walk = ('_open_target_at' in safeio_src and 'dir_fd=fd' in safeio_src
+            and 'os.O_NOFOLLOW | os.O_DIRECTORY' in safeio_src
+            and 'for comp in parts[:-1]:' in safeio_src)
+    legacy_gone = ('before is not None' not in safeio_src
+                   and 'os.stat(rp)' not in safeio_src)
+    _ok('AK[R10-1 静态] openat 逐级 O_NOFOLLOW|O_DIRECTORY，旧祖先链/before 比对已删',
+        walk and legacy_gone, '走查=%s 旧法已删=%s' % (walk, legacy_gone))
     # R8-3：账本根不存在 ⇒ 明确报错（不是 FileNotFoundError）
     # R8-3: a missing ledger root ⇒ explicit error (not a bare FileNotFoundError)
     got, err = _ak_scenario(here, 'missing')
@@ -2144,14 +2226,16 @@ def _case_lock_assert(tmp):
                            '·拒绝写入（零写）' % (os.path.realpath(root), resolved))"""
     excl_block = "    if not exclusive_held(resolved):"
     assert mismatch_block in safeio_src and excl_block in safeio_src
+    # 变异②：别的线程持锁也算（进程级）⇒ thread_sub 场景必须抛错，否则判据红
+    # 旧「根一致检查」的两条变异已不再可观察：现在由 openat 物理走查兜住——删掉字面检查
+    # 也出不去，故不再以「应变红却仍红」的假变异充数（R10-1 的改回字面路径变异另列）。
+    # Mutation 2: counting another thread's lock as ours ⇒ the thread_sub scenario must raise.
+    # The two old mutations for the literal root-consistency check are no longer observable:
+    # the openat walk contains the write even when that check is deleted, so they are not kept
+    # as fake mutations (the literal-path revert mutation is listed separately under R10-1).
     muts = (
-        ('subdir', '变异①：去掉根一致检查、锁只认传入根',
-         safeio_src.replace(mismatch_block, '    pass').replace(
-             excl_block, "    if not (_ident(root if root else resolved)[0] in _PROC):")),
         ('thread_ok', '变异②：别的线程持锁也算（进程级）',
          safeio_src.replace(excl_block, "    if not (_ident(resolved)[0] in _PROC):")),
-        ('mismatch', '变异③：去掉根一致检查',
-         safeio_src.replace(mismatch_block, '    pass')),
     )
     for mode, label, text in muts:
         md = os.path.join(tmp, 'ak_mut_' + mode)
@@ -2166,16 +2250,40 @@ def _case_lock_assert(tmp):
         _ok('AK %s ⇒ 判据红（场景被放行/走样）' % label,
             got != 'RAISED_ZERO' or 'RAISED_DIRTY' in got,
             '%s %s' % (got, err[:120]))
-    # 变异⑤⑥（R9-1）：拆掉 O_NOFOLLOW / 关掉 inode 复核 ⇒ 静态判据必须红
-    # Mutations 5–6 (R9-1): drop O_NOFOLLOW / disable the inode re-check ⇒ static check red
-    for label, text in (
-            ('去掉 O_NOFOLLOW', safeio_src.replace(' | os.O_NOFOLLOW', '', 1)),
-            ('关掉 inode 复核', safeio_src.replace(
-                'if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:',
-                'if False:', 1))):
-        still = ('os.O_APPEND | os.O_NOFOLLOW' in text) and \
-            ('if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:' in text)
-        _ok('AK 变异 R9-1 %s ⇒ 静态判据红' % label, not still, '仍满足=%s' % still)
+    # 变异⑤（R10-1）：把 openat 走查改回字面路径打开 ⇒ 祖先软链逃逸（判据必须红）
+    # Mutation 5 (R10-1): revert the openat walk to a literal-path open ⇒ the ancestor symlink
+    # escapes, so the criterion must go red.
+    walk_anchor = (
+        "    fd = os.dup(root_fd)\n"
+        "    try:\n"
+        "        for comp in parts[:-1]:\n"
+        "            nfd = os.open(comp, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY,"
+        " dir_fd=fd)\n"
+        "            os.close(fd)\n"
+        "            fd = nfd\n"
+        "        return os.open(parts[-1], os.O_RDWR | os.O_CREAT | os.O_APPEND"
+        " | os.O_NOFOLLOW,\n"
+        "                       0o644, dir_fd=fd)\n"
+        "    finally:\n"
+        "        os.close(fd)")
+    legacy_open = ("    return os.open(os.path.abspath(path), os.O_RDWR | os.O_CREAT"
+                   " | os.O_APPEND, 0o644)")
+    if walk_anchor in safeio_src:
+        md = os.path.join(tmp, 'ak_mut_r10')
+        os.makedirs(md)
+        io.open(os.path.join(md, 'safeio.py'), 'w', encoding='utf-8').write(
+            safeio_src.replace(walk_anchor, legacy_open, 1))
+        try:
+            io.open(os.path.join(md, 'ledger_root.py'), 'w', encoding='utf-8').write(
+                io.open(os.path.join(here, 'ledger_root.py'), encoding='utf-8').read())
+        except IOError:
+            pass
+        got, err = _ak_scenario(md, 'ancestor')
+        _ok('AK 变异 R10-1 改回字面路径打开 ⇒ 祖先软链逃逸（判据红）',
+            got in ('WROTE', 'ANCESTOR_DIRTY'), '%s %s' % (got, err[:120]))
+    else:
+        _ok('AK 变异 R10-1 改回字面路径打开 ⇒ 祖先软链逃逸（判据红）', False,
+            '找不到 openat 走查锚点')
     # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
     if not has_agent:
         _skip('AK 变异④：当前盒无 agent_lock.py')
@@ -3413,16 +3521,119 @@ def _case_cli_write_fail(tmp):
         # The incremental TSV symlinks outside the root ⇒ append_inplace must refuse
         r = _run(d)
         txt = r.stdout + r.stderr
-        _ok('R9-2 运行期拒绝 ⇒ rc=2（与配置错同口径）', r.returncode == 2,
+        _ok('R9-2/R10-2 运行期拒绝 ⇒ rc=6（与配置错 2 分码）', r.returncode == 6,
             'rc=%d' % r.returncode)
-        _ok('R9-2 有明确文案（运行失败 + 原因）',
-            '运行失败' in txt and ('不在账本根' in txt or '拒绝写入' in txt), txt[-240:])
+        _ok('R9-2/R10-2 有明确文案（运行失败 + 原因）',
+            '运行失败' in txt and ('不可用' in txt or '拒绝写入' in txt), txt[-240:])
         _ok('R9-2 无裸 traceback', 'Traceback' not in txt, txt[-240:])
         same = io.open(tgt, 'rb').read() == before
         _ok('R9-2 根外目标零改动', same, '零改动=%s' % same)
     finally:
         shutil.rmtree(d, ignore_errors=True)
         shutil.rmtree(outside, ignore_errors=True)
+
+
+def _case_run_fail_compose(tmp):
+    """R10-2：运行失败必须并入严重度合成，不许外层硬返回 2。
+    R10-2: runtime failure joins the severity composition — never an outer hard return of 2."""
+    # ① 作者红 + 写拒绝 ⇒ 4（不是 2）
+    d = tempfile.mkdtemp(prefix='daybook_compose_', dir=tmp)
+    outside = tempfile.mkdtemp(prefix='daybook_compose_out_', dir=tmp)
+    try:
+        _prepare(d)
+        vol = os.path.join(d, '账卷.txt')
+        txt = io.open(vol, encoding='utf-8').read().replace('[皮特]', '[ag-0123456789abcdef]')
+        io.open(vol, 'w', encoding='utf-8').write(txt)
+        r0 = _base(d)
+        _ok('R10-2 前置：作者红基线仍 rc=0', r0.returncode == 0, 'rc=%d' % r0.returncode)
+        idf = os.path.join(d, '索引', 'index_账.tsv')
+        tgt = os.path.join(outside, 'index_账.tsv')
+        shutil.copy2(idf, tgt)
+        os.remove(idf)
+        os.symlink(tgt, idf)
+        with io.open(vol, 'a', encoding='utf-8') as f:
+            f.write('[2026-11-13 10:05:00] [测试] [新增] [皮特] 写入\n')
+        r = _run(d)
+        out = r.stdout + r.stderr
+        _ok('R10-2 作者红 + 写拒绝 ⇒ rc=4（不得降级为 2）', r.returncode == 4,
+            'rc=%d' % r.returncode)
+        _ok('R10-2 作者类与运行失败都打印，无 traceback',
+            '作者' in out and '运行失败' in out and 'Traceback' not in out, out[-240:])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+    # ② 违例 + 写拒绝 ⇒ 3（注入 RuntimeError 到写入门之前，违例已记录）
+    d2 = tempfile.mkdtemp(prefix='daybook_compose2_', dir=tmp)
+    try:
+        _prepare(d2)
+        r0 = _base(d2)
+        _ok('R10-2 前置②：基线 rc=0', r0.returncode == 0, 'rc=%d' % r0.returncode)
+        vol = os.path.join(d2, '账卷.txt')
+        lines = io.open(vol, encoding='utf-8').read().splitlines(True)
+        mid = len(lines) // 2
+        lines[mid] = lines[mid].replace('[皮特]', '[皮大]', 1)
+        io.open(vol, 'w', encoding='utf-8').write(''.join(lines))
+        src = io.open(os.path.join(d2, 'daybook.py'), encoding='utf-8').read()
+        anchor = '        untrusted = bool(CONFIG_ERRORS or VIOLATIONS or EVIDENCE_MISSING)'
+        if anchor in src:
+            io.open(os.path.join(d2, 'daybook.py'), 'w', encoding='utf-8').write(
+                src.replace(anchor, "        raise RuntimeError('注入写失败')\n" + anchor, 1))
+            r = _run(d2)
+            _ok('R10-2 违例 + 写拒绝 ⇒ rc=3（不得降级为 2/6）', r.returncode == 3,
+                'rc=%d' % r.returncode)
+        else:
+            _ok('R10-2 违例 + 写拒绝 ⇒ rc=3（不得降级为 2/6）', False, '找不到写入门锚点')
+    finally:
+        shutil.rmtree(d2, ignore_errors=True)
+
+
+_ENTRY_CHILD = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+mod = __import__(sys.argv[2][:-3])
+target = sys.argv[3]
+setattr(mod, target, lambda *a, **k: (_ for _ in ()).throw(RuntimeError('注入失败')))
+sys.argv = [sys.argv[2]] + sys.argv[4:]
+try:
+    rc = mod.main()
+except SystemExit as exc:
+    rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
+print('RC %s' % rc)
+'''
+
+
+def _case_entry_wrappers(tmp):
+    """R10-3：四个入口的顶层收口（文案前缀一致、rc=6、无 traceback）。
+    R10-3: top-level boundaries of the four other entries (same prefix, rc=6, no traceback)."""
+    here = os.path.dirname(SRC_BIN)
+    cases = (
+        ('daybook_append.py', 'append_one',
+         ['--home', None, '账卷.txt', '测试', '标题', '皮特', '正文']),
+        ('daybook_hook.py', 'run', ['--home', None, '对话.txt', '关键词.txt']),
+        ('orchestrator.py', '_print_who', ['--home', None, 'who']),
+        ('mcp_server.py', 'serve', ['--home', None]),
+    )
+    for name, target, argv in cases:
+        if not os.path.exists(os.path.join(here, name)):
+            _skip('R10-3 %s：当前盒无 %s' % (name, name))
+            continue
+        d = tempfile.mkdtemp(prefix='daybook_entry_', dir=tmp)
+        try:
+            _prepare(d)
+            if name == 'daybook_hook.py':
+                io.open(os.path.join(d, '对话.txt'), 'w', encoding='utf-8').write('')
+                io.open(os.path.join(d, '关键词.txt'), 'w', encoding='utf-8').write('')
+            args = ['-B', '-c', _ENTRY_CHILD, here, name, target] + \
+                [d if a is None else a for a in argv]
+            r = subprocess.run([sys.executable] + args, cwd=d, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, universal_newlines=True)
+            out = r.stdout + r.stderr
+            _ok('R10-3 %s 顶层收口 ⇒ rc=6、文案一致、无 traceback' % name,
+                'RC 6' in r.stdout and '★ 运行失败（rc=6）' in out
+                and 'Traceback' not in out, 'out=%s' % out[-200:])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def main():
@@ -3820,6 +4031,8 @@ def main():
         _case_no_root(work)
         _case_push_load_bearing(work)
         _case_cli_write_fail(work)
+        _case_run_fail_compose(work)
+        _case_entry_wrappers(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',

@@ -71,7 +71,9 @@ Usage:
     python3 orchestrator.py alarm
     python3 orchestrator.py digest [--vol 卷] [--cls 类] [--push 收件人]   # v3.1 读多级目录·分发摘要
     python3 orchestrator.py selftest
-退出码：0 正常；1 alarm 有硬警；2 参数/文件错；3 alarm 执行异常（读卷/解析失败）。
+退出码：0 正常；1 alarm 有硬警；2 参数/文件错；3 alarm 执行异常（读卷/解析失败）；6 运行失败（写原语)。
+Exit codes: 0 clean; 1 alarm hard warning; 2 argument/file error; 3 alarm execution error;
+6 runtime failure (write primitive).
 Exit codes: 0 normal; 1 alarm has a hard warning; 2 argument/file error; 3 alarm execution error (volume read/parse failure).
 """
 import argparse
@@ -924,6 +926,17 @@ def _print_pull(hub, who):
 
 
 def main(argv=None):
+    """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并退 6，不抛裸 traceback。
+    CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
+    exit 6 — never a bare traceback."""
+    try:
+        return _main(argv)
+    except RuntimeError as exc:
+        sys.stderr.write('★ 运行失败（rc=6）：%s\n' % exc)
+        return 6
+
+
+def _main(argv=None):
     ap = argparse.ArgumentParser(description='daybook 智能体编排中心')
     ap.add_argument('--home', dest='root', default=None,
                     help='conf 所在目录（默认当前工作目录；显式指定但无 conf 即 rc=2；'

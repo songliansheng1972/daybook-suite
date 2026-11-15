@@ -50,10 +50,15 @@ Customers may edit daybook.conf to define fields and volumes.
   4 作者口径（作者位出现机器 id 或两种形态混用）· author convention (machine id or mixing)
   5 派生件证据缺失（索引/游标/封存丢失或不可解析·**不写回**·用 baseline 认基线）
     derived evidence missing (nothing is written back; run `baseline` to accept one)
+  6 运行失败（写/锁被拒等运行期 RuntimeError·**不写回**）
+    runtime failure (a write/lock refusal or other runtime RuntimeError; nothing written back)
   多类同现：屏幕每类都打印，退出码取语义严重度最高的一类
   When several occur, every class is printed and the exit code is the most severe:
-  3 违例 > 4 作者 > 2 配置错 > 5 证据缺失（3 不会被 2 掩盖，也不会被 5 洗掉）
-  violation(3) > author(4) > config(2) > evidence(5).
+  3 违例 > 4 作者 > 6 运行失败 > 2 配置错 > 5 证据缺失（3 不会被 2 掩盖，也不会被 5 洗掉）
+  violation(3) > author(4) > runtime failure(6) > config(2) > evidence(5).
+  运行失败与配置错是**不同退出码**（6 vs 2，脚本可直接区分）；两者同现取 6。
+  Runtime failure and configuration error use distinct codes (6 vs 2, so scripts can tell them
+  apart); when both occur the runtime failure wins.
 """
 import io, os, re, sys, time, hashlib, json, shutil, fnmatch
 
@@ -71,18 +76,21 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── 退出码（互不掩盖）────────────────────────────────────────
 # ── Exit codes (never mask each other). ──
-# 2 配置错 / 3 append-only 违例 / 4 作者口径 / 5 派生件证据缺失。
-# 同时出现多类时按语义严重度取最高：违例(3) > 作者(4) > 配置错(2) > 证据缺失(5)。
-# 屏幕各类都会打印，退出码反映最重那类——「检测到篡改」不能被 2 盖掉，也不能被 5 洗掉。
-# 2 config / 3 append-only violation / 4 author convention / 5 derived-evidence missing.
-# When several occur, the highest semantic severity wins: violation(3) > author(4) >
-# config(2) > evidence(5). Every class is printed; tampering is never masked by 2 and never
-# laundered into 5.
+# 2 配置错 / 3 append-only 违例 / 4 作者口径 / 5 派生件证据缺失 / 6 运行失败。
+# 同时出现多类时按语义严重度取最高：违例(3) > 作者(4) > 运行失败(6) > 配置错(2) > 证据缺失(5)。
+# 屏幕各类都会打印，退出码反映最重那类——「检测到篡改」不能被 2 盖掉，也不会被 5 洗掉。
+# 运行失败与配置错分属 6/2，脚本可区分。
+# 2 config / 3 append-only violation / 4 author convention / 5 derived-evidence missing /
+# 6 runtime failure. When several occur, the highest semantic severity wins: violation(3) >
+# author(4) > runtime(6) > config(2) > evidence(5). Every class is printed; tampering is never
+# masked by 2 and never laundered into 5. Runtime failure and config error keep distinct codes.
 EXIT_CONFIG = 2
 EXIT_VIOLATION = 3
 EXIT_AUTHOR = 4
 EXIT_EVIDENCE = 5
-_EXIT_SEVERITY = {EXIT_VIOLATION: 4, EXIT_AUTHOR: 3, EXIT_CONFIG: 2, EXIT_EVIDENCE: 1}
+EXIT_RUN = 6
+_EXIT_SEVERITY = {EXIT_VIOLATION: 5, EXIT_AUTHOR: 4, EXIT_RUN: 3,
+                  EXIT_CONFIG: 2, EXIT_EVIDENCE: 1}
 
 
 def worst_exit(codes):
@@ -1637,16 +1645,24 @@ def _main():
 
 
 def main():
-    """CLI 收口：任何 RuntimeError（含写原语拒绝：根不一致/不在根内/打开时被替换）一律
-    打一条明确文案并退 2，与「配置错 rc=2」同口径；不把 traceback 抛给用户。
-    CLI boundary: any RuntimeError (write primitive refusals included) becomes one clear
-    message with exit code 2 — the same contract as configuration errors. No traceback is
-    ever shown to the user."""
+    """CLI 收口：任何 RuntimeError（含写原语拒绝：根不一致/祖先或目标不可用/打开时被替换）
+    并入既有严重度合成，不硬返回 2，也不把 traceback 抛给用户。
+    CLI boundary: any RuntimeError (write primitive refusals included) joins the existing
+    severity composition — never a hard return of 2 — and is never shown as a traceback."""
     try:
         return _main()
     except RuntimeError as exc:
-        sys.stderr.write('★ 运行失败（rc=2）：%s\n' % exc)
-        return 2
+        sys.stderr.write('★ 运行失败：%s\n' % exc)
+        codes = [EXIT_RUN]
+        if CONFIG_ERRORS:
+            codes.append(EXIT_CONFIG)
+        if VIOLATIONS:
+            codes.append(EXIT_VIOLATION)
+        if EVIDENCE_MISSING:
+            codes.append(EXIT_EVIDENCE)
+        if AUTHOR_RED:
+            codes.append(EXIT_AUTHOR)
+        return worst_exit(codes)
 
 
 if __name__ == '__main__':

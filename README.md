@@ -100,11 +100,11 @@ daybook-suite/            ← this repo
 
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
-| daybook      | v4.0.6  | 8                   | 3800         |
-| daybook-mcp  | v4.0.6  | 13                  | 5967         |
-| daybook-orch | v4.0.6  | 11                  | 3660         |
+| daybook      | v4.0.6  | 8                   | 3849         |
+| daybook-mcp  | v4.0.6  | 13                  | 6017         |
+| daybook-orch | v4.0.6  | 11                  | 3695         |
 
-**Code size**: **13,427 lines** across the three packages' product files (3,800 + 5,967 + 3,660).
+**Code size**: **13,561 lines** across the three packages' product files (3,849 + 6,017 + 3,695).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -210,9 +210,9 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   上测得 1.42s）。也就是说：**同一账本根上的取锁写只会排队，不会并行**；写入越重，后来者
   等得越久。
 - **判据计数**只引用 `ledger_guard_test.py` 打印的「项」值（=PASS+FAIL 行数）。本轮实测：
-  源树 `0 红 / 416 项（PASS 416；跳过 0 项）`；`daybook/` 盒 `0 红 / 317 项（PASS 317；
-  跳过 7 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包与
-  `agent_lock.py`，依赖它们的 7 条判据逐条打印 `[跳过]` 与原因、不进「项」计数；其余少掉的
+  源树 `0 红 / 424 项（PASS 424；跳过 0 项）`；`daybook/` 盒 `0 红 / 323 项（PASS 323；
+  跳过 9 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包与
+  `agent_lock.py`，依赖它们的 9 条判据逐条打印 `[跳过]` 与原因、不进「项」计数；其余少掉的
   项来自按文件集扫描的判据（如 AH 登记条目）随文件数变化。所有场合只报打印值，不手写换算。
 
 ## 已知边界（不构成保证）
@@ -263,11 +263,11 @@ daybook-suite/            ← 本仓
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.6 | 8          | 3800         |
-| 璇玑  | v4.0.6 | 13         | 5967         |
-| 司南  | v4.0.6 | 11         | 3660         |
+| 起居注 | v4.0.6 | 8          | 3849         |
+| 璇玑  | v4.0.6 | 13         | 6017         |
+| 司南  | v4.0.6 | 11         | 3695         |
 
-**代码规模**：三包产品件合计 **13,427 行**（3,800 ＋ 5,967 ＋ 3,660）。
+**代码规模**：三包产品件合计 **13,561 行**（3,849 ＋ 6,017 ＋ 3,695）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  

@@ -247,6 +247,18 @@ def serve(infile=None, outfile=None):
 
 
 def main():
+    """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并以 6 退出，不抛裸 traceback。
+    CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
+    exit 6 — never a bare traceback."""
+    try:
+        _main()
+    except RuntimeError as exc:
+        sys.stderr.write('★ 运行失败（rc=6）：%s\n' % exc)
+        sys.stderr.flush()
+        raise SystemExit(6)
+
+
+def _main():
     """启动自检后进主循环。根无效 → stderr 报错并退出（不静默空跑）。
     Run the startup self-check, then enter the main loop. An invalid root → stderr error and exit (never silently serve an empty ledger)."""
     from ledger_root import take_home

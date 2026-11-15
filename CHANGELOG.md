@@ -101,30 +101,35 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 18. **租约写失败不再泄漏根锁**：`acquire()` 的记账写包 try/finally——失败即摘登记并退锁；
     只读租约目录下复测 `exclusive_held=False`、`_ctx=0`、他人可正常获取。`AgentLock` 形参只剩
     `lease_vol` / `root`，被静默丢弃的 `lock_dir` 已删除。
-19. **归属按路径/inode 祖先链判 + 打开后复核**：`append_inplace` 不再用 `commonpath` 比字符串，
-    而是逐级 stat 父目录、比对 `(st_dev, st_ino)` 与账本根身份（与锁身份同一口径）；打开用
-    `O_NOFOLLOW`，并对**同一个 fd** `fstat` 复核 `(st_dev, st_ino)` 与打开前一致，不一致即
-    拒绝且零写（防「判定后路径被替换」的 TOCTOU）。**硬链接不再特殊处理**——同 inode 的两个
-    名字是文件系统语义，不用拒绝表达边界；威胁模型是「写路径必须落在账本根之内」，不是
-    「硬链接已封死」。
+19. **归属＝openat 物理走查**：`append_inplace` 不再用字面路径逐级 stat（那条祖先链在父目录被
+    换成根外软链时仍会自洽），改为从账本根目录 fd 出发，用 `openat(dir_fd)` 逐级
+    `O_NOFOLLOW | O_DIRECTORY` 走到目标所在目录，最后一级 `openat` 打开目标（`O_APPEND |
+    O_NOFOLLOW`）。每级都必须是真目录，路径物理上出不去，不存在「检查后被换」的窗口；旧的
+    字面祖先链与事后 `before` inode 比对各删其一不留。**硬链接不再特殊处理**——同 inode 的
+    两个名字是文件系统语义，威胁模型是「按路径/inode 祖先归属」，不是「硬链接已封死」。
 20. **`locked()` 缺路径明确报错**：路径不存在时抛 `RuntimeError('账本根不存在…不退回父目录')`，
     不再是裸 `FileNotFoundError`，也不再静默退到父目录去锁。
 21. **必填 root 有静态判据**：AST 级扫描 `atomic_append` / `read_modify_write` 的调用点，漏传
     `root=` 即红；变异「删掉一处 root 实参」必须红。调用点残留的 `root or dirname(...)` 兜底
     全部删除（`daybook_hook.mark_processed`、`Heartbeat`），确定不了根就按根解析失败处理。
 22. **判据跳过显式化**：`[跳过]` 统一进跳过清单并在汇总打印数量与原因，不计入判据条数；
-    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 416 项（PASS 416；
-    跳过 0 项）`，`daybook/` 盒 `0 红 / 317 项（PASS 317；跳过 7 项）`。盒内 7 条跳过为
-    AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）；
-    其余项数差异来自 AH 等按文件集扫描的判据随文件数变化。不手写换算，也不报「恒差 3」。
+    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 424 项（PASS 424；
+    跳过 0 项）`，`daybook/` 盒 `0 红 / 323 项（PASS 323；跳过 9 项）`。盒内 9 条跳过为
+    AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）＋
+    R10-3×2（缺 `orchestrator.py`／`mcp_server.py`）；其余项数差异来自 AH 等按文件集扫描的
+    判据随文件数变化。不手写换算，也不报「恒差 3」。
 23. **文档口径修正**：README 的串行保证限定为三条取锁原语（`append_inplace` / `atomic_append`
     / `read_modify_write`），并写明 `atomic_write` 是纯原子替换、不取锁、由调用方决定临界区；
     「五种写法」改为「环境支持的写法逐种验证，跳过的打印原因」。
-24. **CLI 写失败不再裸 traceback**：`daybook.py` 顶层收口任何 `RuntimeError`——打印
-    `★ 运行失败（rc=2）：<原因>` 并退 2，与「配置错 rc=2」同口径；判据构造一次必然失败的
-    增量追加（TSV 符号链接到根外），断言文案、`rc=2`、无 `Traceback`、根外零改动。
-25. **f-string 字面段按路径段判**：`JoinedStr` 的常量段也检查（含 `..` 或绝对段即红），
-    赋值右值与写目标走同一判定；`f"{d}/../../x"` 由放行改为红。
+24. **运行失败并入严重度合成**：`daybook.py` 顶层捕获任何 `RuntimeError`，打印
+    `★ 运行失败：<原因>` 并把 6 并入既有 `worst_exit`（3 违例 > 4 作者 > 6 运行失败 >
+    2 配置错 > 5 证据缺失），**禁止外层硬返回 2**。判据：作者红+写拒绝=4、违例+写拒绝=3；
+    运行失败与配置错分码 6/2，脚本可直接区分。另构造 TSV 符号链接到根外，断言 rc=6、文案、
+    无 `Traceback`、根外零改动。
+25. **`other` 桶禁用 f-string 拼路径（选定①）**：`JoinedStr` 一律红——即使是 `f"{d}/ok.txt"`
+    也判红，因为字面段与插值混在一个表达式里、静态无法证明整体留在临时目录。拼路径一律用
+    `os.path.join` 逐元表达。行为、判据注释与 CHANGELOG 三处口径一致，不留「行为禁、文档
+    不说」。
 26. **`basename(变量)` 不再无条件放行**：非恒定入参必须自身可证为安全路径，或已证为单段
     相对名（`os.listdir` 循环变量、字面容器元素、显式 `basename(x) != x or x in ('', '.', '..')`
     守卫），否则红——变量可能是 `..`，叠两个就上跳两级。
@@ -133,6 +138,12 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     不透明 `**kwargs` 红、`as` 别名漏传红）全部成立。
 28. **`Heartbeat` docstring 示例可运行**：示例补上必填 `root` 与卷路径，照抄不再在 `beat`
     处报错。
+29. **另四入口顶层收口**：`daybook_append.py` / `daybook_hook.py` / `orchestrator.py` /
+    `mcp_server.py` 遇到 `RuntimeError` 统一打印 `★ 运行失败（rc=6）：<原因>` 并退 6，不抛
+    裸 traceback；四个入口各一条判据（子进程注入 RuntimeError，断言 rc、文案、无 traceback）。
+30. **动态取得写原语即红**：`functools.partial(atomic_append, …)` 与
+    `getattr(mod, 'atomic_append')(…)` 在 AST 判据里直接红——看不到 root 的动态取得不允许
+    默认放行；静态直呼不误报。
 
 ## v4.0.5 · 2026-11-14
 

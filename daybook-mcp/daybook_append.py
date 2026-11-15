@@ -36,6 +36,7 @@ import io, os, re, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))   # 脚本所在（不再用作账本根兜底）/ script dir (never a root fallback)
 
 FALLBACK_LIMIT = 4096          # POSIX PIPE_BUF 之保守值（探测失败兜底）· conservative POSIX PIPE_BUF value (fallback on probe failure)
+EXIT_RUN = 6                   # 运行期拒绝（写原语/锁）与配置错(2)分码 · runtime refusal, distinct from config(2)
 PROMPT_TEMPLATE = '★ 本条超 {limit} 字节：POSIX 只保证 ≤ PIPE_BUF 之单次 write 原子。请拆条或改用加锁写入。\n'
 
 # ── 作者口径（作者位＝显示名·id 只作附注）──────────────────────
@@ -483,7 +484,7 @@ def _cli_root(override=None):
         return None
 
 
-def main():
+def _main():
     from ledger_root import take_home
     _args, _home, _herr = take_home(sys.argv[1:])
     if _herr:
@@ -527,6 +528,17 @@ def main():
         return 2
     return append_one(path, kind, title, msg, author_slot,
                       author_id=author_id, unregistered=unregistered, root=root)
+
+
+def main():
+    """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并退 6，不抛裸 traceback。
+    CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
+    exit 6 — never a bare traceback."""
+    try:
+        return _main()
+    except RuntimeError as exc:
+        sys.stderr.write('★ 运行失败（rc=%d）：%s\n' % (EXIT_RUN, exc))
+        return EXIT_RUN
 
 
 if __name__ == '__main__':
