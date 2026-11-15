@@ -357,7 +357,7 @@ def foreign_files(dest, plan):
                   'volumes.md', 'index_*', '*.pyc', '.DS_Store', 'Thumbs.db',
                   '任务卷.txt', '心跳卷.txt', '租约卷.txt', '编排卷.txt',
                   '消息卷.txt', '注册卷.txt', '审计卷.txt')
-    junk_dirs = ('__pycache__', 'multilevel', '多级', '索引', '锁目录', '.locks', '.daybook_keys')
+    junk_dirs = ('__pycache__', 'multilevel', '多级', '索引', '锁目录', '.daybook_keys')
     extra = []
     for dirpath, dirs, files in os.walk(dest):
         at_root = os.path.abspath(dirpath) == os.path.abspath(dest)

@@ -296,16 +296,17 @@ def _tail_missing_newline(path):
         return False
 
 
-def build(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
+def build(conf, root, now=None, only_vol=None, orders=('子', '史', '集'), conf_path=None):
     """多级目录入口：整段持账本根排他锁（与 index/append 串行）。
     Multilevel entry: holds the ledger-root exclusive lock for the whole build
     (serialized with index/append)."""
     from safeio import locked as _safe_locked
     with _safe_locked(root):
-        return _build_locked(conf, root, now=now, only_vol=only_vol, orders=orders)
+        return _build_locked(conf, root, now=now, only_vol=only_vol, orders=orders,
+                             conf_path=conf_path)
 
 
-def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '集')):
+def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '集'), conf_path=None):
     """读各卷平铺 TSV → 写三件。only_vol 指定时只出该卷目录（跳总目录）。
     Read each volume's flat TSV → write the three artifacts. With only_vol, write
     just that volume's catalogue (digest skipped).
@@ -355,7 +356,7 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
             from safeio import append_inplace
             if len(rows) > k:
                 append_inplace(tpath, '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n',
-                               root)
+                               root, conf_path=conf_path)
         else:
             _atomic_write(tpath, build_vol_tsv(vol, rows, l2name))
         state[vol] = {'rows': len(rows)}
@@ -394,7 +395,8 @@ def main(argv=None):
         except ValueError as exc:
             sys.stderr.write('%s\n' % exc)
             return 2
-    per, total = build(conf, root, now=a.now, only_vol=a.only_vol, orders=orders)
+    per, total = build(conf, root, now=a.now, only_vol=a.only_vol, orders=orders,
+                       conf_path=cp)
     print('多级目录已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
           + '｜合计 %d 条' % total
           + ('｜仅卷 %s（跳总目录）' % a.only_vol if a.only_vol else '｜视图 %s' % ''.join(orders)),

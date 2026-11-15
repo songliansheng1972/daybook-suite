@@ -22,7 +22,6 @@ conf format (`[volumes]` section · keys are internal volume roles; defaults app
     leases=租约卷.txt
     ledger=编排卷.txt
     inbox=消息卷.txt
-    locks=.locks
 中文/旧写法（注册卷=…、任务卷=… 等）作为别名照读。
 Chinese/legacy forms (注册卷=…, 任务卷=… etc.) are accepted as aliases.
 同段里其它键仍视为 daybook 内容卷（供 digest 兜底扫描），不会被当成内部卷。
@@ -43,7 +42,6 @@ DEFAULT_VOLUMES = {
     'leases': '租约卷.txt',
     'ledger': '编排卷.txt',
     'inbox': '消息卷.txt',
-    'locks': '.locks',
 }
 
 # 角色别名（英文为准·中文/旧写法兼容） · role aliases (English canonical; Chinese/legacy accepted)

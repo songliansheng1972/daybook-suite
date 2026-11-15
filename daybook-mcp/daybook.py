@@ -169,7 +169,7 @@ FIELD_ALIAS = {
 # registry/tasks/heartbeat/leases/ledger/inbox/locks，外加审计键 audit。
 # 只按键名跳过会把合法内容卷（哪怕叫 task、locks）一并吞掉，故判据是双条件：
 #   · 值指向已存在的普通文件 ⇒ 一律当内容卷（键名再不顺眼也不丢）
-#   · 值指向目录，或值为已知非卷默认（.locks / .audit / .daybook_keys …）⇒ 非卷，跳过
+#   · 值指向目录，或值为已知非卷默认（.audit / .daybook_keys …）⇒ 非卷，跳过
 # 被跳过的键不静默：stderr 一行 + volumes.md 一节。
 # When orch and the ledger share one daybook.conf, the [volumes] section also holds
 # orchestration role keys (registry/tasks/…/locks) plus audit. Skipping by key name alone
@@ -183,7 +183,7 @@ NON_VOLUME_KEYS = frozenset((
     '注册卷', '任务卷', '心跳卷', '租约卷', '编排卷', '消息卷', '锁目录', '审计卷',
 ))
 NON_VOLUME_VALUES = frozenset((
-    '.locks', 'locks', '.lock', '.audit', 'audit', '.daybook_keys',
+    'locks', '.audit', 'audit', '.daybook_keys',
     '锁目录', '审计卷', '.审计',
 ))
 # 编排内部卷的固定文件名：同名值即便存在也归内部卷（索引不认、备份照备）。
@@ -447,7 +447,7 @@ def _txt_lines(rows):
             r[5] if len(r) > 5 else '')
 
 
-def _run_ops(ops, report=None, root=None):
+def _run_ops(ops, report=None, root=None, conf_path=None):
     """执行 build 暂存的落盘动作（只有账本可信时才会被调用）。
     Execute the writes staged by build (only ever called when the ledger is trustworthy).
     非追加型派生件走 safeio.atomic_write（同目录临时文件 + os.replace），读者不取写锁；
@@ -491,9 +491,10 @@ def _run_ops(ops, report=None, root=None):
         elif kind == 'append':
             _idf, rows, itxt, vol = op[1], op[2], op[3], op[4]
             data = ''.join('\t'.join(x.replace('\t', ' ') for x in r) + '\n' for r in rows)
-            if append_inplace(_idf, data, root) and report is not None:
+            if append_inplace(_idf, data, root, conf_path=conf_path) and report is not None:
                 report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))
-            if append_inplace(itxt, ''.join(_txt_lines(rows)), root) and report is not None:
+            if append_inplace(itxt, ''.join(_txt_lines(rows)), root,
+                               conf_path=conf_path) and report is not None:
                 report.append((vol, '★ 索引 TXT 末行无换行·已补换行后追加（不截断）'))
         elif kind == 'rewrite':
             _idf, fields, rows, itxt, vol = op[1], op[2], op[3], op[4], op[5]
@@ -509,7 +510,7 @@ def _run_ops(ops, report=None, root=None):
             _atomic_write(itxt, head + ''.join(_txt_lines(rows)))
 
 
-def build(conf, root='.', baseline=False, dry=False):
+def build(conf, root='.', baseline=False, dry=False, conf_path=None):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
     tail-read on pure append, flag violations when the old part was rewritten.
@@ -607,9 +608,9 @@ def build(conf, root='.', baseline=False, dry=False):
             cp = _cursor_path(outdir, vol)
             cp_legacy = _legacy_cursor_path(outdir, vol)
             if not os.path.exists(p): per[vol] = 0; continue
-            # ★ 目录型条目：配置写成了目录（如 locks=.locks 漏过滤）⇒ 明确报错，不崩溃
+            # ★ 目录型条目：配置写成了目录（漏过滤）⇒ 明确报错，不崩溃
             # ★ Directory entry: a config value points at a directory (e.g. an unfiltered
-            #   locks=.locks) ⇒ report it explicitly instead of crashing with IsADirectoryError.
+            #   ⇒ report it explicitly instead of crashing with IsADirectoryError.
             if os.path.isdir(p):
                 msg = ('★ 卷配置指向目录（%s）·不是卷文件·已跳过'
                        % (path if not os.path.isabs(path) else p))
@@ -963,7 +964,7 @@ def build(conf, root='.', baseline=False, dry=False):
         untrusted = bool(CONFIG_ERRORS or VIOLATIONS or EVIDENCE_MISSING)
         if (not dry) and not untrusted:
             os.makedirs(outdir, exist_ok=True)
-            _run_ops(ops, report, root=root)
+            _run_ops(ops, report, root=root, conf_path=conf_path)
             from safeio import atomic_write as _atomic_write
             man = ['# 卷首清单 / Volume manifest\n',
                    '# 索引格式 / index format: %d · 游标格式 / cursor format: %d（全卷 sha256）\n\n'
@@ -1012,7 +1013,7 @@ def build(conf, root='.', baseline=False, dry=False):
                  '时戳': time.strftime('%Y-%m-%d %H:%M:%S')}, ensure_ascii=False))
             # 提交顺序：TSV→TXT→清单→时戳→游标（游标最后）
             # Commit order: TSV → TXT → manifest → stamp → cursor (cursor last)
-            _run_ops(cursor_ops, root=root)
+            _run_ops(cursor_ops, root=root, conf_path=conf_path)
         return per, total, report
 
 
@@ -1144,8 +1145,8 @@ def _backup_locked(conf, root='.'):
     n = 0
     for vol, path in vols.items():
         p = path if os.path.isabs(path) else os.path.join(root, path)
-        # 只备份普通文件：目录型条目（locks=.locks）不得让 copy2 抛 IsADirectoryError
-        # Only regular files: a directory entry (locks=.locks) must not make copy2 raise
+        # 只备份普通文件：目录型条目不得让备份写抛 IsADirectoryError
+        # Only regular files: a directory entry must not make the backup write raise
         if os.path.isfile(p):
             _backup_copy(p, os.path.join(bdir, os.path.basename(p)))
             n += 1
@@ -1483,7 +1484,7 @@ def main():
         else:
             sys.stderr.write('  ★ 跳过非卷键：%s=%s\n' % (k, v))
     if cmd == 'index':
-        per, total, rep = build(conf, root)
+        per, total, rep = build(conf, root, conf_path=conf_path)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
         if EVIDENCE_MISSING:
@@ -1533,7 +1534,7 @@ def main():
         # Explicit baseline: a human accepts the current volumes as the new baseline. Verify
         # first without writing; refuse when any append-only violation or config error exists —
         # never accept "it was rewritten" as the new baseline on the user's behalf.
-        per, total, rep = build(conf, root, baseline=True, dry=True)
+        per, total, rep = build(conf, root, baseline=True, dry=True, conf_path=conf_path)
         if CONFIG_ERRORS or VIOLATIONS:
             for v, w in rep: sys.stderr.write('  %s: %s\n' % (v, w))
             if CONFIG_ERRORS:
@@ -1548,7 +1549,7 @@ def main():
             sys.exit(worst_exit(codes))
         # 作者口径红只报不拦（人记账不必因未注册被卡），认基线继续
         # Author-convention red is reported but does not block a baseline
-        per, total, rep = build(conf, root, baseline=True)
+        per, total, rep = build(conf, root, baseline=True, conf_path=conf_path)
         if AUTHOR_RED:
             sys.stderr.write('★ 作者口径红：只报不拦，基线照认并已写回派生件\n')
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
@@ -1577,14 +1578,14 @@ def main():
             cur = hash_volumes(vols)
             if cur != last:
                 try:
-                    per, total, _rep = build(conf, root)
+                    per, total, _rep = build(conf, root, conf_path=conf_path)
                     # [多级] 变动续建：索引后自动重算四库式多级目录（失败不挡索引与备份）
                     # [multilevel] on change: rebuild the catalogue too (failure is non-blocking)
                     m_note = ''
                     if conf.get('multilevel', {}).get('multilevel_enabled', '是') in ('是', '1', 'true', 'True', 'yes'):
                         try:
                             import daybook_multidx
-                            _mp, _mt = daybook_multidx.build(conf, root)
+                            _mp, _mt = daybook_multidx.build(conf, root, conf_path=conf_path)
                             m_note = ' + 多级目录 %d 条' % _mt
                         except Exception as me:
                             m_note = '（多级目录失败：%s）' % me

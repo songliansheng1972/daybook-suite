@@ -170,8 +170,7 @@ def test_agent_lock(tmp):
     Acceptance 5: the file lock prevents multiple agents from editing one task at once
     (new signature: acquire(resource, agent_id, blocking=False))."""
     from agent_lock import AgentLock
-    lk = AgentLock(lock_dir=os.path.join(tmp, '.locks'),
-                   lease_vol=os.path.join(tmp, '租约卷.txt'))
+    lk = AgentLock(None, os.path.join(tmp, '租约卷.txt'), root=tmp)
     lid1 = lk.acquire('task:T001', 'ag-tom')
     if not _ok('5.1 Agent A 获取锁', bool(lid1)):
         return False
@@ -221,8 +220,7 @@ def test_agent_lock(tmp):
     orig = AgentLock.acquire
     AgentLock.acquire = lambda self, resource, agent_id, blocking=False: 'fake-lease'
     try:
-        probe = AgentLock(lock_dir=os.path.join(tmp, '.locks'),
-                          lease_vol=os.path.join(tmp, '租约卷.txt'))
+        probe = AgentLock(None, os.path.join(tmp, '租约卷.txt'), root=tmp)
         first = probe.acquire('task:MUT', 'ag-x')
         second = probe.acquire('task:MUT', 'ag-y')
         excl_green = (first is not None and second is None)   # 5.2 形态，变异下必 False

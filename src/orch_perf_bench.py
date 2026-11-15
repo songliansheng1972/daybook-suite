@@ -29,7 +29,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc', '.locks', '.daybook_keys',
+IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc', '.daybook_keys',
                                 '.safeio_lock.*', '*.tmp', 'multilevel', '索引')
 
 # 修前实现（与 orch_mutation_check.py 第 12 条同源）

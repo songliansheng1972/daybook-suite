@@ -959,7 +959,6 @@ def call_tool(name, args, agent_id=None, signature=None):
             last_ts = None
             import re as _re
             _aid_pat = _re.compile(r'^\[[^\]]+\] \[心跳\] \[%s\] ' % _re.escape(aid))
-            import mcp_resources as _mr
             _hb_text, _enc, _why = _mr.read_vol(hb_vol)
             for line in _hb_text.split('\n'):
                 if _aid_pat.match(line):
@@ -1001,7 +1000,7 @@ def call_tool(name, args, agent_id=None, signature=None):
             # Same predicates and aggregation as the CLI — no duplicated refusal logic and
             # nothing dropped. On 3 the build already wrote nothing for that volume, so one
             # signed call can never rebuild tampering into a fresh baseline.
-            per, total, _rep = _db.build(conf, _root())
+            per, total, _rep = _db.build(conf, _root(), conf_path=_mr._conf_path())
             codes = []
             if _db.CONFIG_ERRORS: codes.append(_db.EXIT_CONFIG)
             if _db.VIOLATIONS: codes.append(_db.EXIT_VIOLATION)

@@ -39,7 +39,7 @@ AID = 'ag-0123456789abcdef'
 CONF = r"""[volumes]
 协作=协作卷.txt
 task=我的任务.txt
-locks=.locks
+locks=锁目录
 audit=.audit
 registry=注册卷.txt
 
@@ -96,7 +96,7 @@ def test_volume_whitelist(tmp):
     os.makedirs(root)
     for name in ('协作卷.txt', '我的任务.txt', '注册卷.txt'):
         _write(os.path.join(root, name), '')
-    os.makedirs(os.path.join(root, '.locks'))
+    os.makedirs(os.path.join(root, '坏卷目录'))
     os.makedirs(os.path.join(root, '.audit'))
     conf_path = os.path.join(root, 'daybook.conf')
     _write(conf_path, CONF)
@@ -128,8 +128,8 @@ def test_directory_volume(tmp):
     """目录型条目：build 不得抛 IsADirectoryError，须明确报错。
     A directory entry must not raise IsADirectoryError; it must be reported explicitly."""
     root = os.path.join(tmp, 'work')
-    os.makedirs(os.path.join(root, '.locks'))
-    conf = {'volumes': {'坏卷': '.locks'},
+    os.makedirs(os.path.join(root, '坏卷目录'))
+    conf = {'volumes': {'坏卷': '坏卷目录'},
             'entries': {}, 'rules': {},
             'index': {'out_dir': 'idx', 'index_prefix': 'index_', 'manifest': 'volumes.md'},
             'trigger': {'incremental': '是'}, 'volumes_skipped': {}}
@@ -146,10 +146,10 @@ def test_directory_volume(tmp):
 
     # CLI 层：rc=2、明确报错、无 traceback
     cli = os.path.join(tmp, 'cli')
-    os.makedirs(os.path.join(cli, '.locks'))
+    os.makedirs(os.path.join(cli, '坏卷目录'))
     _stage_cli(cli)
     _write(os.path.join(cli, 'daybook.conf'),
-           CONF.replace('协作=协作卷.txt', '坏卷=.locks')
+           CONF.replace('协作=协作卷.txt', '坏卷=坏卷目录')
                .replace('task=我的任务.txt\n', '')
                .replace('registry=注册卷.txt\n', ''))
     r = subprocess.run([sys.executable, 'daybook.py', 'index'], cwd=cli,

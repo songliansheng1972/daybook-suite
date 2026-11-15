@@ -59,6 +59,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -88,10 +89,7 @@ SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(HERE, 'daybook.py')
 WRITE_PATHS = (
     ('agent_heartbeat.py', '__init__', 'ledger', '账本内容/派生件'),
     ('agent_heartbeat.py', 'beat', 'ledger', '账本内容/派生件'),
-    ('agent_lock.py', '__init__', 'ledger', '租约卷在账本根内（原子建卷）'),
     ('agent_lock.py', '_log', 'ledger', '账本内容/派生件'),
-    ('agent_lock.py', 'acquire', 'lockfile', '锁件·不写数据·目标固定为 <锁目录>/<资源>.lock'),
-    ('agent_lock.py', 'held_by', 'lockfile', '锁件·不写数据·目标固定为 <锁目录>/<资源>.lock'),
     ('agent_message.py', '_append_inbox', 'ledger', '账本内容/派生件'),
     ('agent_registry.py', '_write_secret', 'ledger', 'keys/ 在账本根内（atomic_write 0600）'),
     ('agent_registry.py', 'register', 'ledger', '账本内容/派生件'),
@@ -390,9 +388,49 @@ def _param_temp_only(tree, fn, param, aliases, helpers):
     return True
 
 
+def _literal_components(e, aliases, out=None):
+    """写目标表达式里的字面路径段（join 链、字符串拼接、f-string 常量）。
+    Literal path components of a write target (join chain, concatenation, f-string constants)."""
+    if out is None:
+        out = []
+    if isinstance(e, ast.Call):
+        t = _resolve_callee(e.func, aliases)
+        if _is_path_helper(t):
+            for a in e.args:
+                _literal_components(a, aliases, out)
+        return out
+    if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
+        _literal_components(e.left, aliases, out)
+        _literal_components(e.right, aliases, out)
+        return out
+    if isinstance(e, ast.JoinedStr):
+        for v in e.values:
+            if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                out.append(v.value)
+        return out
+    if isinstance(e, ast.Constant) and isinstance(e.value, str):
+        out.append(e.value)
+    return out
+
+
+def _targets_stay_in_temp(tgt, aliases):
+    """规范化后是否仍在临时目录前缀内：任何 `..` 或绝对段都视为可能逃出，判红。
+    Whether the normalized target stays under the temp prefix: any `..` or absolute
+    component may escape, so it fails."""
+    comps = _literal_components(tgt, aliases)
+    for c in comps:
+        if c == '..' or os.path.isabs(c):
+            return False
+        if os.path.normpath(c).startswith('..'):
+            return False
+    probe = os.path.normpath(os.path.join(*([os.path.join(os.sep, 'tmp', 'x')] + comps)))
+    return probe.startswith(os.path.join(os.sep, 'tmp') + os.sep)
+
+
 def _other_target_reasons(tree, fn):
-    """other 桶机器校验：该函数每个写目标都必须由 tempfile 生成。
-    Machine check for the `other` bucket: every write target must come from tempfile.
+    """other 桶机器校验：该函数每个写目标都必须由 tempfile 生成、且规范化后仍在临时目录前缀内。
+    Machine check for the `other` bucket: every write target must come from tempfile and must
+    still normalize inside the system temp prefix.
     返回空清单=通过；否则每项写明「目标可能落在账本根内」的具体调用。
     Empty list = pass; otherwise each item names the offending call."""
     aliases = _write_aliases(tree)
@@ -409,51 +447,18 @@ def _other_target_reasons(tree, fn):
             snippet = ast.unparse(call)[:70]
             if root[0] == 'name':
                 if root[1] in names:
+                    pass
+                elif _param_temp_only(tree, fn, root[1], aliases, helpers):
+                    pass
+                else:
+                    bad.append('%s（%s 非 tempfile 生成·目标可能落在账本根内）' % (snippet, root[1]))
                     continue
-                if _param_temp_only(tree, fn, root[1], aliases, helpers):
-                    continue
-                bad.append('%s（%s 非 tempfile 生成·目标可能落在账本根内）' % (snippet, root[1]))
             else:
                 bad.append('%s（目标形态 %r 无法证明为 tempfile·可能落在账本根内）'
                            % (snippet, root[1]))
-    return bad
-
-
-def _lockfile_reasons(tree, fn):
-    """lockfile 桶机器校验：目标形如 <锁目录>/<资源>.lock、只 os.open、不写数据。
-    Machine check for the `lockfile` bucket: target shaped <lock dir>/<resource>.lock, only
-    os.open, no data written."""
-    aliases = _write_aliases(tree)
-    lock_src = None
-    for n in ast.walk(tree):
-        if isinstance(n, ast.FunctionDef) and n.name == '_lock_path':
-            lock_src = n
-            break
-    if lock_src is None or '.lock' not in ast.unparse(lock_src):
-        return ['找不到 _lock_path 的 .lock 形态']
-    from_calls = set()
-    for n in ast.walk(fn):
-        if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name) \
-                and isinstance(n.value, ast.Call) \
-                and _resolve_callee(n.value.func, aliases).endswith('_lock_path'):
-            from_calls.add(n.targets[0].id)
-    bad = []
-    for call in ast.walk(fn):
-        if not isinstance(call, ast.Call):
-            continue
-        targets = _write_call_targets(call, aliases)
-        for tgt in targets:
-            t = _resolve_callee(call.func, aliases)
-            if t not in ('os.open', 'open') or _open_mode_writes(call):
-                bad.append('%s（锁件不许数据写/替身写）' % ast.unparse(call)[:70])
                 continue
-            root = _root_name(tgt, aliases)
-            if root[0] != 'name' or root[1] not in from_calls:
-                bad.append('%s（目标不是 <锁目录>/<资源>.lock）' % ast.unparse(call)[:70])
-    for sub in ast.walk(fn):
-        if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
-                and sub.func.attr in ('write', 'writelines', 'write_text', 'write_bytes'):
-            bad.append('%s（锁件函数里出现数据写）' % ast.unparse(sub)[:70])
+            if not _targets_stay_in_temp(tgt, aliases):
+                bad.append('%s（含 `..`/绝对段·可逃出临时目录）' % snippet)
     return bad
 
 
@@ -571,16 +576,40 @@ def _case_write_paths(tmp):
             bad_other.append((f, fn, reasons[:2]))
     _ok('AH other 桶只许 tempfile 目标（否则必须归账本）⇒ 红', not bad_other,
         '未通过=%s' % bad_other[:4])
-    bad_lock = []
+    # other 桶条目不许被其他模块调用：跨文件调用 ⇒ 红（否则归回账本）
+    # `other` entries must not be called from other modules: a cross-file call ⇒ red
+    defs, callers = {}, {}
+    for f, tree in trees.items():
+        al = _write_aliases(tree)
+        defs[f] = {n.name for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call):
+                nm = _resolve_callee(n.func, al)
+                callers.setdefault(nm, set()).add(f)
+                if '.' in nm:                 # mod.func / self.func 也按末段认
+                    callers.setdefault(nm.rsplit('.', 1)[1], set()).add(f)
+    cross = []
     for (f, fn), (b, _r) in sorted(present.items()):
-        if b != 'lockfile':
+        if b != 'other':
             continue
-        node = _find_func(trees[f], fn)
-        reasons = ['函数未找到'] if node is None else _lockfile_reasons(trees[f], node)
-        if reasons:
-            bad_lock.append((f, fn, reasons[:2]))
-    _ok('AH lockfile 桶形态机器校验（<锁目录>/<资源>.lock·不写数据）⇒ 红', not bad_lock,
-        '未通过=%s' % bad_lock[:4])
+        for c in sorted(callers.get(fn, ())):
+            if c != f and fn not in defs.get(c, ()):
+                cross.append((f, fn, c))
+    _ok('AH other 桶条目不许跨文件调用 ⇒ 红', not cross, '跨文件=%s' % cross[:4])
+    # 第二套锁实现必须为零：不建锁目录、不建 lock 文件
+    # No second lock implementation: no lock directory and no lock file anywhere
+    lockref = [f for f in files if '.locks' in io.open(os.path.join(d, f), encoding='utf-8').read()]
+    lockmk = []
+    for f, tree in trees.items():
+        al = _write_aliases(tree)
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call):
+                for tgt in _write_call_targets(n, al):
+                    if '.lock' in ast.unparse(tgt):
+                        lockmk.append((f, ast.unparse(tgt)[:40]))
+    _ok('AH 全仓无 .locks 目录/引用 ⇒ 红', not lockref, '仍出现=%s' % lockref)
+    _ok('AH 无 lock 文件创建点（只许 flock 目录）⇒ 红', not lockmk, '仍出现=%s' % lockmk)
     print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
           % (len(present), len(sites), len(unreg), len(absent), len(direct)))
     buckets = {}
@@ -1112,23 +1141,23 @@ print('OK')
 '''
 
 _CHILD_TRUNC = r'''
-import os, sys, json
+import os, sys
 sys.path.insert(0, sys.argv[1])
-p, tp = sys.argv[2], sys.argv[3]
-import safeio, daybook
+p, d = sys.argv[2], sys.argv[3]
+import safeio
+cp = os.path.join(d, 'daybook.conf')
+open(cp, 'w', encoding='utf-8').write('[index]\nroot=\nout_dir=索引\n')
 before = open(p, 'rb').read()
-rep = []
 # 不持账本根锁直接调用 ⇒ 必须抛错且零写
 try:
-    safeio.append_inplace(p, 'x\n', os.path.dirname(p))
+    safeio.append_inplace(p, 'x\n', d, conf_path=cp)
     print('NO_LOCK_NO_ERROR')
     sys.exit(3)
 except RuntimeError:
     pass
 assert open(p, 'rb').read() == before, '未持锁调用改动了文件'
-with safeio.locked(os.path.dirname(p)):
-    padded = safeio.append_inplace(p, '账\t2\tt\t测试\ty\t皮特\n', os.path.dirname(p))
-    rep.append(('账', '★ 已补换行' if padded else ''))
+with safeio.locked(d):
+    padded = safeio.append_inplace(p, '账\t2\tt\t测试\ty\t皮特\n', d, conf_path=cp)
 data = open(p, 'rb').read()
 assert data.endswith(b'\n'), '追加后仍不是以换行结尾'
 assert '半'.encode('utf-8') in data, '合法的末行被截掉了'
@@ -1199,7 +1228,7 @@ def _case_tail(tmp):
     with open(p, 'ab') as f:
         f.write(b'\xe5\x8d\x8a')                         # 再留一个半行
     r = subprocess.run([sys.executable, '-B', '-c', _CHILD_TRUNC,
-                        os.path.dirname(SRC_BIN), p, tp],
+                        os.path.dirname(SRC_BIN), p, d],
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        universal_newlines=True)
     _ok('Z2 无锁调用抛错·持锁补换行追加且不截断（合法末行仍在）',
@@ -1283,13 +1312,13 @@ def _case_tail_no_truncate(tmp):
     n_guard = "                    elif n_idx != cur.get('n', -1):"
     _ok('AJ 变异前置：找到「索引行数与游标不符」守卫', n_guard in src)
     src = src.replace(n_guard, '                    elif False:')
-    ap = ("""            if append_inplace(_idf, data, root) and report is not None:
+    ap = ("""            if append_inplace(_idf, data, root, conf_path=conf_path) and report is not None:
                 report.append((vol, '★ 索引 TSV 末行无换行·已补换行后追加（不截断）'))""")
     mut_ap = ("""            if os.path.exists(_idf):
                 _d0 = open(_idf, 'rb').read()
                 if _d0 and not _d0.endswith(b'\\n'):
                     open(_idf, 'wb').write(_d0[:_d0.rfind(b'\\n') + 1])
-            append_inplace(_idf, data, root)""")
+            append_inplace(_idf, data, root, conf_path=conf_path)""")
     _ok('AJ 变异前置：找到增量追加行', ap in src)
     src = src.replace(ap, mut_ap)
     io.open(os.path.join(mut, 'daybook.py'), 'w', encoding='utf-8').write(src)
@@ -1315,103 +1344,183 @@ def _case_tail_no_truncate(tmp):
 
 
 _AK_CHILD = r'''
-import os, sys
+import os, sys, threading
 sys.path.insert(0, sys.argv[1])
-p = sys.argv[2]
+d, mode = sys.argv[2], sys.argv[3]
 import safeio
-before = open(p, 'rb').read()
-try:
-    safeio.append_inplace(p, 'b\n', os.path.dirname(p))
-    print('NO_ERROR')
-    sys.exit(3)
-except RuntimeError:
-    pass
-assert open(p, 'rb').read() == before, 'CHANGED'
-with safeio.locked(os.path.dirname(p)):
-    safeio.append_inplace(p, 'b\n', os.path.dirname(p))
-assert open(p, 'rb').read() == before + b'b\n', 'WITH_LOCK_FAILED'
-print('OK')
+p = os.path.join(d, 'target.tsv')
+cp = os.path.join(d, 'daybook.conf')
+open(cp, 'w', encoding='utf-8').write('[index]\nroot=\nout_dir=索引\n')
+open(p, 'wb').write(b'a\n')
+sub = os.path.join(d, 'sub'); os.makedirs(sub, exist_ok=True)
+other = os.path.join(d, 'other'); os.makedirs(other, exist_ok=True)
+
+
+def attempt(root):
+    before = open(p, 'rb').read()
+    try:
+        safeio.append_inplace(p, 'b\n', root, conf_path=cp)
+    except RuntimeError:
+        return 'RAISED_ZERO' if open(p, 'rb').read() == before else 'RAISED_DIRTY'
+    return 'WROTE'
+
+
+def in_thread(fn):
+    out = []
+    t = threading.Thread(target=lambda: out.append(fn()))
+    t.start(); t.join()
+    return out[0]
+
+
+if mode == 'nolock':
+    print(attempt(d))
+elif mode == 'ok':
+    with safeio.locked(d):
+        print(attempt(d))
+elif mode == 'subdir':
+    with safeio.locked(sub):
+        print(attempt(sub))
+elif mode == 'shared':
+    with safeio.locked(d, shared=True):
+        print(attempt(d))
+elif mode == 'mismatch':
+    with safeio.locked(d):
+        print(attempt(other))
+elif mode == 'thread_ok':
+    with safeio.locked(d):
+        print(in_thread(lambda: attempt(d)))
+elif mode == 'thread_sub':
+    with safeio.locked(sub):
+        print(in_thread(lambda: attempt(d)))
 '''
 
 
+def _ak_scenario(src, mode):
+    """跑一个锁语义场景，返回 'WROTE' / 'RAISED_ZERO' / 'RAISED_DIRTY' 等。
+    Run one lock-semantics scenario and return its verdict token."""
+    d = tempfile.mkdtemp(prefix='ak_')
+    r = subprocess.run([sys.executable, '-B', '-c', _AK_CHILD, src, d, mode],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       universal_newlines=True)
+    return (r.stdout.strip().splitlines() or ['ERR'])[-1], (r.stderr or '').strip()
+
+
 def _case_lock_assert(tmp):
-    """AK append_inplace 自校验根锁：无锁 ⇒ 抛错且零写；删掉断言 ⇒ 判据红。
-    AK append_inplace checks the root lock itself: without it → raise and write nothing;
-    deleting the assertion makes the criterion fail."""
-    print('  -- AK append_inplace 锁断言（无锁必须抛错·零写） --')
-    d = os.path.join(tmp, 'ak')
-    os.makedirs(d)
-    shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
-                 os.path.join(d, 'safeio.py'))
-    p = os.path.join(d, 'x.tsv')
-    io.open(p, 'wb').write(b'a\n')
-    r = subprocess.run([sys.executable, '-B', '-c', _AK_CHILD, d, p],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       universal_newlines=True)
-    _ok('AK 无锁调用抛 RuntimeError、零写；持锁可追加',
-        r.returncode == 0 and r.stdout.strip() == 'OK',
-        (r.stdout.strip() or r.stderr.strip())[:200])
-    mut = os.path.join(tmp, 'ak_mut')
-    os.makedirs(mut)
-    src = io.open(os.path.join(d, 'safeio.py'), encoding='utf-8').read()
-    guard = """    if lock_dir not in _held_map():
-        raise RuntimeError('safeio.append_inplace: 未持账本根锁（%s）·拒绝写入（零写）'
-                           % lock_dir)"""
-    _ok('AK 变异前置：找到锁断言', guard in src)
-    io.open(os.path.join(mut, 'safeio.py'), 'w', encoding='utf-8').write(
-        src.replace(guard, '    pass'))
-    mp = os.path.join(mut, 'x.tsv')
-    io.open(mp, 'wb').write(b'a\n')
-    r = subprocess.run([sys.executable, '-B', '-c', _AK_CHILD, mut, mp],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       universal_newlines=True)
-    _ok('AK 变异「删掉锁断言」⇒ 判据红（无锁照写）',
-        r.returncode != 0 or 'NO_ERROR' in r.stdout,
-        'rc=%d %s' % (r.returncode, (r.stdout.strip() or r.stderr.strip())[:120]))
+    """AK `append_inplace` 锁语义：只认「账本根 + 独占」；无锁/子目录锁/共享锁/别的根都零写。
+    AK `append_inplace` lock semantics: only an exclusive hold on the ledger root counts;
+    no lock, a sub-directory lock, a shared lock or another root all write nothing."""
+    print('  -- AK append_inplace 锁语义（账本根 + 独占·三种绕过全红） --')
+    here = os.path.dirname(SRC_BIN)
+    safeio_src = io.open(os.path.join(here, 'safeio.py'), encoding='utf-8').read()
+    okl = False
+    got = _ak_scenario(here, 'ok')[0]
+    _ok('AK0 持账本根独占锁 ⇒ 放行（WROTE）', got == 'WROTE', got)
+    for mode, label in (('nolock', '无锁'),
+                        ('subdir', '持子目录锁、传子目录当根'),
+                        ('shared', '持根共享锁'),
+                        ('mismatch', '传与 conf 解析不同的根')):
+        got, err = _ak_scenario(here, mode)
+        _ok('AK[%s] ⇒ 抛错且零写（RAISED_ZERO）' % label, got == 'RAISED_ZERO',
+            '%s %s' % (got, err[:120]))
+    got = _ak_scenario(here, 'thread_ok')[0]
+    _ok('AK[同进程另一线程·主线程持根独占] ⇒ 放行（WROTE）', got == 'WROTE', got)
+    got, err = _ak_scenario(here, 'thread_sub')
+    _ok('AK[同进程另一线程·主线程只持子目录锁] ⇒ 抛错且零写（RAISED_ZERO）',
+        got == 'RAISED_ZERO', '%s %s' % (got, err[:120]))
+
+    # 三条变异：分别去掉「独占」「根一致」「解析根」的约束 ⇒ 对应场景必须放行（判据红）
+    mismatch_block = """    if root is not None and os.path.realpath(root) != resolved:
+        raise RuntimeError('safeio.append_inplace: 传入的账本根（%s）与 conf 解析结果（%s）不一致'
+                           '·拒绝写入（零写）' % (os.path.realpath(root), resolved))"""
+    excl_block = "    if not exclusive_held(resolved):"
+    assert mismatch_block in safeio_src and excl_block in safeio_src
+    muts = (
+        ('subdir', '变异①：去掉根一致检查、锁只认传入根',
+         safeio_src.replace(mismatch_block, '    pass').replace(
+             excl_block, "    if not (_lock_dir(root if root else resolved) in _held_map()):")),
+        ('shared', '变异②：共享锁也算',
+         safeio_src.replace(excl_block, "    if not (_lock_dir(resolved) in _PROC):")),
+        ('mismatch', '变异③：去掉根一致检查',
+         safeio_src.replace(mismatch_block, '    pass')),
+    )
+    for mode, label, text in muts:
+        md = os.path.join(tmp, 'ak_mut_' + mode)
+        os.makedirs(md)
+        io.open(os.path.join(md, 'safeio.py'), 'w', encoding='utf-8').write(text)
+        try:
+            io.open(os.path.join(md, 'ledger_root.py'), 'w', encoding='utf-8').write(
+                io.open(os.path.join(here, 'ledger_root.py'), encoding='utf-8').read())
+        except IOError:
+            pass
+        got, err = _ak_scenario(md, mode)
+        _ok('AK %s ⇒ 判据红（场景被放行/走样）' % label,
+            got != 'RAISED_ZERO' or 'RAISED_DIRTY' in got,
+            '%s %s' % (got, err[:120]))
 
 
 _AL_PUSH = r'''
-import os, sys, threading, time
+import os, sys, threading, time, random, string
 sys.path.insert(0, sys.argv[1])
+sock_dir, conf, hold = sys.argv[2], sys.argv[3], float(sys.argv[4])
 import agent_message as am
-srv = am.AgentServer('甲', root=sys.argv[2])
+am.SOCK_DIR = sock_dir
+# 名字带随机后缀；若同名 socket 已存在则换新名——绝不 unlink 别人正在用的 socket
+# Random suffix; if the name's socket already exists, pick a new name — never unlink a live socket
+for _ in range(20):
+    name = '甲' + ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(8))
+    if not os.path.exists(am.sock_path(name)):
+        break
+print('NAME', name, flush=True)
+srv = am.AgentServer(name, root=conf)
 t = threading.Thread(target=srv.serve_forever, daemon=True)
 t.start()
 print('READY', flush=True)
-time.sleep(float(sys.argv[3]))
+time.sleep(hold)
 srv.shutdown()
 srv.server_close()
 '''
 
 
-def _al_push(cmd_dir, conf, ledger, hold_secs=None):
-    """起一个在线 AgentServer，跑 orch digest --push，返回 (rc, out, 推送耗时/超时标记)。
-    Start an online AgentServer, run orch digest --push, return (rc, output, timed_out)."""
-    srv = subprocess.Popen([sys.executable, '-B', '-c', _AL_PUSH, cmd_dir, conf, '12'],
+def _al_start(d, conf, hold=20):
+    """起一个在线 AgentServer（socket 落在本轮临时目录、名字随机），返回 (Popen, name)。
+    Start an online AgentServer (socket inside this run's temp dir, random name) → (Popen, name)."""
+    # 每轮独立的短路径 socket 目录（sockaddr_un 上限 104 字节），绝不与别人的同名 socket 相撞
+    # A short per-run socket dir (sockaddr_un caps at 104 bytes); never collides with a live socket
+    sock_dir = tempfile.mkdtemp(prefix='dbks')
+    env = dict(os.environ, DAYBOOK_SOCK_DIR=sock_dir)
+    srv = subprocess.Popen([sys.executable, '-B', '-c', _AL_PUSH, d, sock_dir, conf, str(hold)],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                           universal_newlines=True)
-    srv.stdout.readline()
-    args = [sys.executable, '-B', os.path.join(cmd_dir, 'orchestrator.py'),
-            '--home=' + conf, 'digest', '--limit', '0', '--push', '甲']
+                           universal_newlines=True, env=env)
+    name = None
+    for _ in range(2):
+        line = srv.stdout.readline().strip()
+        if line.startswith('NAME '):
+            name = line.split(' ', 1)[1]
+    return srv, name, sock_dir
+
+
+def _al_push(d, conf, name, sock_dir=None, timeout=None, wait=True):
+    args = [sys.executable, '-B', os.path.join(d, 'orchestrator.py'),
+            '--home=' + conf, 'digest', '--limit', '0', '--push', name]
+    env = dict(os.environ, DAYBOOK_SOCK_DIR=sock_dir or tempfile.gettempdir())
+    if not wait:
+        return subprocess.Popen(args, cwd=tempfile.gettempdir(), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True,
+                                env=env), None
     try:
         r = subprocess.run(args, cwd=tempfile.gettempdir(), stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, universal_newlines=True,
-                           timeout=hold_secs)
-        rc, out = r.returncode, r.stdout + r.stderr
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=timeout,
+                           env=env)
+        return r.returncode, r.stdout + r.stderr
     except subprocess.TimeoutExpired:
-        rc, out = None, 'TIMEOUT'
-    try:
-        srv.communicate(timeout=15)
-    except subprocess.TimeoutExpired:
-        srv.kill()
-    return rc, out
+        return None, 'TIMEOUT'
 
 
 def _case_push_load_bearing(tmp):
-    """AL digest --push 承重：在线场景下 inbox 卷必须真的新增一行，且写入要拿账本根锁。
+    """AL digest --push 承重：在线场景下 inbox 卷真的新增一行（内容可辨认），且写入要拿账本根锁。
     AL `digest --push` must be load-bearing: with an online peer the inbox volume really gains
-    a line, and the write takes the ledger-root lock."""
-    print('  -- AL digest --push 承重（inbox 真写·锁落账本根） --')
+    an identifiable line, and the write takes the ledger-root lock."""
+    print('  -- AL digest --push 承重（inbox 真写·内容可辨认·锁落账本根） --')
     here = os.path.dirname(SRC_BIN)
     if not os.path.exists(os.path.join(here, 'orchestrator.py')):
         print('    [跳过] AL：当前盒无 orchestrator.py')
@@ -1431,46 +1540,81 @@ def _case_push_load_bearing(tmp):
     io.open(os.path.join(led, '账卷.txt'), 'w', encoding='utf-8').write(
         '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
     inbox = os.path.join(led, '消息卷.txt')
-    before = len(io.open(inbox, encoding='utf-8').read().splitlines()) \
-        if os.path.exists(inbox) else 0
-    rc, out = _al_push(d, conf, led)
-    after = len(io.open(inbox, encoding='utf-8').read().splitlines()) \
-        if os.path.exists(inbox) else 0
-    _ok('AL1 在线推送 rc=0', rc == 0, 'rc=%s %s' % (rc, out[-160:]))
-    _ok('AL2 inbox 卷（账本根内）真的新增一行（%d→%d）' % (before, after),
-        after > before and os.path.commonpath([os.path.realpath(inbox), os.path.realpath(led)])
-        == os.path.realpath(led), 'before=%d after=%d' % (before, after))
-    _ok('AL3 推送不回退「未找到 daybook.conf」', '未找到 daybook.conf' not in out, out[-120:])
-    # 持账本根锁时推送必须被挡住（锁落账本根，不是别处）
+
+    def lines():
+        return io.open(inbox, encoding='utf-8').read().splitlines() if os.path.exists(inbox) else []
+
+    # 1) 正常推送：rc=0，inbox 新增一行，且这行带时间戳与本次随机目标名（可辨认）
+    srv, name, sock = _al_start(d, conf)
+    if not name:
+        _ok('AL0 在线 AgentServer 启动（拿到随机 agent 名）', False, '未读到 NAME')
+        srv.communicate(timeout=10)
+        return
+    try:
+        b0 = len(lines())
+        rc, out = _al_push(d, conf, name, sock, timeout=60)
+        after = lines()
+        _ok('AL1 在线推送 rc=0', rc == 0, 'rc=%s %s' % (rc, out[-160:]))
+        _ok('AL2 inbox 卷（账本根内）真的新增一行（%d→%d）' % (b0, len(after)),
+            len(after) > b0 and os.path.commonpath(
+                [os.path.realpath(inbox), os.path.realpath(led)]) == os.path.realpath(led),
+            'before=%d after=%d' % (b0, len(after)))
+        fresh = after[b0:]
+        block = '\n'.join(fresh)
+        good = bool(fresh) and bool(re.search(r'\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\]', block)) \
+            and name in block
+        _ok('AL3 新增行可辨认（含时间戳与本次目标名 %s）' % name, good,
+            block[:160] if block else '（无新增行）')
+        _ok('AL4 推送不回退「未找到 daybook.conf」', '未找到 daybook.conf' not in out, out[-120:])
+    finally:
+        srv.communicate(timeout=30)
+
+    # 2) 持账本根锁：推送必须表现为明确的阻塞（进程仍在跑、inbox 不增），释放后才完成
     sys.path.insert(0, here)
     import safeio
-    with safeio.locked(led):
-        rc2, out2 = _al_push(d, conf, led, hold_secs=2.0)
-    _ok('AL4 持账本根锁时推送被挡住（锁落账本根）', rc2 is None, 'rc=%s %s' % (rc2, out2[-120:]))
-    # 变异：inbox 路径改到账本根之外 ⇒ AL2 必须红
+    srv2, name2, sock2 = _al_start(d, conf)
+    try:
+        b1 = len(lines())
+        with safeio.locked(led):
+            proc, _ = _al_push(d, conf, name2, sock2, wait=False)
+            time.sleep(1.5)
+            blocked = proc.poll() is None
+            mid = len(lines())
+            _ok('AL5 持账本根锁时推送被明确阻塞（进程未退出·inbox 不增）',
+                blocked and mid == b1, 'running=%s inbox=%d→%d' % (blocked, b1, mid))
+        try:
+            out2, err2 = proc.communicate(timeout=60)
+            rc2 = proc.returncode
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc2, out2 = None, ''
+        _ok('AL6 释放后推送完成 rc=0 且 inbox 新增一行',
+            rc2 == 0 and len(lines()) > b1, 'rc=%s inbox=%d→%d' % (rc2, b1, len(lines())))
+    finally:
+        srv2.communicate(timeout=30)
+
+    # 3) 变异：推送被短路（不调用 send）⇒ AL2/AL3 必须红
     mut = os.path.join(tmp, 'al_mut')
     shutil.copytree(d, mut)
-    ap = os.path.join(mut, 'agent_message.py')
+    ap = os.path.join(mut, 'orchestrator.py')
     src = io.open(ap, encoding='utf-8').read()
-    old = "    return _vp.resolve_volumes(root)['inbox']"
-    _ok('AL 变异前置：找到 inbox 路径解析', old in src)
-    io.open(ap, 'w', encoding='utf-8').write(src.replace(
-        old, "    return os.path.join(os.path.dirname(_vp.resolve_root(root)), 'outside_inbox.txt')"))
+    old = "                ok, info = _am.send('司南', t, 'notify', summary, root=self.conf_dir)"
+    _ok('AL 变异前置：找到推送调用', old in src)
+    io.open(ap, 'w', encoding='utf-8').write(src.replace(old, "                ok, info = False, 'mutant'"))
     mconf = os.path.join(mut, 'conf')
     mled = os.path.join(mut, 'led')
     minbox = os.path.join(mled, '消息卷.txt')
-    mb = len(io.open(minbox, encoding='utf-8').read().splitlines()) \
-        if os.path.exists(minbox) else 0
-    _al_push(mut, mconf, mled)
-    ma = len(io.open(minbox, encoding='utf-8').read().splitlines()) \
-        if os.path.exists(minbox) else 0
-    _ok('AL 变异「inbox 改到账本根之外」⇒ 判据红（inbox 未新增）', ma == mb,
-        'mutant before=%d after=%d' % (mb, ma))
-
-
-
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
-        shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), name), os.path.join(d, name))
+    srv3, name3, sock3 = _al_start(mut, mconf)
+    try:
+        mb = len(io.open(minbox, encoding='utf-8').read().splitlines()) \
+            if os.path.exists(minbox) else 0
+        _al_push(mut, mconf, name3, sock3, timeout=60)
+        ma = len(io.open(minbox, encoding='utf-8').read().splitlines()) \
+            if os.path.exists(minbox) else 0
+        _ok('AL 变异「推送被短路」⇒ 判据红（inbox 未新增）', ma == mb,
+            'mutant before=%d after=%d（AL2/AL3 会失败）' % (mb, ma))
+    finally:
+        srv3.communicate(timeout=30)
 
 
 def _stage(d):
@@ -2197,6 +2341,25 @@ def _case_home_flag(tmp):
             if '--push' in sub:
                 _ok('AI root=%s orch %s 未把账本根当 conf' % (mode, sub),
                     '未找到 daybook.conf' not in blob, blob[-120:])
+    # 只读安装目录：不得 makedirs、不得建锁件；alarm/digest 必须 rc=0
+    # Read-only install dir: no makedirs, no lock artifact; alarm/digest must exit 0
+    ro = os.path.join(base, 'ro_pkg')
+    os.makedirs(ro)
+    for name in _MATRIX_COPY:
+        src = os.path.join(d, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(ro, name))
+    os.chmod(ro, 0o555)
+    try:
+        for sub in ('alarm', 'digest'):
+            r = run([py, '-B', os.path.join(ro, 'orchestrator.py'), '--home=' + cdir, sub])
+            _ok('AI 只读安装目录跑 %s ⇒ rc=0（不 makedirs／不建锁件）' % sub,
+                r.returncode == 0, 'rc=%d %s' % (r.returncode, (r.stderr or '')[-100:]))
+        _ok('AI 只读安装目录未被写入（无新增件）',
+            not [n for n in os.listdir(ro) if n not in _MATRIX_COPY and n != '__pycache__'],
+            '新增=%s' % [n for n in os.listdir(ro) if n not in _MATRIX_COPY][:5])
+    finally:
+        os.chmod(ro, 0o755)
 
 
 def _case_pad_notice(tmp):

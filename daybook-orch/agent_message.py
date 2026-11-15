@@ -34,14 +34,17 @@ Usage:
   # 客户端发消息 · client sends a message
   python3 agent_message.py send 汤姆 史泰龙 notify "MCP resources/list 已实现"
 """
-import os, sys, time, json, socket, socketserver
+import os, sys, time, json, socket, socketserver, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import volume_paths as _vp
 
-SOCK_DIR = '/tmp'
+# socket 目录可用 DAYBOOK_SOCK_DIR 覆盖（默认系统临时目录）；测试用它隔离，避免删到别人的 socket
+# The socket dir can be overridden with DAYBOOK_SOCK_DIR (default: the system temp dir); tests
+# isolate with it so they never unlink someone else's socket
+SOCK_DIR = os.environ.get('DAYBOOK_SOCK_DIR') or tempfile.gettempdir()
 
 
 MSG_TYPES = ('notify', 'request', 'response', 'broadcast')

@@ -38,22 +38,38 @@ try:
 except ImportError:                                     # pragma: no cover - POSIX only
     fcntl = None
 
-# 同线程已持锁表：{锁文件绝对路径: [fd, 深度]}。
+# 同线程已持锁表：{锁目录 realpath: [fd, 深度, 是否独占]}。
 # 读卷会在持锁的临界区内被调用（如 task_volume.transition 里 read_vol），
 # 若不记重入，同进程第二个 fd 再要共享锁会与自己的独占锁冲突而死锁。
-# Per-thread held-lock map: {abs lock-file path: [fd, depth]}.
+# Per-thread held-lock map: {lock dir realpath: [fd, depth, exclusive?]}.
 # read_vol is called inside locked critical sections (e.g. task_volume.transition);
 # without reentrancy tracking, a second fd in the same process asking for a shared lock
 # would conflict with our own exclusive lock and deadlock.
 _HELD = threading.local()
 
+# 进程内持有表：{锁目录 realpath: {'fd','depth','exclusive'}}。
+# flock 绑在「进程持有的 fd」上，同进程另一线程不该再开 fd（会与自己的锁互斥而阻塞），
+# 直接复用同一 fd；账本根是否独占由本表判定（append_inplace 只认独占）。
+# Process-wide held map: {lock dir realpath: {'fd','depth','exclusive'}}.
+# flock is bound to the fd the process already holds; a second thread in the same process must
+# reuse that fd (opening a new one would contend with itself and block). Exclusivity of the
+# ledger root is judged from this table — append_inplace accepts exclusive holds only.
+_PROC = {}
+
 
 def _held_map():
-    m = getattr(_HELD, 'locks', None)
+    m = getattr(_HELD, 'held', None)
     if m is None:
         m = {}
-        _HELD.locks = m
+        _HELD.held = m
     return m
+
+
+def exclusive_held(path):
+    """本进程是否对该目录持独占锁（任一线程持有皆算）。
+    Whether this process holds an exclusive lock on that directory (any thread counts)."""
+    e = _PROC.get(_lock_dir(path))
+    return bool(e and e['exclusive'])
 
 
 def _lock_dir(path):
@@ -81,11 +97,31 @@ def locked(path, timeout=None, shared=False):
     lp = _lock_dir(path)
     held = _held_map()
     if lp in held:
-        held[lp][1] += 1
+        entry = held[lp]
+        entry[1] += 1
+        if lp in _PROC:
+            _PROC[lp]['depth'] += 1
         try:
-            yield held[lp][0]
+            yield entry[0]
         finally:
-            held[lp][1] -= 1
+            entry[1] -= 1
+            if lp in _PROC:
+                _PROC[lp]['depth'] -= 1
+        return
+    if lp in _PROC:
+        # 本进程另一线程已持该目录锁：复用同一 fd，不再开第二个（开了会与自己互斥而阻塞）
+        # Another thread in this process already holds this directory lock: reuse its fd —
+        # a second fd would contend with our own lock and block.
+        e = _PROC[lp]
+        if not shared:
+            e['exclusive'] = False      # 已持共享者不能再升级为独占（防止自锁）
+        e['depth'] += 1
+        held[lp] = [e['fd'], 1, e['exclusive']]
+        try:
+            yield e['fd']
+        finally:
+            held.pop(lp, None)
+            e['depth'] -= 1
         return
     if fcntl is None:
         raise RuntimeError('safeio: 本版仅支持 POSIX（fcntl/flock）；Windows 需另开单用命名互斥量')
@@ -109,16 +145,28 @@ def locked(path, timeout=None, shared=False):
                 time.sleep(0.05)
     else:
         fcntl.flock(fd, flag)
-    held[lp] = [fd, 1]
+    held[lp] = [fd, 1, not shared]
+    _PROC[lp] = {'fd': fd, 'depth': 1, 'exclusive': not shared}
     try:
         yield fd
     finally:
         held.pop(lp, None)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        os.close(fd)
+        ent = _PROC.get(lp)
+        if ent is not None:
+            ent['depth'] -= 1
+            if ent['depth'] <= 0:
+                _PROC.pop(lp, None)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+                os.close(fd)
+        else:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
 
 
 def atomic_write(path, data, mode=None):
@@ -230,7 +278,7 @@ def read_vol(path):
     return sniff_bytes(raw)
 
 
-def append_inplace(path, data, root):
+def append_inplace(path, data, root=None, conf_path=None):
     """持账本根锁原位追加：追加型派生件的唯一写入口。
     Single write entry for append-type artifacts, appending in place under the ledger-root lock.
 
@@ -244,17 +292,33 @@ def append_inplace(path, data, root):
       legal complete line; that cannot be told apart statically, so the incremental caller
       detects it first and falls back to a full rebuild (see daybook.build).
 
-    前置：**调用方必须已持账本根锁**。本函数自检（不依赖调用方纪律），未持锁直接抛
-    RuntimeError 且零写。
-    Precondition: **the caller holds the ledger-root lock**. The function checks this itself
-    (not by caller discipline); without the lock it raises RuntimeError and writes nothing.
+    账本根**不许由调用方自报**：内部用 ledger_root 同一套解析（conf_path 指定，缺省按
+    locate() 找当前 conf）得出根；传入 root 与解析结果逐字不同即 RuntimeError。
+    The ledger root is **never taken on the caller's word**: it is resolved internally through
+    the same ledger_root path (conf_path when given, else locate()); a `root` that differs
+    verbatim from the resolution raises RuntimeError.
 
-    返回 True 表示补过换行（既有字节未动），False 表示末字节本来就是换行。
-    Returns True when a newline was padded (existing bytes untouched), False otherwise."""
-    lock_dir = _lock_dir(root)
-    if lock_dir not in _held_map():
-        raise RuntimeError('safeio.append_inplace: 未持账本根锁（%s）·拒绝写入（零写）'
-                           % lock_dir)
+    锁前置：本进程必须在**该账本根**上持**独占**锁（共享锁、子目录锁、别的根都不算）。
+    先判后开文件 ⇒ 不满足时零写。返回 True 表示补过换行，False 表示末字节本来是换行。
+    Lock precondition: this process must hold an **exclusive** lock on **that ledger root**
+    (shared locks, sub-directory locks and other roots do not count). All checks run before
+    the file is opened ⇒ nothing is written when they fail. Returns True when a newline was
+    padded, False when the last byte already was one."""
+    from ledger_root import locate, read_conf_value, resolve_root
+    if conf_path:
+        conf_dir = os.path.realpath(os.path.dirname(os.path.abspath(conf_path)))
+    else:
+        conf_dir, conf_path = locate()
+        if not conf_path:
+            raise RuntimeError('safeio.append_inplace: 找不到 daybook.conf（%s）·拒绝写入（零写）'
+                               % conf_dir)
+    resolved = resolve_root(conf_dir, {'index': {'root': read_conf_value(conf_path, 'index', 'root')}})
+    if root is not None and os.path.realpath(root) != resolved:
+        raise RuntimeError('safeio.append_inplace: 传入的账本根（%s）与 conf 解析结果（%s）不一致'
+                           '·拒绝写入（零写）' % (os.path.realpath(root), resolved))
+    if not exclusive_held(resolved):
+        raise RuntimeError('safeio.append_inplace: 未在账本根（%s）持独占锁'
+                           '（共享锁/子目录锁/别的根都不算）·拒绝写入（零写）' % resolved)
     if isinstance(data, str):
         data = data.encode('utf-8')
     padded = False

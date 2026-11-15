@@ -29,7 +29,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 TEST = 'orch_fixes_test.py'
 
-IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc', '.locks', '.daybook_keys',
+IGNORE = shutil.ignore_patterns('__pycache__', '*.pyc', '.daybook_keys',
                                 '.safeio_lock.*', '*.tmp')
 
 # (编号, 名称, [(文件, 旧片段, 新片段), ...])
@@ -129,8 +129,9 @@ MUTATIONS = [
     ]),
     (9, '锁改回不 flock', [(
         'agent_lock.py',
-        """            fcntl.flock(fd, flag)""",
-        """            pass  # mutated: no flock""",
+        """        cm = locked(self.root, timeout=None if blocking else 0)""",
+        """        import contextlib
+        cm = contextlib.nullcontext()  # mutated: no flock""",
     )]),
     (10, 'verify 改回无基准自比自过', [(
         'cross_ref.py',

@@ -43,7 +43,7 @@ BLOCKING = {'chatroom_server.py'}
 # 入口构造函数会就地建运行时卷（心跳/任务/租约…）· 跑完清掉，不脏出厂件
 # Constructing an entry may create runtime volumes in place (heartbeat/task/lease…); remove them after the run
 RESIDUE = {'心跳卷.txt', '任务卷.txt', '租约卷.txt', '编排卷.txt', '消息卷.txt',
-           '注册卷.txt', '审计卷.txt', '锁目录', '.locks', '__pycache__'}
+           '注册卷.txt', '审计卷.txt', '锁目录', '__pycache__'}
 
 
 def _dirs():

@@ -5,13 +5,13 @@
 """锁与租约（W-DB-023-G3·第 5 项）
 Locks and leases (W-DB-023-G3 · item 5)
 ================================================
-- fcntl.flock 文件锁（多 Agent 同时改一任务·OS 级互斥）
-  fcntl.flock file lock (multiple agents editing one task · OS-level mutual exclusion)
+- flock 账本根目录（多 Agent 同时改一任务·OS 级互斥·不落锁件）
+  flock the ledger-root directory (multiple agents editing one task · OS-level exclusion · no lock file)
 - 租约 id 仅作审计线索，随 acquire/release 落租约卷
   The lease id is an audit trail only, written to the lease volume on acquire/release
 - 续租/强制释放/后台扫描不在编排闭环内，已删除（见 CHANGELOG）
   Renew / force-release / background sweep are not in the orchestration loop and have been removed (see CHANGELOG)
-- 零依赖：仅用 Python 3 标准库（fcntl/time/os）
+- 零依赖：仅用 Python 3 标准库（time/os/safeio）
   Zero dependencies: only the Python 3 standard library (fcntl/time/os)
 
 租约卷.txt 格式（append-only）：
@@ -21,8 +21,9 @@ Lease volume (租约卷.txt) format (append-only):
 
 锁实现：
 Lock implementation:
-  - 每个 resource 一个 .lock 文件（fcntl.flock·进程退出自动释放）
-    One .lock file per resource (fcntl.flock · auto-released when the process exits)
+  - 不建任何锁件：互斥＝账本根目录 flock（进程退出自动释放）
+    No lock artifact at all: exclusion is a flock on the ledger-root directory
+    (auto-released when the process exits)
   - lease_id = agent_id + ':' + resource + ':' + ts
 
 用法：
@@ -31,10 +32,9 @@ Usage:
   lease = lk.acquire('task:T001', 'agent_xxx')
   lk.release(lease)
 """
-import os, sys, time, fcntl
+import os, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOCK_DIR = os.path.join(HERE, '.locks')
 LEASE_VOL = os.path.join(HERE, '租约卷.txt')
 
 
@@ -46,25 +46,45 @@ def _now_ts():
     return time.time()
 
 
+_MUTEX = {}
+_MUTEX_GUARD = None
+
+
+def _proc_mutex(root):
+    """同一账本根的进程内租约互斥（另一线程 blocking=False 立刻 None、blocking=True 真等）。
+    In-process lease mutex per ledger root (another thread gets None immediately with
+    blocking=False, and really waits with blocking=True)."""
+    global _MUTEX_GUARD
+    import threading
+    if _MUTEX_GUARD is None:
+        _MUTEX_GUARD = threading.Lock()
+    key = os.path.realpath(root)
+    with _MUTEX_GUARD:
+        m = _MUTEX.get(key)
+        if m is None:
+            m = threading.Lock()
+            _MUTEX[key] = m
+        return m
+
+
 class AgentLock:
+    """租约锁：一切互斥都走 `safeio.locked(账本根)`（flock 目录本身）。
+    Lease lock: every exclusion goes through `safeio.locked(ledger_root)` (flock the directory).
+    ★ 不落任何锁件（无 lock 文件、无 lock 目录）：只读安装下也不会因 makedirs 失败。
+    ★ No lock artifact at all (no lock file, no lock directory): a read-only install never
+      fails on makedirs."""
+
     def __init__(self, lock_dir=None, lease_vol=None, root=None):
-        self.lock_dir = lock_dir or LOCK_DIR
+        # lock_dir 仅为旧签名兼容保留，不再使用（锁＝账本根目录本身）
+        # lock_dir is kept only for signature compatibility and is no longer used
+        self.lock_dir = lock_dir
         self.lease_vol = lease_vol or LEASE_VOL
         self.root = root or os.path.dirname(os.path.abspath(self.lease_vol))
-        if not os.path.isdir(self.lock_dir):
-            os.makedirs(self.lock_dir, exist_ok=True)
-        if not os.path.exists(self.lease_vol):
-            # 租约卷在账本根内 ⇒ 建空件也走 safeio 原子写（持根锁），不许裸 open 建卷。
-            # The lease volume lives inside the ledger root ⇒ create it through safeio under
-            # the root lock; a bare open() is not allowed to create a ledger volume.
-            from safeio import atomic_append
-            atomic_append(self.lease_vol, b'', root=self.root)
-        # 进程内持有的 fd（避免同进程重复释放） · fds held in-process (to avoid double-release within the same process)
-        self._fds = {}  # lease_id -> fd · 内存租约映射 · in-memory lease map
-
-    def _lock_path(self, resource):
-        safe = resource.replace('/', '_').replace(':', '_')
-        return os.path.join(self.lock_dir, '%s.lock' % safe)
+        # 内存租约：lease_id -> 已进入的锁上下文（进程内持有，释放时退出）
+        # In-memory leases: lease_id -> entered lock context (held in-process, exited on release)
+        self._ctx = {}
+        self._fds = self._ctx            # 旧名兼容 · legacy attribute name
+        self._mutex = _proc_mutex(self.root)
 
     def _lease_id(self, resource, agent_id, ts):
         return '%s:%s:%d' % (agent_id, resource, int(ts))
@@ -81,57 +101,54 @@ class AgentLock:
           blocking=True: block until the lock is acquired
         - blocking=False：拿不到立刻返回 None
           blocking=False: return None immediately if unavailable
-        锁持有：fcntl.flock（进程退出自动释放）。
-        Lock holding: fcntl.flock (auto-released when the process exits)."""
-        path = self._lock_path(resource)
+        锁＝账本根目录 flock（进程退出自动释放），不落任何锁文件。
+        The lock is a flock on the ledger-root directory (auto-released on process exit);
+        no lock file is ever created."""
+        from safeio import locked
+        if not self._mutex.acquire(blocking=bool(blocking)):
+            return None
+        cm = locked(self.root, timeout=None if blocking else 0)
+        try:
+            cm.__enter__()
+        except TimeoutError:
+            self._mutex.release()
+            return None
+        except BaseException:
+            self._mutex.release()
+            raise
         ts = _now_ts()
         lease_id = self._lease_id(resource, agent_id, ts)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-        flag = fcntl.LOCK_EX
-        if not blocking:
-            flag |= fcntl.LOCK_NB
-        try:
-            fcntl.flock(fd, flag)
-        except BlockingIOError:
-            os.close(fd)
-            return None
-        self._fds[lease_id] = fd
+        self._ctx[lease_id] = cm
         self._log(lease_id, 'acquire', 'resource=%s agent=%s' % (resource, agent_id))
         return lease_id
 
     def release(self, lease_id):
-        """主动释放。
-        Explicit release."""
-        if lease_id not in self._fds:
+        """主动释放。Explicit release."""
+        cm = self._ctx.pop(lease_id, None)
+        if cm is None:
             return False
-        fd = self._fds.pop(lease_id)
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
+            cm.__exit__(None, None, None)
         finally:
-            os.close(fd)
-        self._log(lease_id, 'release')
+            try:
+                self._mutex.release()
+            except RuntimeError:
+                pass
+            self._log(lease_id, 'release')
         return True
 
     def held_by(self, resource):
         """查 resource 当前被谁持有。返回 lease_id 或 None。
         Check who currently holds the resource. Returns a lease_id or None.
-        试图再获一次非阻塞锁·拿得到说明没人持有。
-        Try a non-blocking lock again · if it succeeds, nobody holds it."""
-        path = self._lock_path(resource)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            return None
-        except BlockingIOError:
-            for lid, _fd2 in self._fds.items():
-                if resource in lid:
-                    return lid
+        本进程持有：按 lease_id 里的 resource 匹配；否则看进程内租约互斥是否被占。
+        Held in this process: match the resource in the lease_id; otherwise look at the
+        in-process lease mutex."""
+        for lid in list(self._ctx):
+            if resource in lid:
+                return lid
+        if self._ctx or self._mutex.locked() is True:
             return 'unknown'
-        finally:
-            os.close(fd)
+        return None
 
 
 def main():
