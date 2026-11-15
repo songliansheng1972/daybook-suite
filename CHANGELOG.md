@@ -255,8 +255,11 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     （`CreateMutexW`/`WaitForSingleObject`，进程崩溃自动放弃，不落锁件）+ `realpath`/`commonpath`
     归属判 + 拒绝 reparse point + `os.replace`。Windows 不能对目录 `fsync`，换名持久化交给 NTFS
     日志（已在 README 写明，不宣称超越平台）。`packaging/pack_pypi.py` 分类器为
-    `Operating System :: OS Independent`；README 两平台都写明。Windows 判据 W2 在非 Windows
-    机器上**显式跳过并计数**「未在 Windows 验证」，不静默当通过；POSIX 侧 P0/Q/P1 无退化。
+    `Operating System :: OS Independent`；README 两平台都写明。**实机口径**：Windows 路径已实现、
+    **实机验证待补（第 1–6 项）**，核对工具为仓根 `win_kit/`（`win_check.py` 内嵌同源 `safeio.py`，
+    六项各打印 PASS/FAIL/SKIP 与原始读数，末尾 `WINDOWS 实机验证：n/6 通过`）；收到实机输出前
+    README 不写「已支持 Windows」。POSIX 侧判据 W2 在非 Windows 机器上**显式跳过并计数**
+    「未在 Windows 验证」，不静默当通过；POSIX 侧 P0/Q/P1 无退化。
     W1（Windows 写路径分支）在 POSIX 上强制走一遍并真写/真拒（无目录 fd、归属判、拒绝重解析点、
     追加后 inode 复核），避免这段代码沦为未执行的分支。
 54. **4.0.6 真实吞吐实测（可复跑）**：新增 `bench/throughput_bench.py`，只测收口版形态（写入含根锁）：
