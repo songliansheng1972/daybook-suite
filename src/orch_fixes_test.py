@@ -114,7 +114,7 @@ def test_pull_reply():
         eid3 = hub._log('报', '交活 T005', 'TAMPER-TARGET-9f3a', aid_t, to=aid_p)
         with open(hub.ledger, encoding='utf-8') as f:
             old = f.read()
-        _lp = os.path.join(root, os.path.basename(hub.ledger))   # 账本根（tempfile 派生）下
+        _lp = os.path.join(root, '编排卷.txt')   # 账本根（tempfile 派生）下的默认卷名
         with open(_lp, 'w', encoding='utf-8') as f:
             f.write(old.replace('TAMPER-TARGET-9f3a', 'TAMPERED-BODY-9f3a'))
         pend = hub.pull('皮特')
@@ -176,7 +176,7 @@ def test_identity_signature():
         # 篡改正文 → invalid
         with open(hub.ledger, encoding='utf-8') as f:
             body = f.read()
-        _lp = os.path.join(root, os.path.basename(hub.ledger))   # 账本根（tempfile 派生）下
+        _lp = os.path.join(root, '编排卷.txt')   # 账本根（tempfile 派生）下的默认卷名
         with open(_lp, 'w', encoding='utf-8') as f:
             f.write(body.replace('交活 T101', '交活 T101·篡改'))
         e2 = [x for x in parse_ledger(hub.ledger) if x.get('id') == eid][0]
@@ -413,7 +413,7 @@ def test_alarm_structure_and_exit_codes():
         aid_t, _ = hub.join('汤姆')
         hub.join('皮特')
         old = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() - 3600))
-        _hb = os.path.join(root, os.path.basename(hub.vols['heartbeat']))   # 账本根（tempfile 派生）下
+        _hb = os.path.join(root, '心跳卷.txt')   # 账本根（tempfile 派生）下的默认卷名
         atomic_append(_hb, '[%s] [心跳] [ag-dead] alive\n' % old, root=root)
 
         hub.tv.create('ag-ghost', '幽灵单')
@@ -633,7 +633,7 @@ def test_single_pass_reads():
                   'calls=%d bytes=%d rows=%d' % (stats['calls'], stats['bytes'], len(rows)))
         finally:
             safeio.read_vol = orig
-        hb = os.path.join(root, os.path.basename(hub.vols['heartbeat']))   # 账本根（tempfile 派生）下
+        hb = os.path.join(root, '心跳卷.txt')   # 账本根（tempfile 派生）下的默认卷名
         for a in range(200):
             for _b in range(3):
                 atomic_append(hb, '[2026-11-14 09:00:00] [心跳] [ag-%03d] alive\n' % a, root=root)

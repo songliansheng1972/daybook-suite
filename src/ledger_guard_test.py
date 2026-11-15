@@ -274,6 +274,7 @@ def _local_temp_names(fn, helpers, aliases, seed=()):
     Local names derived from tempfile inside one function (assignments, with-as, join chains);
     `seed` carries parameters already proven temp-derived at every call site."""
     names = set(seed)
+    segs = _single_seg_names(fn, aliases)
     for n in ast.walk(fn):
         if isinstance(n, ast.With):
             for item in n.items:
@@ -292,7 +293,7 @@ def _local_temp_names(fn, helpers, aliases, seed=()):
                 targets, value = [n.target], n.value
             else:
                 continue
-            if _expr_all_temp(value, names, helpers, aliases):
+            if _expr_all_temp(value, names, helpers, aliases, segs):
                 for t in targets:
                     elts = t.elts if isinstance(t, ast.Tuple) else [t]
                     for el in elts:
@@ -485,7 +486,79 @@ def _targets_stay_in_temp(tgt, aliases):
     return probe.startswith(os.path.join(os.sep, 'tmp') + os.sep)
 
 
-def _expr_all_temp(e, names, helpers, aliases):
+def _single_seg_names(fn, aliases):
+    """函数内可证明为「单段相对名」的局部名：不含分隔符、不是 '' / '.' / '..'。
+    Local names proven to be a single relative segment (no separator, not ''/'.'/'..').
+    来源：① `for x in os.listdir(...)`（listdir 只返回单段名）；② 字面容器（含元组列表的
+    首元素）且全为合法单段常量；③ 显式守卫：`if os.path.basename(x) != x or x in ('', '.', '..'): raise`。
+    Sources: listdir iteration; literal containers (including the first element of tuple lists)
+    whose entries are all safe single-segment constants; or an explicit guard that raises unless
+    basename(x) == x and x is not ''/'.'/'..'."""
+    out = set()
+
+    def safe(c):
+        return isinstance(c, ast.Constant) and isinstance(c.value, str) \
+            and c.value not in ('', '.', '..') and '/' not in c.value \
+            and os.sep not in c.value and (os.altsep is None or os.altsep not in c.value)
+
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.For):
+            continue
+        it = n.iter
+        if isinstance(it, ast.Call) and isinstance(n.target, ast.Name) \
+                and _resolve_callee(it.func, aliases) == 'os.listdir':
+            out.add(n.target.id)
+        elif isinstance(it, (ast.Tuple, ast.List, ast.Set)) and it.elts:
+            targets = n.target.elts if isinstance(n.target, ast.Tuple) else [n.target]
+            ok = [True] * len(targets)
+            for e in it.elts:
+                inner = e.elts if isinstance(e, (ast.Tuple, ast.List)) else [e]
+                for i in range(len(targets)):
+                    if i >= len(inner) or not safe(inner[i]):
+                        ok[i] = False
+            for i, tgt in enumerate(targets):
+                if ok[i] and isinstance(tgt, ast.Name):
+                    out.add(tgt.id)
+    # 显式守卫：同一函数内「无分隔符」与「不是 . .. ''」两类检查都在 raise 分支里
+    # Explicit guard: both the "no separator" and "not '' / '.' / '..'" checks raise
+    no_sep, not_dot = set(), set()
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.If) or not any(isinstance(s, ast.Raise) for s in n.body):
+            continue
+        for sub in ast.walk(n.test):
+            if not isinstance(sub, ast.Compare):
+                continue
+            nodes = [sub.left] + sub.comparators
+            for i, nd in enumerate(nodes):
+                if isinstance(nd, ast.Call) and _resolve_callee(nd.func, aliases).split('.')[-1] \
+                        == 'basename' and nd.args \
+                        and isinstance(nd.args[0], ast.Name):
+                    for other in nodes[:i] + nodes[i + 1:]:
+                        if isinstance(other, ast.Name) and other.id == nd.args[0].id:
+                            no_sep.add(other.id)
+                if isinstance(nd, ast.Attribute) and nd.attr == 'sep':
+                    for other in nodes[:i] + nodes[i + 1:]:
+                        if isinstance(other, ast.Name):
+                            no_sep.add(other.id)
+                if isinstance(nd, ast.Name) and isinstance(sub.ops[0], (ast.In, ast.NotIn)):
+                    for other in nodes[:i] + nodes[i + 1:]:
+                        if isinstance(other, (ast.Tuple, ast.List, ast.Set)):
+                            vals = {c.value for c in other.elts
+                                    if isinstance(c, ast.Constant) and isinstance(c.value, str)}
+                            if {'', '.', '..'} <= vals:
+                                not_dot.add(nd.id)
+    return out | (no_sep & not_dot)
+
+
+def _expr_component(e, names, helpers, aliases, segs):
+    """join 的单个组件：要么 temp 派生，要么已证明是单段相对名。
+    One join component: either temp-derived or proven to be a single relative segment."""
+    if isinstance(e, ast.Name) and e.id in segs:
+        return True
+    return _expr_all_temp(e, names, helpers, aliases, segs)
+
+
+def _expr_all_temp(e, names, helpers, aliases, segs=()):
     """写目标的**每一个**组件都必须能证明是 temp 派生（不只看首元）。
     Every component of a write target must be provably temp-derived (not just the first one).
     join 链逐元查；字面段只允许留在临时目录内的相对名。闭包捕获的外部路径（模块常量/外层
@@ -502,26 +575,37 @@ def _expr_all_temp(e, names, helpers, aliases):
         if last == 'dirname':
             return False
         if last == 'basename':
-            # 常量入参按实际结果判（`basename("x/..") == ".."` ⇒ 红）；变量/表达式视为单段名。
-            # Constants are judged by their actual result (`basename("x/..") == ".."` ⇒ red);
-            # variables/expressions count as a single segment.
+            # 常量入参按实际结果判（`basename("x/..") == ".."` ⇒ 红）；非恒定入参必须
+            # 本身能证明是安全路径（每段相对、无 `..`）或已证明为单段相对名，否则红——
+            # 变量可能是 `..`，两个叠起来就上跳两级。
+            # Constants are judged by their actual result (`basename("x/..")` ⇒ red). A
+            # non-constant argument must itself be a provable safe path (every segment
+            # relative, no `..`) or a proven single relative segment; otherwise red, because
+            # the variable may be `..` and two of them climb two levels.
             if not e.args:
                 return False
             a0 = e.args[0]
             if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
                 return os.path.basename(a0.value) not in ('', '.', '..')
-            return True
+            return _expr_component(a0, names, helpers, aliases, segs)
         if _is_path_helper(t):
-            return bool(e.args) and all(_expr_all_temp(a, names, helpers, aliases) for a in e.args)
+            return bool(e.args) and all(
+                _expr_component(a, names, helpers, aliases, segs) for a in e.args)
         return _expr_temp(e, names, helpers, aliases)
     if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
-        return _expr_all_temp(e.left, names, helpers, aliases) \
-            and _expr_all_temp(e.right, names, helpers, aliases)
+        return _expr_all_temp(e.left, names, helpers, aliases, segs) \
+            and _expr_all_temp(e.right, names, helpers, aliases, segs)
     if isinstance(e, ast.JoinedStr):
         for v in e.values:
-            if isinstance(v, ast.FormattedValue) \
-                    and not _expr_all_temp(v.value, names, helpers, aliases):
-                return False
+            if isinstance(v, ast.FormattedValue):
+                if not _expr_all_temp(v.value, names, helpers, aliases, segs):
+                    return False
+            elif isinstance(v, ast.Constant) and isinstance(v.value, str):
+                # f-string 的字面段同样按路径段判定：绝对段或 `..` 直接红
+                # Literal f-string segments are path segments too: absolute or `..` ⇒ red
+                s = v.value
+                if os.path.isabs(s) or '..' in s.replace('\\', '/').split('/'):
+                    return False
         return True
     if isinstance(e, ast.Constant) and isinstance(e.value, str):
         v = e.value
@@ -541,13 +625,14 @@ def _other_target_reasons(tree, fn):
             if _param_temp_only(tree, fn, a.arg, aliases, helpers)}
     seed |= _module_temp_names(tree)
     names = _local_temp_names(fn, helpers, aliases, seed)
+    segs = _single_seg_names(fn, aliases)
     bad = []
     for call in ast.walk(fn):
         if not isinstance(call, ast.Call):
             continue
         for tgt in _write_call_targets(call, aliases):
             snippet = ast.unparse(call)[:70]
-            if not _expr_all_temp(tgt, names, helpers, aliases):
+            if not _expr_all_temp(tgt, names, helpers, aliases, segs):
                 bad.append('%s（目标有非 tempfile 派生组件·可能落在账本根内）' % snippet)
                 continue
             if not _targets_stay_in_temp(tgt, aliases):
@@ -611,19 +696,51 @@ def _other_param_reasons(fn):
     return bad
 
 
+_ROOT_POS = {'atomic_append': 2, 'read_modify_write': 2}
+
+
+def _kwargs_root_provable(v):
+    """`**expr` 能否证明含 root：仅字面 dict 且键全为常量、其中含 'root'。
+    Whether `**expr` provably carries root: only a literal dict with constant keys, one of them
+    'root'."""
+    if not isinstance(v, ast.Dict):
+        return False
+    for k in v.keys:
+        if k is None or not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+            return False
+        if k.value == 'root':
+            return True
+    return False
+
+
 def _rootless_write_calls(tree):
-    """写原语调用点漏传 root= 的清单（atomic_append / read_modify_write）。
-    Calls to atomic_append / read_modify_write that omit the mandatory `root=`."""
+    """写原语调用点漏传 root 的清单（atomic_append / read_modify_write）。
+    Calls to atomic_append / read_modify_write that omit the mandatory `root`.
+    按三种形态判定：显式 `root=`；按签名位置（第 3 参，0 基 2）；`**kwargs` 仅当字面 dict
+    可证明含 'root'。位置传参不是漏传，`**kwargs` 无法证明即判红。别名经 import 别名表还原。
+    Three forms are recognized: explicit `root=`; the signature position (3rd arg, 0-based 2);
+    and `**kwargs` only when a literal dict provably contains 'root'. Positional is not a miss;
+    an unprovable `**kwargs` is red. Aliases are resolved through the import alias table."""
     al = _write_aliases(tree)
     out = []
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
         t = _resolve_callee(n.func, al)
-        if t.split('.')[-1] not in ('atomic_append', 'read_modify_write'):
+        name = t.split('.')[-1]
+        if name not in _ROOT_POS:
             continue
-        if not any(k.arg == 'root' for k in n.keywords):
-            out.append(ast.unparse(n)[:60])
+        if any(k.arg == 'root' for k in n.keywords):
+            continue
+        if len(n.args) > _ROOT_POS[name]:
+            continue
+        starred = [k.value for k in n.keywords if k.arg is None]
+        if starred and any(_kwargs_root_provable(v) for v in starred):
+            continue
+        if starred:
+            out.append(ast.unparse(n)[:60] + '（**kwargs 无法证明含 root）')
+            continue
+        out.append(ast.unparse(n)[:60])
     return out
 
 
@@ -801,6 +918,24 @@ def _case_write_paths(tmp):
         '    d = tempfile.mkdtemp()\n'
         '    p = os.path.dirname(d)\n'
         '    open(os.path.join(p, "evil.txt"), "w").write("x")\n'
+        'def _emit_fstring():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = f"{d}/../../escaped_fstring.txt"\n'
+        '    open(p, "w").write("x")\n'
+        'def _emit_basename_var(n):\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = os.path.join(d, os.path.basename(n), "evil.txt")\n'
+        '    open(p, "w").write("x")\n'
+        'def _emit_basename_listdir():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    for name in os.listdir(d):\n'
+        '        p = os.path.join(d, os.path.basename(name), "x.txt")\n'
+        '        open(p, "w").write("x")\n'
+        'def _emit_basename_literal():\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    for name in ("a.py", "b.py"):\n'
+        '        p = os.path.join(d, os.path.basename(name), "x.txt")\n'
+        '        open(p, "w").write("x")\n'
         'def _dispatch(fn_name, directory):\n'
         '    return getattr(__import__(__name__), fn_name)(directory)\n')
     reason_plain = _other_param_reasons(_find_func(synth, '_emit'))
@@ -818,10 +953,33 @@ def _case_write_paths(tmp):
         'join 绝对段在第二元': _other_target_reasons(synth, _find_func(synth, '_emit_abs_seg')),
         'basename("x/..")': _other_target_reasons(synth, _find_func(synth, '_emit_basename_up')),
         'dirname(d)': _other_target_reasons(synth, _find_func(synth, '_emit_dirname')),
+        'f-string 字面段 ..': _other_target_reasons(synth, _find_func(synth, '_emit_fstring')),
+        'basename(变量)': _other_target_reasons(synth, _find_func(synth, '_emit_basename_var')),
     }
-    _ok('AH R2/R8 七反例全红（默认路径/**kw/*a/闭包/绝对段/basename 上跳/dirname）',
+    _ok('AH R2/R8/R9 九反例全红（默认路径/**kw/*a/闭包/绝对段/basename 上跳/dirname/f-string/basename 变量）',
         all(bool(v) for v in reds.values()),
         '空=%s' % [k for k, v in reds.items() if not v])
+    _ok('AH R9-4 basename(listdir 元素)/basename(字面容器元素) 不误报',
+        not _other_target_reasons(synth, _find_func(synth, '_emit_basename_listdir'))
+        and not _other_target_reasons(synth, _find_func(synth, '_emit_basename_literal')),
+        'listdir=%s literal=%s' % (
+            _other_target_reasons(synth, _find_func(synth, '_emit_basename_listdir'))[:1],
+            _other_target_reasons(synth, _find_func(synth, '_emit_basename_literal'))[:1]))
+    # R9-5：root 的三种传法都要认；漏传 / 不透明 **kwargs / as 别名漏传必须红
+    # R9-5: all three root forms count; missing, opaque **kwargs and alias-without-root are red
+    r95 = {
+        '位置传参·带 root': ('import safeio\nsafeio.atomic_append(p, b, r)\n', False),
+        '位置传参·漏 root': ('import safeio\nsafeio.atomic_append(p, b)\n', True),
+        '** 字面 dict 含 root': ('import safeio\nsafeio.atomic_append(p, b, **{"root": r})\n',
+                            False),
+        '** 不透明 kwargs': ('import safeio\nsafeio.atomic_append(p, b, **kw)\n', True),
+        'as 别名·带 root': ('from safeio import atomic_append as ap\nap(p, b, root=r)\n', False),
+        'as 别名·漏 root': ('from safeio import atomic_append as ap\nap(p, b)\n', True),
+    }
+    got95 = {k: bool(_rootless_write_calls(ast.parse(v[0]))) for k, v in r95.items()}
+    _ok('AH R9-5 root 三种传法（kw/位置/**字面）均认；漏传/**不透明/别名漏传 ⇒ 红',
+        all(got95[k] == v[1] for k, v in r95.items()),
+        '不符=%s' % [k for k, v in r95.items() if got95[k] != v[1]])
     # other 桶条目不许被其他模块调用：跨文件调用 ⇒ 红（否则归回账本）
     # `other` entries must not be called from other modules: a cross-file call ⇒ red
     defs, callers = {}, {}
@@ -878,12 +1036,12 @@ def _case_write_paths(tmp):
         '漏传=%s' % rootless[:4])
     # 变异：把一处真实调用点的 root 实参删掉 ⇒ 扫描必须红
     # Mutation: drop one real call site's root argument ⇒ the scan must go red
-    mut_file, mut_txt, mut_seg = None, None, None
+    mut_file, mut_txt, mut_seg, mut_orig = None, None, None, None
     for f in files:
         txt = io.open(os.path.join(d, f), encoding='utf-8').read()
         mt, seg = _mutant_drop_root(txt)
         if mt is not None:
-            mut_file, mut_txt, mut_seg = f, mt, seg
+            mut_file, mut_txt, mut_seg, mut_orig = f, mt, seg, txt
             break
     mut_bad = False
     if mut_txt is not None:
@@ -893,6 +1051,28 @@ def _case_write_paths(tmp):
             mut_bad = True
     _ok('AH 变异：删掉一处 root 实参 ⇒ 判据红', mut_bad,
         '变异件=%s 删段=%r 命中=%s' % (mut_file, mut_seg, mut_bad))
+    # 变异三种形态（R9-5）：位置传参不误报；**kwargs 不透明 / as 别名漏传 ⇒ 红
+    # Three R9-5 mutation forms: positional is not a false positive; opaque **kwargs and an
+    # alias call without root are red
+    r95m = {}
+    if mut_orig is not None:
+        pos_txt = mut_orig.replace(mut_seg, mut_seg.replace('root=', '', 1), 1)
+        kw_txt = mut_orig.replace(mut_seg, ', **kw', 1)
+        al_txt = (mut_orig + '\nfrom safeio import atomic_append as _r95ap\n').replace(
+            'atomic_append(', '_r95ap(', 1).replace(mut_seg, '', 1)
+        try:
+            r95m['位置传参·不误报'] = bool(_rootless_write_calls(ast.parse(pos_txt)))
+            r95m['**不透明 kwargs·红'] = bool(_rootless_write_calls(ast.parse(kw_txt)))
+            r95m['as 别名漏 root·红'] = bool(_rootless_write_calls(ast.parse(al_txt)))
+            _ok('AH 变异 R9-5 位置传参不误报、**不透明 kwargs 与 as 别名漏传 ⇒ 红',
+                (not r95m['位置传参·不误报']) and r95m['**不透明 kwargs·红']
+                and r95m['as 别名漏 root·红'],
+                '位置=%s kwargs=%s 别名=%s' % (r95m['位置传参·不误报'],
+                                             r95m['**不透明 kwargs·红'],
+                                             r95m['as 别名漏 root·红']))
+        except SyntaxError as exc:
+            _ok('AH 变异 R9-5 位置传参不误报、**不透明 kwargs 与 as 别名漏传 ⇒ 红', False,
+                'SyntaxError=%s' % exc)
     print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
           % (len(present), len(sites), len(unreg), len(absent), len(direct)))
     buckets = {}
@@ -1694,6 +1874,8 @@ elif mode == 'outside':
         except RuntimeError:
             print('RAISED_ZERO' if open(p2, 'rb').read() == before else 'RAISED_DIRTY')
 elif mode == 'hardlink':
+    # R9-1：硬链接是「同 inode 两个名字」的文件系统语义，不再拒绝；两个名字都看到追加
+    # R9-1: hard links are "two names for one inode" — no rejection; both names see the append
     out = tempfile.mkdtemp(prefix='akhl_')
     secret = os.path.join(out, 'secret.tsv')
     open(secret, 'wb').write(b'a\n')
@@ -1702,9 +1884,32 @@ elif mode == 'hardlink':
     with safeio.locked(d):
         try:
             safeio.append_inplace(p3, 'b\n', d, conf_path=cp)
+            print('WROTE_BOTH' if open(secret, 'rb').read() == b'a\nb\n' else 'WROTE_ONE')
+        except RuntimeError:
+            print('RAISED')
+elif mode == 'swap':
+    # R9-1 TOCTOU：判定后、打开前把目标换成另一个 inode ⇒ fstat 复核必须拒绝且零写
+    # R9-1 TOCTOU: swap the target to another inode between check and open ⇒ fstat mismatch
+    # must reject before any byte is written
+    p4 = os.path.join(d, 'swap.tsv')
+    open(p4, 'wb').write(b'a\n')
+    real_open = os.open
+
+    def _swap_open(path, flags, *a, **k):
+        if os.path.realpath(path) == os.path.realpath(p4) and (flags & os.O_APPEND):
+            os.unlink(p4)
+            open(p4, 'wb').write(b'z\n')
+        return real_open(path, flags, *a, **k)
+
+    with safeio.locked(d):
+        os.open = _swap_open
+        try:
+            safeio.append_inplace(p4, 'b\n', d, conf_path=cp)
             print('WROTE')
         except RuntimeError:
-            print('RAISED_ZERO' if open(secret, 'rb').read() == b'a\n' else 'RAISED_DIRTY')
+            print('SWAP_ZERO' if open(p4, 'rb').read() == b'z\n' else 'SWAP_DIRTY')
+        finally:
+            os.open = real_open
 elif mode == 'missing':
     try:
         with safeio.locked(os.path.join(d, 'nope', 'missing')):
@@ -1896,11 +2101,23 @@ def _case_lock_assert(tmp):
     got, err = _ak_scenario(here, 'outside')
     _ok('AK[R7 持 f 锁往 g 写] ⇒ 抛错且零写（RAISED_ZERO）', got == 'RAISED_ZERO',
         '%s %s' % (got, err[:120]))
-    # R8-2：根内硬链接指向根外文件 ⇒ 拒绝（st_nlink>1），根外内容零改动
-    # R8-2: a hard link inside the root pointing outside ⇒ reject (st_nlink>1), outer content intact
+    # R9-1：硬链接是「同 inode 两个名字」的语义，不靠拒绝表达边界；两个名字都看到追加
+    # R9-1: hard links are two names for one inode (semantics, not a boundary); both see the append
     got, err = _ak_scenario(here, 'hardlink')
-    _ok('AK[R8-2 根内硬链接指向根外] ⇒ 抛错且根外零改动', got == 'RAISED_ZERO',
+    _ok('AK[R9-1 根内硬链接 ⇒ 不拒绝，追加经两个名字都可见]', got == 'WROTE_BOTH',
         '%s %s' % (got, err[:120]))
+    # R9-1 TOCTOU：打开前换掉目标 ⇒ fstat 复核拒绝且零写
+    # R9-1 TOCTOU: replacing the target before the open ⇒ fstat mismatch rejects with zero write
+    got, err = _ak_scenario(here, 'swap')
+    _ok('AK[R9-1 打开前目标被换 ⇒ 拒绝且零写（SWAP_ZERO）]', got == 'SWAP_ZERO',
+        '%s %s' % (got, err[:120]))
+    # R9-1 静态：打开必须 O_NOFOLLOW，且对同一个 fd 复核 inode 与打开前一致
+    # R9-1 static: the open must use O_NOFOLLOW, and the same fd's inode must be re-checked
+    nofollow = 'os.O_APPEND | os.O_NOFOLLOW' in safeio_src
+    idcheck = ('if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:'
+               in safeio_src)
+    _ok('AK[R9-1 静态] append_inplace 打开用 O_NOFOLLOW 且对同一 fd 复核 inode',
+        nofollow and idcheck, 'NOFOLLOW=%s fstat复核=%s' % (nofollow, idcheck))
     # R8-3：账本根不存在 ⇒ 明确报错（不是 FileNotFoundError）
     # R8-3: a missing ledger root ⇒ explicit error (not a bare FileNotFoundError)
     got, err = _ak_scenario(here, 'missing')
@@ -1949,6 +2166,16 @@ def _case_lock_assert(tmp):
         _ok('AK %s ⇒ 判据红（场景被放行/走样）' % label,
             got != 'RAISED_ZERO' or 'RAISED_DIRTY' in got,
             '%s %s' % (got, err[:120]))
+    # 变异⑤⑥（R9-1）：拆掉 O_NOFOLLOW / 关掉 inode 复核 ⇒ 静态判据必须红
+    # Mutations 5–6 (R9-1): drop O_NOFOLLOW / disable the inode re-check ⇒ static check red
+    for label, text in (
+            ('去掉 O_NOFOLLOW', safeio_src.replace(' | os.O_NOFOLLOW', '', 1)),
+            ('关掉 inode 复核', safeio_src.replace(
+                'if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:',
+                'if False:', 1))):
+        still = ('os.O_APPEND | os.O_NOFOLLOW' in text) and \
+            ('if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:' in text)
+        _ok('AK 变异 R9-1 %s ⇒ 静态判据红' % label, not still, '仍满足=%s' % still)
     # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
     if not has_agent:
         _skip('AK 变异④：当前盒无 agent_lock.py')
@@ -3165,6 +3392,39 @@ print('GREEN' if all(ok for _v, _p, ok, _d in rows) else 'RED')
 '''
 
 
+def _case_cli_write_fail(tmp):
+    """R9-2：写/锁被拒时 CLI 必须给文案 + rc=2，不得裸 traceback。
+    R9-2: a refused write/lock must surface as a message + rc=2, never a bare traceback."""
+    d = tempfile.mkdtemp(prefix='daybook_clifail_', dir=tmp)
+    outside = tempfile.mkdtemp(prefix='daybook_outside_', dir=tmp)
+    try:
+        _prepare(d)
+        r0 = _base(d)
+        _ok('R9-2 前置：认基线 rc=0', r0.returncode == 0, 'rc=%d' % r0.returncode)
+        idf = os.path.join(d, '索引', 'index_账.tsv')
+        tgt = os.path.join(outside, 'index_账.tsv')
+        shutil.copy2(idf, tgt)
+        os.remove(idf)
+        os.symlink(tgt, idf)
+        before = io.open(tgt, 'rb').read()
+        with io.open(os.path.join(d, '账卷.txt'), 'a', encoding='utf-8') as f:
+            f.write('[2026-11-13 10:05:00] [测试] [新增] [皮特] 写入\n')
+        # 增量追加的 TSV 是符号链接到根外 ⇒ append_inplace 必拒绝（RuntimeError）
+        # The incremental TSV symlinks outside the root ⇒ append_inplace must refuse
+        r = _run(d)
+        txt = r.stdout + r.stderr
+        _ok('R9-2 运行期拒绝 ⇒ rc=2（与配置错同口径）', r.returncode == 2,
+            'rc=%d' % r.returncode)
+        _ok('R9-2 有明确文案（运行失败 + 原因）',
+            '运行失败' in txt and ('不在账本根' in txt or '拒绝写入' in txt), txt[-240:])
+        _ok('R9-2 无裸 traceback', 'Traceback' not in txt, txt[-240:])
+        same = io.open(tgt, 'rb').read() == before
+        _ok('R9-2 根外目标零改动', same, '零改动=%s' % same)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
+
 def main():
     if not os.path.exists(SRC_BIN):
         print('找不到被测 daybook.py：%s' % SRC_BIN, file=sys.stderr)
@@ -3559,6 +3819,7 @@ def main():
         _case_lease_leak(work)
         _case_no_root(work)
         _case_push_load_bearing(work)
+        _case_cli_write_fail(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows/msvcrt 分支已删、账本内无锁件实现',

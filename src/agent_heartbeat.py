@@ -12,9 +12,10 @@ Agent heartbeat volume (W-DB-023-G3 · item 6)
 - 零依赖：仅用 Python 3 标准库（os/time）
   Zero dependencies: only the Python 3 standard library (os/time)
 
-用法：
-Usage:
-  hb = Heartbeat(period=10)         # 周期 10 秒 · period 10 seconds
+用法（root 必填，不猜目标所在目录）：
+Usage (root is mandatory; it is never guessed from the target's directory):
+  root = '/账本根'                              # 账本根 · the ledger root
+  hb = Heartbeat(os.path.join(root, '心跳卷.txt'), period=10, root=root)
   hb.beat('agent_xxx')              # Agent 自报心跳 · agent reports its own heartbeat
   alive = hb.is_alive('agent_xxx')  # 查活/死 · check alive/dead
   dead = hb.dead_agents()           # 列出所有 dead · list all dead agents

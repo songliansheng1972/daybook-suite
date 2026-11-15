@@ -1434,7 +1434,7 @@ def ledger_home(override=None):
     return resolve_root(conf_dir, load_conf(conf_path))
 
 
-def main():
+def _main():
     """Dispatch the selected command using the adjacent DAYBOOK configuration.
     按所选子命令分派；配置取同目录 daybook.conf。
     用法与未知子命令在 load_conf() 之前处理：缺 conf 时给明确报错，不抛 traceback。
@@ -1634,6 +1634,20 @@ def main():
         sys.exit(orchestrator.main(_args[1:]))
     else:
         print(__doc__)
+
+
+def main():
+    """CLI 收口：任何 RuntimeError（含写原语拒绝：根不一致/不在根内/打开时被替换）一律
+    打一条明确文案并退 2，与「配置错 rc=2」同口径；不把 traceback 抛给用户。
+    CLI boundary: any RuntimeError (write primitive refusals included) becomes one clear
+    message with exit code 2 — the same contract as configuration errors. No traceback is
+    ever shown to the user."""
+    try:
+        return _main()
+    except RuntimeError as exc:
+        sys.stderr.write('★ 运行失败（rc=2）：%s\n' % exc)
+        return 2
+
 
 if __name__ == '__main__':
     sys.exit(main())

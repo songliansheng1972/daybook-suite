@@ -97,27 +97,42 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     `atomic_append` / `append_inplace`（检测到本线程已持锁就直接写）。
 17. **写原语不再兜底**：`atomic_append` / `read_modify_write` 的 `root` 改为必填，省略直接
     RuntimeError——旧兜底「用目标所在目录取锁」会让异线程持根锁时零等待写入。`append_inplace`
-    的归属判定见第 19 条（inode 口径 + 硬链接拒绝）。
+    的归属判定见第 19 条（路径/inode 祖先链 + 打开后复核）。
 18. **租约写失败不再泄漏根锁**：`acquire()` 的记账写包 try/finally——失败即摘登记并退锁；
     只读租约目录下复测 `exclusive_held=False`、`_ctx=0`、他人可正常获取。`AgentLock` 形参只剩
     `lease_vol` / `root`，被静默丢弃的 `lock_dir` 已删除。
-19. **归属判定改 inode 口径 + 拒绝硬链接**：`append_inplace` 不再用 `commonpath` 比字符串，而是
-    逐级 stat 父目录、比对 `(st_dev, st_ino)` 与账本根身份；目标已存在且 `st_nlink > 1` 直接
-    拒绝（账本卷是普通文件，不靠硬链接）。判据：根内硬链接指向根外文件 ⇒ `RAISED_ZERO` 且
-    根外内容零改动。
+19. **归属按路径/inode 祖先链判 + 打开后复核**：`append_inplace` 不再用 `commonpath` 比字符串，
+    而是逐级 stat 父目录、比对 `(st_dev, st_ino)` 与账本根身份（与锁身份同一口径）；打开用
+    `O_NOFOLLOW`，并对**同一个 fd** `fstat` 复核 `(st_dev, st_ino)` 与打开前一致，不一致即
+    拒绝且零写（防「判定后路径被替换」的 TOCTOU）。**硬链接不再特殊处理**——同 inode 的两个
+    名字是文件系统语义，不用拒绝表达边界；威胁模型是「写路径必须落在账本根之内」，不是
+    「硬链接已封死」。
 20. **`locked()` 缺路径明确报错**：路径不存在时抛 `RuntimeError('账本根不存在…不退回父目录')`，
     不再是裸 `FileNotFoundError`，也不再静默退到父目录去锁。
 21. **必填 root 有静态判据**：AST 级扫描 `atomic_append` / `read_modify_write` 的调用点，漏传
     `root=` 即红；变异「删掉一处 root 实参」必须红。调用点残留的 `root or dirname(...)` 兜底
     全部删除（`daybook_hook.mark_processed`、`Heartbeat`），确定不了根就按根解析失败处理。
 22. **判据跳过显式化**：`[跳过]` 统一进跳过清单并在汇总打印数量与原因，不计入判据条数；
-    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 404 项（PASS 404；
-    跳过 0 项）`，`daybook/` 盒 `0 红 / 305 项（PASS 305；跳过 7 项）`。盒内 7 条跳过为
+    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 416 项（PASS 416；
+    跳过 0 项）`，`daybook/` 盒 `0 红 / 317 项（PASS 317；跳过 7 项）`。盒内 7 条跳过为
     AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）；
     其余项数差异来自 AH 等按文件集扫描的判据随文件数变化。不手写换算，也不报「恒差 3」。
 23. **文档口径修正**：README 的串行保证限定为三条取锁原语（`append_inplace` / `atomic_append`
     / `read_modify_write`），并写明 `atomic_write` 是纯原子替换、不取锁、由调用方决定临界区；
     「五种写法」改为「环境支持的写法逐种验证，跳过的打印原因」。
+24. **CLI 写失败不再裸 traceback**：`daybook.py` 顶层收口任何 `RuntimeError`——打印
+    `★ 运行失败（rc=2）：<原因>` 并退 2，与「配置错 rc=2」同口径；判据构造一次必然失败的
+    增量追加（TSV 符号链接到根外），断言文案、`rc=2`、无 `Traceback`、根外零改动。
+25. **f-string 字面段按路径段判**：`JoinedStr` 的常量段也检查（含 `..` 或绝对段即红），
+    赋值右值与写目标走同一判定；`f"{d}/../../x"` 由放行改为红。
+26. **`basename(变量)` 不再无条件放行**：非恒定入参必须自身可证为安全路径，或已证为单段
+    相对名（`os.listdir` 循环变量、字面容器元素、显式 `basename(x) != x or x in ('', '.', '..')`
+    守卫），否则红——变量可能是 `..`，叠两个就上跳两级。
+27. **root 静态判据覆盖三种传法**：显式 `root=`、签名第 3 参位置传参、`**` 字面 dict 含
+    `'root'` 均认；不透明 `**kwargs` 与 `as` 别名调用漏传仍红。变异三条（位置传参不误报、
+    不透明 `**kwargs` 红、`as` 别名漏传红）全部成立。
+28. **`Heartbeat` docstring 示例可运行**：示例补上必填 `root` 与卷路径，照抄不再在 `beat`
+    处报错。
 
 ## v4.0.5 · 2026-11-14
 

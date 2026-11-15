@@ -315,6 +315,14 @@ def append_inplace(path, data, root=None, conf_path=None):
     the same ledger_root path (conf_path when given, else locate()); a `root` that differs
     verbatim from the resolution raises RuntimeError.
 
+    归属只按「路径/inode 祖先链」判：目标必须落在账本根内；打开用 O_NOFOLLOW，并对同一个
+    fd 复核 (st_dev, st_ino) 与打开前一致，防「判定后路径被替换」。硬链接不特殊处理——
+    同 inode 的多个名字是文件系统语义，不用拒绝表达边界。
+    Ownership is path/inode-ancestry only: the target must be inside the ledger root. The open
+    uses O_NOFOLLOW and the same fd is fstat'ed to match the pre-open (st_dev, st_ino), guarding
+    against a path swap between check and open. Hard links are not special-cased — several names
+    for one inode are filesystem semantics, not a boundary to express by rejection.
+
     锁前置：**本线程**必须在**该账本根**上持**独占**锁（别的线程持锁、子目录锁、别的根都不算）。
     先判后开文件 ⇒ 不满足时零写。返回 True 表示补过换行，False 表示末字节本来是换行。
     Lock precondition: **this thread** must hold an **exclusive** lock on **that ledger root**
@@ -337,11 +345,11 @@ def append_inplace(path, data, root=None, conf_path=None):
         raise RuntimeError('safeio.append_inplace: 未在本线程于账本根（%s）持独占锁'
                            '（别的线程持锁/子目录锁/别的根都不算）·拒绝写入（零写）' % resolved)
     rp = os.path.realpath(path)
-    # 归属：inode 口径——逐级 stat 父目录，与锁身份（R1）一致；realpath 字符串会被硬链接/
-    # 大小写绕过。
+    # 归属：inode 口径——逐级 stat 父目录，与锁身份（R1）一致；纯字符串比较会被大小写/
+    # 软链写法绕过。
     # Ownership: inode-based — walk parent directories and compare (st_dev, st_ino) with the
-    # root's identity, consistent with the lock identity (R1). realpath strings can be fooled by
-    # hard links and case variants.
+    # root's identity, consistent with the lock identity (R1). Plain string comparison can be
+    # fooled by case and symlink spellings.
     root_id = _ident(resolved)[0]
     d = rp if os.path.isdir(rp) else os.path.dirname(rp)
     inside = False
@@ -360,25 +368,41 @@ def append_inplace(path, data, root=None, conf_path=None):
     if not inside:
         raise RuntimeError('safeio.append_inplace: 目标（%s）不在账本根（%s）内'
                            '·持别处的锁不能往这里写·拒绝写入（零写）' % (rp, resolved))
-    # 账本卷是普通文件，不靠硬链接：目标已存在且 st_nlink>1 ⇒ 可能是指向根外的硬链接
-    # Ledger volumes are regular files that never rely on hard links: an existing target with
-    # st_nlink > 1 may point outside the root
-    if os.path.exists(rp) and os.stat(rp).st_nlink > 1:
-        raise RuntimeError('safeio.append_inplace: 目标（%s）是硬链接（st_nlink=%d）'
-                           '·账本卷不靠硬链接·拒绝写入（零写）' % (rp, os.stat(rp).st_nlink))
+    # 归属只按「路径/inode 祖先链」判：同 inode 的多个名字（硬链接）是文件系统语义，
+    # 不靠拒绝表达边界。防的是「判定后路径被换掉」，故打开用 O_NOFOLLOW，再对同一个 fd
+    # 复核 (st_dev, st_ino) 与打开前一致；不一致立即拒绝（此时尚未写任何字节）。
+    # Ownership is path/inode-ancestry only: several names for one inode (hard links) are
+    # filesystem semantics, not a boundary to express by rejection. The guard is against the
+    # path being swapped after the check: open with O_NOFOLLOW, then fstat the same fd and
+    # require (st_dev, st_ino) to match the pre-open stat; mismatch is rejected before any byte
+    # is written.
+    try:
+        stb = os.stat(rp)
+        before = (stb.st_dev, stb.st_ino)
+    except OSError:
+        before = None
     if isinstance(data, str):
         data = data.encode('utf-8')
     padded = False
-    if data and os.path.exists(path):
-        with open(path, 'rb') as f:
+    if data and os.path.exists(rp):
+        with open(rp, 'rb') as f:
             f.seek(0, os.SEEK_END)
             if f.tell() > 0:
                 f.seek(-1, os.SEEK_END)
                 if f.read(1) != b'\n':
                     data = b'\n' + data
                     padded = True
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
     try:
+        fd = os.open(rp, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o644)
+    except OSError as exc:
+        raise RuntimeError('safeio.append_inplace: 打开目标（%s）失败（%s）·拒绝写入（零写）'
+                           % (rp, exc)) from None
+    try:
+        st_fd = os.fstat(fd)
+        if before is not None and (st_fd.st_dev, st_fd.st_ino) != before:
+            raise RuntimeError('safeio.append_inplace: 目标（%s）在判定与打开之间被替换'
+                               '（inode %r → %r）·拒绝写入（零写）'
+                               % (rp, before, (st_fd.st_dev, st_fd.st_ino)))
         os.write(fd, data)
     finally:
         os.close(fd)
