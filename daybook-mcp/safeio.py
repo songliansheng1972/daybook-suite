@@ -31,45 +31,45 @@ Readers: `read_vol` takes no lock. Volumes are append-only and every derived art
 in atomically (temp file in the same directory + os.replace), so a reader always sees a
 consistent snapshot and is never blocked for the whole writer critical section.
 """
-import os, contextlib, threading, tempfile
+import os, contextlib, threading, tempfile, time
 
 try:
     import fcntl
 except ImportError:                                     # pragma: no cover - POSIX only
     fcntl = None
 
-# 同线程已持锁表：{锁目录 realpath: [fd, 深度, 是否独占]}。
-# 读卷会在持锁的临界区内被调用（如 task_volume.transition 里 read_vol），
-# 若不记重入，同进程第二个 fd 再要共享锁会与自己的独占锁冲突而死锁。
-# Per-thread held-lock map: {lock dir realpath: [fd, depth, exclusive?]}.
-# read_vol is called inside locked critical sections (e.g. task_volume.transition);
-# without reentrancy tracking, a second fd in the same process asking for a shared lock
-# would conflict with our own exclusive lock and deadlock.
-_HELD = threading.local()
-
-# 进程内持有表：{锁目录 realpath: {'fd','depth','exclusive'}}。
-# flock 绑在「进程持有的 fd」上，同进程另一线程不该再开 fd（会与自己的锁互斥而阻塞），
-# 直接复用同一 fd；账本根是否独占由本表判定（append_inplace 只认独占）。
-# Process-wide held map: {lock dir realpath: {'fd','depth','exclusive'}}.
-# flock is bound to the fd the process already holds; a second thread in the same process must
-# reuse that fd (opening a new one would contend with itself and block). Exclusivity of the
-# ledger root is judged from this table — append_inplace accepts exclusive holds only.
+# 进程内持有表：{锁目录 realpath: {'fd','owner'}}。owner = 持锁线程 ident。
+# 只有**本线程**持有才算持有（exclusive_held 据此判定）：同进程另一线程不继承、
+# 也不复用 fd——它必须在 threading.Lock 上排队，与跨进程 flock 语义一致。
+# Process-wide held map: {lock dir realpath: {'fd','owner'}}, owner = holding thread id.
+# Only **this thread** counts as holding (exclusive_held judges by owner): another thread of the
+# same process inherits nothing and reuses no fd — it queues on a threading.Lock, matching the
+# cross-process flock semantics.
 _PROC = {}
 
+# 每个锁目录一把进程内互斥（threading.Lock）：跨线程必须排队（这是「同一账本根下所有写
+# 操作串行」的线程侧实现；跨进程由 flock 独占）。
+# One in-process mutex (threading.Lock) per lock dir: threads must queue — the thread-side half
+# of "all writes under one ledger root are serialized"; cross-process exclusion is the flock.
+_MUTEX = {}
+_MUTEX_GUARD = threading.Lock()
 
-def _held_map():
-    m = getattr(_HELD, 'held', None)
-    if m is None:
-        m = {}
-        _HELD.held = m
-    return m
+
+def _proc_mutex(lp):
+    with _MUTEX_GUARD:
+        m = _MUTEX.get(lp)
+        if m is None:
+            m = threading.Lock()
+            _MUTEX[lp] = m
+        return m
 
 
 def exclusive_held(path):
-    """本进程是否对该目录持独占锁（任一线程持有皆算）。
-    Whether this process holds an exclusive lock on that directory (any thread counts)."""
+    """**本线程**是否对该目录持独占锁（同进程别的线程持有不算）。
+    Whether **this thread** holds an exclusive lock on that directory (another thread's hold
+    in the same process does not count)."""
     e = _PROC.get(_lock_dir(path))
-    return bool(e and e['exclusive'])
+    return bool(e and e['owner'] == threading.get_ident())
 
 
 def _lock_dir(path):
@@ -83,90 +83,71 @@ def _lock_dir(path):
 
 
 @contextlib.contextmanager
-def locked(path, timeout=None, shared=False):
-    """锁上下文。shared=True 取共享锁（读侧），False 取独占锁（写侧）。
-    Lock context. shared=True takes a shared lock (reader side); False takes an exclusive lock (writer side).
+def locked(path, timeout=None):
+    """账本根**独占**锁上下文（没有共享锁这回事）。
+    Ledger-root **exclusive** lock context (there is no shared-lock mode).
+    同一账本根下所有写操作串行：线程间排队（threading.Lock），跨进程 flock 独占。
+    All writes under one ledger root are serialized: threads queue on a threading.Lock and
+    processes contend on the exclusive flock.
     退出自动释放（fd close ⇒ flock 自动解）。
     Released automatically on exit (fd close ⇒ flock auto-unlock).
-    同线程可重入：已在临界区内再取同一把锁直接放行（不再开第二个 fd）。
-    重入时不做 shared→exclusive 升级（防止自锁）。
-    Reentrant within one thread: re-locking the same file inside a held critical section passes through
-    without opening a second fd. No shared→exclusive upgrade on reentry (prevents self-deadlock).
+    同线程可重入：本线程已在临界区内再取同一把锁只加深度（不再开第二个 fd）；
+    产品代码靠这一点在「持根锁」内调用 atomic_append（租约卷/任务卷）。
+    Reentrant within one thread: re-locking the same directory inside this thread's held critical
+    section only bumps a depth counter (no second fd). Product code relies on it to call
+    atomic_append (lease/task volumes) while the root lock is held.
     timeout 秒内拿不到则超时；None=阻塞等待。
     Times out if not acquired within timeout seconds; None=block indefinitely."""
     lp = _lock_dir(path)
-    held = _held_map()
-    if lp in held:
-        entry = held[lp]
-        entry[1] += 1
-        if lp in _PROC:
-            _PROC[lp]['depth'] += 1
-        try:
-            yield entry[0]
-        finally:
-            entry[1] -= 1
-            if lp in _PROC:
-                _PROC[lp]['depth'] -= 1
-        return
-    if lp in _PROC:
-        # 本进程另一线程已持该目录锁：复用同一 fd，不再开第二个（开了会与自己互斥而阻塞）
-        # Another thread in this process already holds this directory lock: reuse its fd —
-        # a second fd would contend with our own lock and block.
-        e = _PROC[lp]
-        if not shared:
-            e['exclusive'] = False      # 已持共享者不能再升级为独占（防止自锁）
-        e['depth'] += 1
-        held[lp] = [e['fd'], 1, e['exclusive']]
-        try:
-            yield e['fd']
-        finally:
-            held.pop(lp, None)
-            e['depth'] -= 1
+    me = threading.get_ident()
+    ent = _PROC.get(lp)
+    if ent is not None and ent['owner'] == me:
+        yield ent['fd']
         return
     if fcntl is None:
         raise RuntimeError('safeio: 本版仅支持 POSIX（fcntl/flock）；Windows 需另开单用命名互斥量')
-    # 打开目录本身取 fd：不新建文件，不需要写权限；flock 绑在目录 inode 上。
-    # Open the directory itself: no file is created, no write permission is required,
-    # and the flock is bound to the directory inode.
-    fd = os.open(lp, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
-    flag = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-    if timeout is not None:
-        import time
-        deadline = time.time() + timeout
-        flag |= fcntl.LOCK_NB
-        while True:
-            try:
-                fcntl.flock(fd, flag)
-                break
-            except (BlockingIOError, OSError):
-                if time.time() >= deadline:
-                    os.close(fd)
-                    raise TimeoutError('safeio: lock timeout for %s' % path)
-                time.sleep(0.05)
-    else:
-        fcntl.flock(fd, flag)
-    held[lp] = [fd, 1, not shared]
-    _PROC[lp] = {'fd': fd, 'depth': 1, 'exclusive': not shared}
+    mx = _proc_mutex(lp)
+    t0 = time.time()
+    if timeout is None:
+        mx.acquire()
+    elif timeout <= 0:
+        if not mx.acquire(blocking=False):
+            raise TimeoutError('safeio: lock timeout for %s' % path)
+    elif not mx.acquire(timeout=timeout):
+        raise TimeoutError('safeio: lock timeout for %s' % path)
     try:
-        yield fd
-    finally:
-        held.pop(lp, None)
-        ent = _PROC.get(lp)
-        if ent is not None:
-            ent['depth'] -= 1
-            if ent['depth'] <= 0:
-                _PROC.pop(lp, None)
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                except OSError:
-                    pass
-                os.close(fd)
-        else:
+        # 打开目录本身取 fd：不新建文件，不需要写权限；flock 绑在目录 inode 上。
+        # Open the directory itself: no file is created, no write permission is required,
+        # and the flock is bound to the directory inode.
+        fd = os.open(lp, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+        try:
+            if timeout is None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                deadline = t0 + timeout
+                while True:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except (BlockingIOError, OSError):
+                        if time.time() >= deadline:
+                            raise TimeoutError('safeio: lock timeout for %s' % path)
+                        time.sleep(0.05)
+        except BaseException:
+            os.close(fd)
+            raise
+        _PROC[lp] = {'fd': fd, 'owner': me}
+        try:
+            yield fd
+        finally:
+            _PROC.pop(lp, None)
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             except OSError:
                 pass
             os.close(fd)
+    finally:
+        mx.release()
 
 
 def atomic_write(path, data, mode=None):
@@ -176,7 +157,12 @@ def atomic_write(path, data, mode=None):
     mode 给出时在 mkstemp 后 fchmod（如密钥 0600）；缺省沿用现有（默认 0600 受 umask 影响前的
     mkstemp 语义，即替换后权限沿用临时件）。
     With `mode`, fchmod the temp fd right after mkstemp (e.g. 0600 for keys); without it the
-    existing behaviour (the mkstemp temp file's mode) is kept."""
+    existing behaviour (the mkstemp temp file's mode) is kept.
+    本函数**不取锁**：它是纯原子替换，与任何锁形态无关，因此不存在「共享/跨线程降级」路径；
+    需要读-判-写的调用方自行在 `locked(账本根)` 临界区内调用（产品件一律如此）。
+    This function takes **no lock**: it is a pure atomic replace, independent of any lock state,
+    so there is no shared/cross-thread downgrade path. Callers that need read-check-write call it
+    inside their own `locked(ledger_root)` critical section (all product code does)."""
     if isinstance(data, str):
         data = data.encode('utf-8')
     d = os.path.dirname(os.path.abspath(path))
@@ -198,8 +184,11 @@ def atomic_write(path, data, mode=None):
 
 
 def atomic_append(path, data, root=None, ensure_newline=False):
-    """持账本根锁追加。O_APPEND + 单次 write。
-    Append while holding the ledger-root lock. O_APPEND + a single write.
+    """持账本根锁追加。O_APPEND + 单次 write。只走独占锁：本线程已持则直接写（临界区内），
+    否则在独占锁上排队；没有共享锁、也没有跨线程复用。
+    Append while holding the ledger-root lock. O_APPEND + a single write. Exclusive only: if this
+    thread already holds it, write inside the critical section; otherwise queue on the exclusive
+    lock. There is no shared lock and no cross-thread fd reuse.
     root 给出账本根（子目录卷也争同一把锁）；缺省退到目标所在目录。
     `root` names the ledger root (sub-directory volumes contend on the same lock);
     without it the target's own directory is used.
@@ -298,12 +287,12 @@ def append_inplace(path, data, root=None, conf_path=None):
     the same ledger_root path (conf_path when given, else locate()); a `root` that differs
     verbatim from the resolution raises RuntimeError.
 
-    锁前置：本进程必须在**该账本根**上持**独占**锁（共享锁、子目录锁、别的根都不算）。
+    锁前置：**本线程**必须在**该账本根**上持**独占**锁（别的线程持锁、子目录锁、别的根都不算）。
     先判后开文件 ⇒ 不满足时零写。返回 True 表示补过换行，False 表示末字节本来是换行。
-    Lock precondition: this process must hold an **exclusive** lock on **that ledger root**
-    (shared locks, sub-directory locks and other roots do not count). All checks run before
-    the file is opened ⇒ nothing is written when they fail. Returns True when a newline was
-    padded, False when the last byte already was one."""
+    Lock precondition: **this thread** must hold an **exclusive** lock on **that ledger root**
+    (a lock held by another thread, a sub-directory lock and another root do not count). All
+    checks run before the file is opened ⇒ nothing is written when they fail. Returns True when
+    a newline was padded, False when the last byte already was one."""
     from ledger_root import locate, read_conf_value, resolve_root
     if conf_path:
         conf_dir = os.path.realpath(os.path.dirname(os.path.abspath(conf_path)))
@@ -317,8 +306,8 @@ def append_inplace(path, data, root=None, conf_path=None):
         raise RuntimeError('safeio.append_inplace: 传入的账本根（%s）与 conf 解析结果（%s）不一致'
                            '·拒绝写入（零写）' % (os.path.realpath(root), resolved))
     if not exclusive_held(resolved):
-        raise RuntimeError('safeio.append_inplace: 未在账本根（%s）持独占锁'
-                           '（共享锁/子目录锁/别的根都不算）·拒绝写入（零写）' % resolved)
+        raise RuntimeError('safeio.append_inplace: 未在本线程于账本根（%s）持独占锁'
+                           '（别的线程持锁/子目录锁/别的根都不算）·拒绝写入（零写）' % resolved)
     if isinstance(data, str):
         data = data.encode('utf-8')
     padded = False
@@ -341,6 +330,9 @@ def append_inplace(path, data, root=None, conf_path=None):
 def read_modify_write(path, fn, root=None):
     """持账本根锁读-改-写。fn(old_bytes) -> new_bytes。写入走 atomic_write。
     Locked (ledger root) read-modify-write. fn(old_bytes) -> new_bytes; the write is atomic.
+    只走独占锁：本线程已持则直接读写（临界区内），否则排队；无共享锁降级路径。
+    Exclusive only: if this thread already holds the root lock it works inside that critical
+    section; otherwise it queues on the exclusive lock. No shared-lock downgrade path.
     用于游标 json（修②）：读旧值→改→写回，全程持锁。
     Used for cursor json (fix ②): read the old value → modify → write back, holding the lock throughout."""
     with locked(root if root else path):

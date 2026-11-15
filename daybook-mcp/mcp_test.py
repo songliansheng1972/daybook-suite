@@ -39,6 +39,12 @@ import os, sys, json, subprocess, tempfile, shutil, time, threading, hashlib, hm
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, 'mcp_server.py')
 
+# 本轮测试根：由 main 里 tempfile 造出后存入本模块变量；
+# 需要跑的用例不接受路径参数（写入目标一律由 tempfile 产生，杜绝“随便喂个目录”）。
+# This run's root: created by tempfile in main and stored here; cases that write take no path
+# parameter (targets are always produced by tempfile — no "pass me any directory" capability).
+ROOT = None
+
 # 测试用 daybook.conf 模板
 # daybook.conf template for tests
 CONF_TMPL = """[volumes]
@@ -202,10 +208,11 @@ def test_resources(tmp_root):
     return _ok('3.4 read offset=2 limit=1 拿到第 2 行', '条目2' in text and '条目1' not in text, text)
 
 
-def test_daybook_index(tmp_root):
+def test_daybook_index():
     """验收 7：daybook_index 重建索引·供 query 用。写工具强制验签。
     Acceptance 7: daybook_index rebuilds the index · used by query. Write tools force signature verification.
     """
+    tmp_root = ROOT
     os.environ['DAYBOOK_ROOT'] = tmp_root
     agent_id, secret = _register_test_agent(tmp_root)
     # W-75 修④：写工具须带 ts，签名覆盖 "reindex:<ts>"（防重放）
@@ -522,10 +529,11 @@ def test_cross_ref(tmp_root):
     return _ok('5.3 cross_ref_verify 通过', vtext == 'true', 'v=%r' % vtext)
 
 
-def test_subscribe_push(tmp_root):
+def test_subscribe_push():
     """验收 P1+：resources/subscribe + mtime 变 → push notifications/resources/updated。
     Acceptance P1+: resources/subscribe + mtime change → push notifications/resources/updated.
     """
+    tmp_root = ROOT
     sys.path.insert(0, HERE)
     # 在进程内测 SubscriptionManager（subprocess 难测异步 push）
     # Test SubscriptionManager in-process (asynchronous push is hard to test via subprocess)
@@ -814,7 +822,9 @@ def test_heartbeat_alive(tmp_root):
 
 def main():
     print('=== W-DB-023-G2 MCP 接口验收测试（修复版 r2）===')
+    global ROOT
     tmp_root = _setup_tmp_root()
+    ROOT = tmp_root
     os.environ['DAYBOOK_ROOT'] = tmp_root
 
     results = []
@@ -822,7 +832,7 @@ def main():
     results.append(('initialize 握手+协商', test_initialize(tmp_root)))
     results.append(('resources list/read conf', test_resources(tmp_root)))
     results.append(('daybook_list 不再是帮助', test_daybook_list(tmp_root)))
-    results.append(('daybook_index 重建', test_daybook_index(tmp_root)))
+    results.append(('daybook_index 重建', test_daybook_index()))
     results.append(('daybook_query 按字段过滤', test_daybook_query(tmp_root)))
     results.append(('daybook_append 匿名被拒', test_daybook_append_anon_rejected(tmp_root)))
     results.append(('daybook_append 冒名被拒', test_daybook_append_impersonation(tmp_root)))
@@ -831,7 +841,7 @@ def main():
     results.append(('路径穿越拒绝', test_path_traversal(tmp_root)))
     results.append(('未知工具 isError:true', test_unknown_tool_iserror(tmp_root)))
     results.append(('cross_ref make/verify', test_cross_ref(tmp_root)))
-    results.append(('subscribe+push', test_subscribe_push(tmp_root)))
+    results.append(('subscribe+push', test_subscribe_push()))
     results.append(('prompts list/get', test_prompts()))
     results.append(('notification/batch', test_notification_batch(tmp_root)))
     results.append(('shutdown 已删', test_no_shutdown_method(tmp_root)))

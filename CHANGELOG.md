@@ -69,6 +69,24 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 11. **推送判据承重**：`digest --push` 在线时 inbox 卷必须真的新增一行且内容可辨认（时间戳 +
     本次随机目标名）；持账本根锁时推送必须表现为明确阻塞（进程未退出、inbox 不增），释放后
     完成。测试 socket 移入本轮临时目录并带随机后缀，绝不 unlink 已存在的 socket。
+12. **锁语义落到命名与参数**：`AgentLock.acquire(label, agent_id)` 的返回值是**账本根锁**，
+    `label` 只用于记账/命名租约 id，不参与互斥范围判定（docstring 与 CHANGELOG 均写明）。
+    同一线程在已持锁状态下再次获取（任意 label）**立即抛 RuntimeError**（实测 <50 ms），
+    不等待、不静默放行；跨线程/跨进程则真排队。**串行代价实测**：根锁被持 0.6 s 期间一次
+    全量 `index` 等待 0.63 s；P1 持 `task:A` 1.2 s 期间 P2 取 `task:B` 等待 1.21 s（复签
+    阶段另一台机实测 1.42 s）。
+13. **删除共享锁能力**：`locked()` 只剩独占语义（`LOCK_SH` 与共享形参全仓清零）；线程间按
+    账本根一把 `threading.Lock` 排队，跨进程由目录 `flock` 独占。`exclusive_held()` 改为
+    **本线程**持有才算（同进程别的线程不继承、不复用 fd）；`append_inplace` / `atomic_write`
+    / `atomic_append` / `read_modify_write` 无任何降级路径。判据含「另一线程持锁时主线程必须
+    真等（>0 s 且 `exclusive_held=True`）」与五条变异（去根一致、进程级也算、去根一致、
+    删同线程检查、塞回 shared 分支）全部红→绿。
+14. **`other` 桶不许收路径参数**：写路径登记表的 `other` 条目形参表不得出现路径类参数
+    （名含 dir/path/root/home，或默认值为路径）；目标路径必须在函数体内由 `tempfile` 产生。
+    判定只看签名，与调用方式无关——即使经 `getattr` / 字典派发调用也照样红。需要收目录参数的
+    助手一律归 `ledger`（如随包夹具 `_make_volume` / `build_dataset` 改走 `safeio.atomic_write`）。
+15. **三条保守行为写进 README**（不改代码）：临时目录前缀大小写变体（`/PRIVATE/TMP/…`）
+    保守拒绝、`fork` 子进程继承已持有的锁、`exec` 后锁清零。三者都在安全侧，不提供开关。
 
 ## v4.0.5 · 2026-11-14
 

@@ -372,11 +372,11 @@ def test_root_from_conf():
     ok = True
     dirs = []
 
-    def mk(root_line):
+    def mk(conf_line):
         d = tempfile.mkdtemp(prefix='daybook_root_')
         dirs.append(d)
         with open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
-            f.write('[volumes]\n2026=2026.txt\n\n[index]\nroot=%s\n' % root_line)
+            f.write('[volumes]\n2026=2026.txt\n\n[index]\nroot=%s\n' % conf_line)
         with open(os.path.join(d, '2026.txt'), 'w', encoding='utf-8') as f:
             f.write('[2026-01-01 00:00:00] [测试] [根解析] [皮特] x\n')
         return d
@@ -431,21 +431,23 @@ def test_root_from_conf():
     return ok
 
 
-def _copy_server(tmproot):
-    """把 src 下的 .py 拷到 tmproot·返回 mcp_server.py 路径。
-    Copy the .py files from src into tmproot · return the mcp_server.py path."""
+def _copy_server():
+    """把 src 下的 .py 拷进本轮新建的临时目录，返回 (目录, mcp_server.py 路径)。
+    目录由本函数内的 tempfile 产生（不收路径参数）。
+    Copy the .py files from src into a fresh temp dir; return (dir, mcp_server.py path).
+    The directory is produced by tempfile inside this function (no path parameter)."""
+    tmproot = tempfile.mkdtemp(prefix='daybook_copy_')
     for f in os.listdir(HERE):
         if f.endswith('.py'):
             shutil.copy2(os.path.join(HERE, f), os.path.join(tmproot, f))
-    return os.path.join(tmproot, 'mcp_server.py')
+    return tmproot, os.path.join(tmproot, 'mcp_server.py')
 
 
 def test_zero_bytecode():
     """11. 启动路径零 __pycache__：不带 PYTHONDONTWRITEBYTECODE 启动也不生成。
     Startup path emits no __pycache__ even when PYTHONDONTWRITEBYTECODE is absent."""
-    t = tempfile.mkdtemp(prefix='daybook_pyc_')
+    t, server = _copy_server()
     try:
-        server = _copy_server(t)
         with open(os.path.join(t, 'daybook.conf'), 'w', encoding='utf-8') as f:
             f.write('[volumes]\n2026=2026.txt\n\n[index]\nroot=\n')
         with open(os.path.join(t, '2026.txt'), 'w', encoding='utf-8') as f:
@@ -467,9 +469,8 @@ def test_zero_bytecode():
 def test_empty_volumes_warns():
     """12. 空卷自检：启动与 resources/list 都向 stderr 告警，不静默。
     Empty-volume self-check: both startup and resources/list warn on stderr, never silently."""
-    t = tempfile.mkdtemp(prefix='daybook_empty_')
+    t, server = _copy_server()
     try:
-        server = _copy_server(t)
         with open(os.path.join(t, 'daybook.conf'), 'w', encoding='utf-8') as f:
             f.write('[volumes]\n\n[index]\nroot=\n')
         env = dict(os.environ)

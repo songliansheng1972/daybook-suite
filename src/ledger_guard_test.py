@@ -119,7 +119,7 @@ WRITE_PATHS = (
     ('mcp_tools.py', '_record_signature', 'ledger', '账本内容/派生件'),
     ('mcp_tools.py', '_write_cursor', 'ledger', '账本内容/派生件'),
     ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试：目标由 tempfile 生成'),
-    ('orch_fixes_test.py', '_make_volume', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', '_make_volume', 'ledger', '随包测试夹具卷（atomic_write）'),
     ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
@@ -129,7 +129,7 @@ WRITE_PATHS = (
     ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_single_pass_reads', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_mutation_check.py', 'make_mutant', 'other', '随包测试：目标由 tempfile 生成'),
-    ('orch_perf_bench.py', 'build_dataset', 'other', '随包压测：目标由 tempfile 生成'),
+    ('orch_perf_bench.py', 'build_dataset', 'ledger', '随包压测夹具卷（atomic_write）'),
     ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包压测：目标由 tempfile 生成'),
     ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
     ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
@@ -240,6 +240,8 @@ def _expr_temp(e, names, helpers, aliases):
         return False
     if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
         return _expr_temp(e.left, names, helpers, aliases)
+    if isinstance(e, ast.Tuple):
+        return bool(e.elts) and all(_expr_temp(x, names, helpers, aliases) for x in e.elts)
     if isinstance(e, ast.JoinedStr):
         for v in e.values:
             if isinstance(v, ast.FormattedValue):
@@ -291,9 +293,39 @@ def _local_temp_names(fn, helpers, aliases, seed=()):
                 continue
             if _expr_temp(value, names, helpers, aliases):
                 for t in targets:
-                    if isinstance(t, ast.Name) and t.id not in names:
-                        names.add(t.id)
-                        changed = True
+                    elts = t.elts if isinstance(t, ast.Tuple) else [t]
+                    for el in elts:
+                        if isinstance(el, ast.Name) and el.id not in names:
+                            names.add(el.id)
+                            changed = True
+    return names
+
+
+def _module_temp_names(tree):
+    """模块级 temp 名（含任何函数里赋值）：`ROOT = _setup_tmp_root()` 这类固定点。
+    Module-level temp names (including assignments inside any function): a fixed point for
+    patterns like `ROOT = _setup_tmp_root()`."""
+    aliases = _write_aliases(tree)
+    helpers = _module_temp_helpers(tree)
+    names = set()
+    for _ in range(4):
+        changed = False
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Assign):
+                targets, value = n.targets, n.value
+            elif isinstance(n, ast.AnnAssign) and n.value is not None:
+                targets, value = [n.target], n.value
+            else:
+                continue
+            if _expr_temp(value, names, helpers, aliases):
+                for t in targets:
+                    elts = t.elts if isinstance(t, ast.Tuple) else [t]
+                    for el in elts:
+                        if isinstance(el, ast.Name) and el.id not in names:
+                            names.add(el.id)
+                            changed = True
+        if not changed:
+            break
     return names
 
 
@@ -437,6 +469,7 @@ def _other_target_reasons(tree, fn):
     helpers = _module_temp_helpers(tree)
     seed = {a.arg for a in fn.args.args
             if _param_temp_only(tree, fn, a.arg, aliases, helpers)}
+    seed |= _module_temp_names(tree)
     names = _local_temp_names(fn, helpers, aliases, seed)
     bad = []
     for call in ast.walk(fn):
@@ -459,6 +492,33 @@ def _other_target_reasons(tree, fn):
                 continue
             if not _targets_stay_in_temp(tgt, aliases):
                 bad.append('%s（含 `..`/绝对段·可逃出临时目录）' % snippet)
+    return bad
+
+
+_PATH_PARAM_HINTS = ('dir', 'path', 'root', 'home')
+
+
+def _other_param_reasons(fn):
+    """other 桶不得收路径参数：形参名含 dir/path/root/home，或默认值是路径 ⇒ 红。
+    The `other` bucket must not take path parameters: a name containing dir/path/root/home, or a
+    path-like default ⇒ red.
+    该判定只看函数签名，与调用方式无关：一旦在 other 桶里带路径参数，用 getattr / 字典派发
+    调用同样不合法。
+    Signature-only, independent of call style: once an `other` entry takes a path parameter it is
+    illegal even when reached via getattr / dict dispatch."""
+    bad = []
+    args = list(getattr(fn.args, 'posonlyargs', [])) + list(fn.args.args) \
+        + list(fn.args.kwonlyargs)
+    for a in args:
+        low = a.arg.lower()
+        hit = [h for h in _PATH_PARAM_HINTS if h in low]
+        if hit:
+            bad.append('%s（形参名含路径词 %s）' % (a.arg, '/'.join(hit)))
+            continue
+        d = getattr(a, 'default', None)
+        if isinstance(d, ast.Constant) and isinstance(d.value, str) \
+                and (os.sep in d.value or d.value.startswith('~')):
+            bad.append('%s（默认值是路径 %r）' % (a.arg, d.value[:30]))
     return bad
 
 
@@ -571,11 +631,29 @@ def _case_write_paths(tmp):
         if node is None:
             bad_other.append((f, fn, ['函数未找到']))
             continue
-        reasons = _other_target_reasons(trees[f], node)
+        reasons = _other_target_reasons(trees[f], node) + _other_param_reasons(node)
         if reasons:
             bad_other.append((f, fn, reasons[:2]))
-    _ok('AH other 桶只许 tempfile 目标（否则必须归账本）⇒ 红', not bad_other,
-        '未通过=%s' % bad_other[:4])
+    _ok('AH other 桶只许 tempfile 目标、且不收路径参数（否则必须归账本）⇒ 红',
+        not bad_other, '未通过=%s' % bad_other[:4])
+    # 自证：造一个「收目录参数、体内 join 后写」的助手登记成 other ⇒ 必红；
+    # 用 getattr / 字典派发调用同一助手 ⇒ 仍必红（签名判定与调用方式无关）
+    # Self-check: a helper taking a directory parameter and writing a joined path, registered as
+    # `other`, must be red; reaching it via getattr / dict dispatch is still red (signature-only).
+    synth = ast.parse(
+        'import os, tempfile\n'
+        'def _emit(directory):\n'
+        '    d = tempfile.mkdtemp()\n'
+        '    p = os.path.join(d, "x.txt")\n'
+        '    open(p, "w").write(directory)\n'
+        'def _dispatch(fn_name, directory):\n'
+        '    return getattr(__import__(__name__), fn_name)(directory)\n')
+    synth_fn = _find_func(synth, '_emit')
+    reason_plain = _other_param_reasons(synth_fn)
+    reason_dispatch = _other_param_reasons(_find_func(synth, '_emit'))
+    _ok('AH other 桶收目录参数 ⇒ 红；getattr/字典派发调用仍红',
+        bool(reason_plain) and bool(reason_dispatch),
+        '直接=%s 派发=%s' % (reason_plain[:1], reason_dispatch[:1]))
     # other 桶条目不许被其他模块调用：跨文件调用 ⇒ 红（否则归回账本）
     # `other` entries must not be called from other modules: a cross-file call ⇒ red
     defs, callers = {}, {}
@@ -610,6 +688,18 @@ def _case_write_paths(tmp):
                         lockmk.append((f, ast.unparse(tgt)[:40]))
     _ok('AH 全仓无 .locks 目录/引用 ⇒ 红', not lockref, '仍出现=%s' % lockref)
     _ok('AH 无 lock 文件创建点（只许 flock 目录）⇒ 红', not lockmk, '仍出现=%s' % lockmk)
+    # 共享锁能力已删：locked() 只有独占语义，产品件不得出现 LOCK_SH 或共享形参
+    # The shared-lock capability is gone: locked() is exclusive-only, so no LOCK_SH and no
+    # shared parameter may reappear in any product file
+    shared_tok = 'sha' + 'red='
+    shareref = []
+    for f in files:
+        txt = io.open(os.path.join(d, f), encoding='utf-8').read()
+        for token in ('LOCK_SH', shared_tok):
+            if token in txt:
+                shareref.append((f, token))
+    _ok('AH 共享锁能力已删（无 LOCK_SH／共享形参）⇒ 红', not shareref,
+        '仍出现=%s' % shareref[:6])
     print('    [数据] AH 登记 %d 条／实扫 %d 条／未登记 %d 条／找不到 %d 条／账本直写 %d 条'
           % (len(present), len(sites), len(unreg), len(absent), len(direct)))
     buckets = {}
@@ -1344,7 +1434,7 @@ def _case_tail_no_truncate(tmp):
 
 
 _AK_CHILD = r'''
-import os, sys, threading
+import os, sys, threading, time
 sys.path.insert(0, sys.argv[1])
 d, mode = sys.argv[2], sys.argv[3]
 import safeio
@@ -1380,55 +1470,115 @@ elif mode == 'ok':
 elif mode == 'subdir':
     with safeio.locked(sub):
         print(attempt(sub))
-elif mode == 'shared':
-    with safeio.locked(d, shared=True):
-        print(attempt(d))
 elif mode == 'mismatch':
     with safeio.locked(d):
         print(attempt(other))
 elif mode == 'thread_ok':
+    # 主线程持根锁、另一线程直接写：只认「本线程持有」⇒ 必须抛错零写
+    # Main thread holds the root; another thread writes directly: only "this thread" counts ⇒ raise
     with safeio.locked(d):
         print(in_thread(lambda: attempt(d)))
 elif mode == 'thread_sub':
     with safeio.locked(sub):
         print(in_thread(lambda: attempt(d)))
+elif mode == 'wait':
+    # 另一线程持根锁 0.4s：主线程必须真的等（>0s），进来时 exclusive_held 必须为 True
+    # Another thread holds the root for 0.4s: the main thread must really wait (>0s) and, once
+    # inside, exclusive_held must be True
+    def holder():
+        with safeio.locked(d):
+            time.sleep(0.4)
+    t = threading.Thread(target=holder)
+    t.start()
+    time.sleep(0.05)
+    t0 = time.time()
+    with safeio.locked(d):
+        print('WAIT %.3f %s' % (time.time() - t0, safeio.exclusive_held(d)))
+    t.join()
+'''
+
+_AK_AGENT = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+d = sys.argv[2]
+from agent_lock import AgentLock
+lk = AgentLock(None, os.path.join(d, '租约卷.txt'), root=d)
+lk.acquire('task:A', 'ag1')
+t0 = time.time()
+try:
+    lk.acquire('task:B', 'ag2', blocking=True)
+    print('ACQUIRED %.3f' % (time.time() - t0))
+except RuntimeError as e:
+    print('RAISED %.3f %s' % (time.time() - t0, str(e)[:40]))
 '''
 
 
-def _ak_scenario(src, mode):
-    """跑一个锁语义场景，返回 'WROTE' / 'RAISED_ZERO' / 'RAISED_DIRTY' 等。
-    Run one lock-semantics scenario and return its verdict token."""
+def _ak_scenario(src, mode, timeout=40, code=None):
+    """跑一个锁语义场景，返回 ('WROTE'/'RAISED_ZERO'/'TIMEOUT'/…) 与 stderr。
+    Run one lock-semantics scenario and return its verdict token and stderr."""
     d = tempfile.mkdtemp(prefix='ak_')
-    r = subprocess.run([sys.executable, '-B', '-c', _AK_CHILD, src, d, mode],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       universal_newlines=True)
-    return (r.stdout.strip().splitlines() or ['ERR'])[-1], (r.stderr or '').strip()
+    try:
+        r = subprocess.run([sys.executable, '-B', '-c', code or _AK_CHILD, src, d, mode],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=timeout)
+        return (r.stdout.strip().splitlines() or ['ERR'])[-1], (r.stderr or '').strip()
+    except subprocess.TimeoutExpired:
+        return 'TIMEOUT', '子进程超时（挂起）'
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+_SHARED_TOKEN = 'sha' + 'red='          # 不写出整词，便于「全仓 grep」保持干净
 
 
 def _case_lock_assert(tmp):
-    """AK `append_inplace` 锁语义：只认「账本根 + 独占」；无锁/子目录锁/共享锁/别的根都零写。
-    AK `append_inplace` lock semantics: only an exclusive hold on the ledger root counts;
-    no lock, a sub-directory lock, a shared lock or another root all write nothing."""
-    print('  -- AK append_inplace 锁语义（账本根 + 独占·三种绕过全红） --')
+    """AK 锁语义：只认「账本根 + 本线程独占」；无锁/子目录/异根/另一线程/同线程重复全红。
+    AK lock semantics: only "ledger root + exclusive in this thread" counts; no lock,
+    sub-directory, another root, another thread and same-thread re-acquire all fail."""
+    print('  -- AK 锁语义（账本根 + 本线程独占·五种绕过全红·串行=真等） --')
     here = os.path.dirname(SRC_BIN)
     safeio_src = io.open(os.path.join(here, 'safeio.py'), encoding='utf-8').read()
-    okl = False
     got = _ak_scenario(here, 'ok')[0]
-    _ok('AK0 持账本根独占锁 ⇒ 放行（WROTE）', got == 'WROTE', got)
+    _ok('AK0 持账本根独占锁（本线程）⇒ 放行（WROTE）', got == 'WROTE', got)
     for mode, label in (('nolock', '无锁'),
                         ('subdir', '持子目录锁、传子目录当根'),
-                        ('shared', '持根共享锁'),
-                        ('mismatch', '传与 conf 解析不同的根')):
+                        ('mismatch', '传与 conf 解析不同的根'),
+                        ('thread_ok', '另一线程持根时本线程直接写')):
         got, err = _ak_scenario(here, mode)
         _ok('AK[%s] ⇒ 抛错且零写（RAISED_ZERO）' % label, got == 'RAISED_ZERO',
             '%s %s' % (got, err[:120]))
-    got = _ak_scenario(here, 'thread_ok')[0]
-    _ok('AK[同进程另一线程·主线程持根独占] ⇒ 放行（WROTE）', got == 'WROTE', got)
     got, err = _ak_scenario(here, 'thread_sub')
     _ok('AK[同进程另一线程·主线程只持子目录锁] ⇒ 抛错且零写（RAISED_ZERO）',
         got == 'RAISED_ZERO', '%s %s' % (got, err[:120]))
 
-    # 三条变异：分别去掉「独占」「根一致」「解析根」的约束 ⇒ 对应场景必须放行（判据红）
+    # 跨线程串行：另一线程持锁时主线程必须真等，且进来后 exclusive_held=True
+    # Cross-thread serialization: with another thread holding, the main thread really waits and
+    # gets exclusive_held=True once inside
+    got, err = _ak_scenario(here, 'wait')
+    parts = got.split()
+    waited = float(parts[1]) if got.startswith('WAIT') and len(parts) >= 3 else -1.0
+    held = parts[2] if len(parts) >= 3 else '?'
+    _ok('AK[另一线程持锁⇒主线程真等] ⇒ 等待>0s 且 exclusive_held=True',
+        waited > 0.2 and held == 'True', '%s %s' % (got, err[:120]))
+
+    # 同线程重复获取（任意 label）⇒ 立即报错，不等待、不静默放行
+    # Same-thread second acquisition (any label) ⇒ immediate error, no wait, no silent pass
+    has_agent = os.path.exists(os.path.join(here, 'agent_lock.py'))
+    if has_agent:
+        got, err = _ak_scenario(here, 'agent', code=_AK_AGENT, timeout=5)
+        ok_fast = False
+        if got.startswith('RAISED'):
+            try:
+                ok_fast = float(got.split()[1]) < 0.05
+            except (IndexError, ValueError):
+                ok_fast = False
+        _ok('AK[同线程持 task:A 再要 task:B] ⇒ 立即报错（<50ms·不挂起）', ok_fast,
+            '%s %s' % (got, err[:120]))
+    else:
+        print('    [跳过] AK 同线程重复获取：当前盒无 agent_lock.py')
+
+    # 变异：逐一破坏约束 ⇒ 对应场景必须被放行/走样（判据红）
+    # Mutations: break one constraint at a time ⇒ the matching scenario must slip through (red)
     mismatch_block = """    if root is not None and os.path.realpath(root) != resolved:
         raise RuntimeError('safeio.append_inplace: 传入的账本根（%s）与 conf 解析结果（%s）不一致'
                            '·拒绝写入（零写）' % (os.path.realpath(root), resolved))"""
@@ -1437,8 +1587,8 @@ def _case_lock_assert(tmp):
     muts = (
         ('subdir', '变异①：去掉根一致检查、锁只认传入根',
          safeio_src.replace(mismatch_block, '    pass').replace(
-             excl_block, "    if not (_lock_dir(root if root else resolved) in _held_map()):")),
-        ('shared', '变异②：共享锁也算',
+             excl_block, "    if not (_lock_dir(root if root else resolved) in _PROC):")),
+        ('thread_ok', '变异②：别的线程持锁也算（进程级）',
          safeio_src.replace(excl_block, "    if not (_lock_dir(resolved) in _PROC):")),
         ('mismatch', '变异③：去掉根一致检查',
          safeio_src.replace(mismatch_block, '    pass')),
@@ -1456,6 +1606,124 @@ def _case_lock_assert(tmp):
         _ok('AK %s ⇒ 判据红（场景被放行/走样）' % label,
             got != 'RAISED_ZERO' or 'RAISED_DIRTY' in got,
             '%s %s' % (got, err[:120]))
+    # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
+    if not has_agent:
+        print('    [跳过] AK 变异④：当前盒无 agent_lock.py')
+    else:
+        agent_src = io.open(os.path.join(here, 'agent_lock.py'), encoding='utf-8').read()
+        dup_anchor = """        if exclusive_held(self.root):
+            raise RuntimeError('agent_lock: 同线程重复获取账本根锁（%s）·拒绝等待'
+                               '（同线程等自己必自死锁；互斥范围是整个账本根）' % self.root)"""
+        assert dup_anchor in agent_src
+        md = os.path.join(tmp, 'ak_mut_agent')
+        os.makedirs(md)
+        io.open(os.path.join(md, 'agent_lock.py'), 'w', encoding='utf-8').write(
+            agent_src.replace(dup_anchor, '        pass'))
+        for f in ('safeio.py', 'ledger_root.py'):
+            io.open(os.path.join(md, f), 'w', encoding='utf-8').write(
+                io.open(os.path.join(here, f), encoding='utf-8').read())
+        got, err = _ak_scenario(md, 'agent', code=_AK_AGENT, timeout=5)
+        fast_ok = False
+        if got.startswith('RAISED'):
+            try:
+                fast_ok = float(got.split()[1]) < 0.05
+            except (IndexError, ValueError):
+                fast_ok = False
+        _ok('AK 变异④：删掉同线程重复检查 ⇒ 静默放行/挂起（判据红）', not fast_ok,
+            '%s %s' % (got, err[:120]))
+    # 变异⑤：把共享锁分支塞回去 ⇒ 静态判据必须红
+    # Mutation ⑤: put a shared-lock branch back ⇒ the static criterion must go red
+    def _has_shared(txt):
+        return (_SHARED_TOKEN in txt) or ('LOCK_SH' in txt)
+    mut_shared = safeio_src.replace('def locked(path, timeout=None):',
+                                    'def locked(path, timeout=None, %sFalse):' % _SHARED_TOKEN)
+    _ok('AK 变异⑤：保留 shared 分支 ⇒ 静态判据红',
+        (not _has_shared(safeio_src)) and _has_shared(mut_shared),
+        '原=%s 变异=%s' % (_has_shared(safeio_src), _has_shared(mut_shared)))
+
+
+_HOLD = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+import safeio
+led, hold = sys.argv[2], float(sys.argv[3])
+with safeio.locked(led):
+    print('READY', flush=True)
+    time.sleep(hold)
+'''
+
+_AG_HOLD = r'''
+import os, sys, time
+sys.path.insert(0, sys.argv[1])
+d = sys.argv[2]
+from agent_lock import AgentLock
+lk = AgentLock(None, os.path.join(d, '租约卷.txt'), root=d)
+lid = lk.acquire('task:A', 'agP1')
+print('READY', flush=True)
+time.sleep(float(sys.argv[3]))
+lk.release(lid)
+'''
+
+
+def _case_serial_cost(tmp):
+    """AM 串行代价读数：持根锁期间跑一次全量 index / 跨 label 取锁，各等多久（实测秒数）。
+    AM serialization cost readings: while the root lock is held, how long a full `index` and a
+    different-label acquire actually wait (measured seconds)."""
+    print('  -- AM 串行代价读数（同一账本根下所有写操作串行） --')
+    here = os.path.dirname(SRC_BIN)
+    d = os.path.join(tmp, 'am')
+    os.makedirs(d)
+    _make_volume(os.path.join(d, '账卷.txt'), 30)
+    with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
+        f.write('[volumes]\n账=账卷.txt\n\n[index]\nout_dir=索引\n')
+    base = subprocess.run([sys.executable, '-B', SRC_BIN, 'baseline'], cwd=d,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True, timeout=120)
+    _ok('AM0 基线 rc=0', base.returncode == 0, (base.stdout + base.stderr)[-160:])
+    hold = 0.6
+    holder = subprocess.Popen([sys.executable, '-B', '-c', _HOLD, here, d, str(hold)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              universal_newlines=True)
+    try:
+        line = holder.stdout.readline().strip()
+        _ok('AM1 持根锁进程就位', line == 'READY', line)
+        t0 = time.time()
+        r = subprocess.run([sys.executable, '-B', SRC_BIN, 'index'], cwd=d,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=180)
+        wait_index = time.time() - t0
+        _ok('AM2 持根锁期间全量 index 等待 >0.3s 且 rc=0',
+            wait_index > 0.3 and r.returncode == 0,
+            '等待=%.2fs rc=%d' % (wait_index, r.returncode))
+        print('    [读数] 根锁被持 %.1fs 期间，全量 index 实际等待 %.2fs' % (hold, wait_index))
+    finally:
+        holder.wait(timeout=30)
+    # 跨 label：P1 持 task:A 1.2s，P2 要 task:B 实际等待（互斥范围是账本根，不是 label）
+    # Cross-label: P1 holds task:A 1.2s; P2 asks task:B and really waits (the scope is the root)
+    if not os.path.exists(os.path.join(here, 'agent_lock.py')):
+        print('    [跳过] AM 跨 label 读数：当前盒无 agent_lock.py')
+        return
+    hold2 = 1.2
+    holder2 = subprocess.Popen([sys.executable, '-B', '-c', _AG_HOLD, here, d, str(hold2)],
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True)
+    try:
+        line = holder2.stdout.readline().strip()
+        _ok('AM3 跨进程 P1 持 task:A 就位', line == 'READY', line)
+        sys.path.insert(0, here)
+        from agent_lock import AgentLock
+        lk = AgentLock(None, os.path.join(d, '租约卷.txt'), root=d)
+        t0 = time.time()
+        lid = lk.acquire('task:B', 'P2', blocking=True)
+        wait_label = time.time() - t0
+        _ok('AM4 跨 label 取锁实际等待 >1.0s（互斥=账本根）',
+            bool(lid) and wait_label > 1.0, '等待=%.2fs lid=%r' % (wait_label, lid))
+        print('    [读数] P1 持 task:A %.1fs 期间，P2 取 task:B 实际等待 %.2fs'
+              % (hold2, wait_label))
+        if lid:
+            lk.release(lid)
+    finally:
+        holder2.wait(timeout=30)
 
 
 _AL_PUSH = r'''
@@ -2826,6 +3094,7 @@ def main():
         _case_home_flag(work)
         _case_tail_no_truncate(work)
         _case_lock_assert(work)
+        _case_serial_cost(work)
         _case_push_load_bearing(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
@@ -2852,7 +3121,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–AL 三十组用例全绿')
+    print('PASS: A–AM 三十一组用例全绿')
     return 0
 
 

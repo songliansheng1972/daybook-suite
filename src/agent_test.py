@@ -166,33 +166,58 @@ def test_agent_message(tmp):
 
 
 def test_agent_lock(tmp):
-    """验收 5：文件锁防多 Agent 同时改一任务（新签名：acquire(resource, agent_id, blocking=False)）。
-    Acceptance 5: the file lock prevents multiple agents from editing one task at once
-    (new signature: acquire(resource, agent_id, blocking=False))."""
+    """验收 5：账本根锁防多 Agent 同时改一任务（签名：acquire(label, agent_id, blocking=False)）。
+    Acceptance 5: the ledger-root lock prevents multiple agents from editing one task at once
+    (signature: acquire(label, agent_id, blocking=False); the label never narrows the scope)."""
     from agent_lock import AgentLock
+    import threading
     lk = AgentLock(None, os.path.join(tmp, '租约卷.txt'), root=tmp)
     lid1 = lk.acquire('task:T001', 'ag-tom')
     if not _ok('5.1 Agent A 获取锁', bool(lid1)):
         return False
-    # B 非阻塞：必须立刻拿到 None（不是等一会儿才 None）
-    # B non-blocking: must return None immediately
+    # 同线程重复获取：立即报错（不等待、不静默放行——等自己必自死锁）
+    # Same-thread re-acquire: immediate error (no wait, no silent pass-through — self-deadlock)
+    t_dup = time.time()
+    try:
+        lk.acquire('task:T002', 'ag-tom', blocking=True)
+        dup = 'ACQUIRED'
+    except RuntimeError as e:
+        dup = 'RAISED'
+        dup_msg = str(e)
+    dup_dt = time.time() - t_dup
+    if not _ok('5.2 同线程重复获取⇒立即报错（不等待）',
+               dup == 'RAISED' and dup_dt < 0.05,
+               'dup=%s dt=%.3fs msg=%r' % (dup, dup_dt, dup_msg if dup == 'RAISED' else '')):
+        return False
+    # 另一线程非阻塞：必须立刻拿到 None（不是等一会儿才 None）
+    # Another thread, non-blocking: must return None immediately
+    got2 = []
+
+    def _nb():
+        got2.append(lk.acquire('task:T001', 'ag-pit'))
     t0 = time.time()
-    lid2 = lk.acquire('task:T001', 'ag-pit')
+    th2 = threading.Thread(target=_nb)
+    th2.start(); th2.join(2)
     dt = time.time() - t0
-    if not _ok('5.2 Agent B 同资源拿不到锁（非阻塞立刻 None）',
+    lid2 = got2[0] if got2 else 'THREAD_HUNG'
+    if not _ok('5.3 另一线程非阻塞拿不到锁（立刻 None）',
                lid2 is None and dt < 0.5, 'lid2=%r dt=%.3fs' % (lid2, dt)):
         return False
     # 阻塞：C 一直等到 A 释放才进临界区。用 Event 握手，不靠 sleep+is_alive 猜调度。
     # Blocking: C waits until A releases. Event handshake — no sleep+is_alive scheduling guess.
-    import threading
     got = []
     started = threading.Event()
     done = threading.Event()
+    release_evt = threading.Event()
 
     def _blocking_acquire():
         started.set()
-        got.append(lk.acquire('task:T001', 'ag-c', blocking=True))
+        lid = lk.acquire('task:T001', 'ag-c', blocking=True)
+        got.append(lid)
         done.set()
+        release_evt.wait(5)
+        if lid:
+            lk.release(lid)
 
     th = threading.Thread(target=_blocking_acquire)
     th.start()
@@ -202,33 +227,32 @@ def test_agent_lock(tmp):
     blocked = not done.wait(0.5)
     lk.release(lid1)
     finished = done.wait(5)
+    release_evt.set()
     th.join(5)
-    if not _ok('5.3 blocking=True 确实阻塞到释放之后（Event 握手）',
+    if not _ok('5.4 blocking=True 确实阻塞到释放之后（Event 握手）',
                blocked and finished and bool(got) and got[0],
                'blocked=%s finished=%s got=%r' % (blocked, finished, got)):
         return False
-    lid3 = got[0]
-    lk.release(lid3)
     # 释放后可再次获取 · acquirable again after release
     lid4 = lk.acquire('task:T001', 'ag-pit')
-    if not _ok('5.4 释放后可再次获取', bool(lid4)):
+    if not _ok('5.5 释放后可再次获取', bool(lid4)):
         return False
     lk.release(lid4)
-    # 变异自证：acquire 永远「成功」时，5.2（互斥）与 5.3（真阻塞）的断言必须都失败
-    # Mutation self-check: if acquire always "succeeds", both the 5.2 exclusion assertion
-    # and the 5.3 "really blocked" assertion must fail
+    # 变异自证：acquire 永远「成功」时，5.3（互斥）与 5.4（真阻塞）的断言必须都失败
+    # Mutation self-check: if acquire always "succeeds", both the 5.3 exclusion assertion
+    # and the 5.4 "really blocked" assertion must fail
     orig = AgentLock.acquire
-    AgentLock.acquire = lambda self, resource, agent_id, blocking=False: 'fake-lease'
+    AgentLock.acquire = lambda self, label, agent_id, blocking=False: 'fake-lease'
     try:
         probe = AgentLock(None, os.path.join(tmp, '租约卷.txt'), root=tmp)
         first = probe.acquire('task:MUT', 'ag-x')
         second = probe.acquire('task:MUT', 'ag-y')
-        excl_green = (first is not None and second is None)   # 5.2 形态，变异下必 False
-        # 5.3 形态：持锁线程未释放时，blocking 调用不得返回；变异下它会立即返回
+        excl_green = (first is not None and second is None)   # 5.3 形态，变异下必 False
+        # 5.4 形态：持锁线程未释放时，blocking 调用不得返回；变异下它会立即返回
         blocked_green = (probe.acquire('task:MUT2', 'ag-z', blocking=True) is None)
     finally:
         AgentLock.acquire = orig
-    return _ok('5.5 变异：acquire 恒真 ⇒ 5.2/5.3 断言都必须红',
+    return _ok('5.6 变异：acquire 恒真 ⇒ 5.3/5.4 断言都必须红',
                not excl_green and not blocked_green,
                'excl_green=%s blocked_green=%s' % (excl_green, blocked_green))
 

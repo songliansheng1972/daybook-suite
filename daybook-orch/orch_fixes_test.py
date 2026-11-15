@@ -298,14 +298,16 @@ def test_read_locking():
 
 def _make_volume(path, n, hour=10, kind='报', author='汤姆'):
     """造 n 条条目（每条 3 行）·返回条目头行号（1 起）。
-    Build n entries (3 lines each) · return the entry-head line numbers (1-based)."""
+    Build n entries (3 lines each) · return the entry-head line numbers (1-based).
+    写账本夹具件 ⇒ 走 safeio.atomic_write（账本桶只许 safeio）。
+    Writes a ledger fixture ⇒ through safeio.atomic_write (the ledger bucket allows safeio only)."""
+    from safeio import atomic_write
     lines = []
     for i in range(n):
         lines.append('[2026-11-14 %02d:%02d:00] [%s] [条目%02d] [%s]' % (hour, i, kind, i, author))
         lines.append('正文 %d' % i)
         lines.append('')
-    with io.open(path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(lines) + '\n')
+    atomic_write(path, '\n'.join(lines) + '\n')
     return [1 + i * 3 for i in range(n)]
 
 

@@ -64,19 +64,23 @@ OLD_DEAD = (
 
 def build_dataset(root, n_entries=24, body_bytes=900):
     """造同一批数据：1 卷 / n_entries 条；心跳卷 200 agent × 5 次。
-    Build the shared dataset: one volume with n_entries; a heartbeat volume with 200 agents × 5 beats."""
-    with open(os.path.join(root, 'daybook.conf'), 'w', encoding='utf-8') as f:
-        f.write('[volumes]\n协作=协作卷.txt\n')
+    Build the shared dataset: one volume with n_entries; a heartbeat volume with 200 agents × 5 beats.
+    写账本夹具件 ⇒ 走 safeio.atomic_write（账本桶只许 safeio）。
+    Writes ledger fixtures ⇒ through safeio.atomic_write (the ledger bucket allows safeio only)."""
+    from safeio import atomic_write
+    atomic_write(os.path.join(root, 'daybook.conf'), '[volumes]\n协作=协作卷.txt\n')
     body = 'x' * body_bytes
-    with open(os.path.join(root, '协作卷.txt'), 'w', encoding='utf-8') as f:
-        for i in range(n_entries):
-            f.write('[2026-11-14 10:%02d:%02d] [报] [条目%02d] [汤姆] %s\n\n'
-                    % ((i // 60) % 60, i % 60, i, body))
+    buf = []
+    for i in range(n_entries):
+        buf.append('[2026-11-14 10:%02d:%02d] [报] [条目%02d] [汤姆] %s\n\n'
+                   % ((i // 60) % 60, i % 60, i, body))
+    atomic_write(os.path.join(root, '协作卷.txt'), ''.join(buf))
     hb = os.path.join(root, '心跳卷.txt')
-    with open(hb, 'w', encoding='utf-8') as f:
-        for a in range(200):
-            for b in range(5):
-                f.write('[2026-11-14 09:%02d:%02d] [心跳] [ag-%03d] alive\n' % (b, a % 60, a))
+    buf = []
+    for a in range(200):
+        for b in range(5):
+            buf.append('[2026-11-14 09:%02d:%02d] [心跳] [ag-%03d] alive\n' % (b, a % 60, a))
+    atomic_write(hb, ''.join(buf))
     return {
         'volume_bytes': os.path.getsize(os.path.join(root, '协作卷.txt')),
         'volume_entries': n_entries,
