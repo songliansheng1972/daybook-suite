@@ -134,23 +134,19 @@ WRITE_PATHS = (
     ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
     ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
     ('path_leak_check.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
-    ('safeio.py', 'atomic_write', 'impl', 'safeio 实现本身'),
-    ('safeio.py', '_append_now', 'impl', 'safeio 实现本身（临界区内追加）'),
-    ('safeio.py', '_rmw', 'impl', 'safeio 实现本身（临界区内读改写）'),
-    ('safeio.py', '_append_now', 'impl', 'safeio 实现本身（atomic_append 的锁内追加）'),
-    ('safeio.py', '_atomic_replace_at', 'impl', 'safeio 实现本身（dir_fd 临时件 + replace）'),
-    ('safeio.py', 'read_modify_write', 'impl', 'safeio 实现本身'),
+    ('safeio.py', '_append', 'impl', 'safeio 唯一写链（追加）'),
+    ('safeio.py', '_replace', 'impl', 'safeio 唯一写链（临时件 + replace + fsync(dfd)）'),
     ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
     ('task_volume.py', 'create', 'ledger', '账本内容/派生件'),
     ('task_volume.py', '_transition_locked', 'ledger', '账本内容/派生件'),
 )
 
 _WRITE_SAFE = frozenset(('safeio.atomic_write', 'safeio.atomic_append',
-                         'safeio.atomic_replace', 'safeio.read_modify_write',
+                         'safeio.read_modify_write',
                          'safeio.append_inplace',
                          # safeio 内部的自调用（同模块裸名）
                          # self-calls inside safeio (bare names in the same module)
-                         'atomic_write', 'atomic_append', 'atomic_replace',
+                         'atomic_write', 'atomic_append',
                          'read_modify_write', 'append_inplace'))
 _WRITE_SKIP = ('pack.py', 'ledger_guard_test.py')
 _WRITE_TEMP = ('tempfile.mkstemp', 'tempfile.NamedTemporaryFile',
@@ -852,10 +848,6 @@ def _scan_write_sites(d):
                     kinds.add('osopen')
                 elif t in ('os.write', 'os.pwrite', 'os.writev'):
                     kinds.add('osopen')
-                elif t.split('.')[-1] in ('_atomic_replace_at', '_open_parent_at'):
-                    # safeio 内部唯一实现（替换/走查）：经它写入即算 safeio 路径
-                    # safeio's single internal implementation (replace / walk)
-                    kinds.add('safe')
                 elif t in _WRITE_TEMP:
                     kinds.add('temp')
                 elif isinstance(sub.func, ast.Attribute) \
@@ -1163,6 +1155,22 @@ incremental=是
 FAILS = []
 CHECKS = [0]
 SKIPS = []
+# 变异矩阵记分：总数 / 杀死 / 存活 / 死变异（锚点消失或变换无差异）。
+# Mutation scoreboard: total / killed / survived / dead (missing anchor or no-op transform).
+MUT = {'total': 0, 'killed': 0, 'dead': 0, 'survivors': []}
+
+
+def _mut_ok(name, killed, detail='', dead=False):
+    """一条变异判据：杀死=绿；存活或死变异=红，并进入记分板。
+    One mutation check: killed=green; a survivor or a dead mutation is red and scored."""
+    MUT['total'] += 1
+    if dead:
+        MUT['dead'] += 1
+    elif killed:
+        MUT['killed'] += 1
+    else:
+        MUT['survivors'].append(name)
+    _ok(name, killed, detail)
 
 
 def _skip(reason):
@@ -2138,7 +2146,11 @@ elif mode == 'posix':
         safeio.atomic_write(os.path.join(link, '..', 'escape.txt'), b'X\n', root=d)
         esc_ok = False
     except RuntimeError:
-        esc_ok = not os.path.exists(resolved)
+        # 零写：根外解析点与根内同名点都不得出现（防「折成根内」也算通过）。
+        # Zero write: neither the outside resolution nor an in-root same-name file may appear
+        # (an "inside reroute" must not count as a pass).
+        esc_ok = (not os.path.exists(resolved)
+                  and not os.path.exists(os.path.join(d, 'escape.txt')))
     sub = os.path.join(d, 'realsub')
     os.makedirs(sub, exist_ok=True)
     try:
@@ -2294,6 +2306,143 @@ def _ak_scenario(src, mode, timeout=40, code=None):
         shutil.rmtree(d, ignore_errors=True)
 
 
+_ROOT_CHILD = r'''
+import os, sys, tempfile, threading, time
+sys.path.insert(0, sys.argv[1])
+d, mode = sys.argv[2], sys.argv[3]
+import safeio
+
+
+def _same_inode(a, b):
+    try:
+        return os.stat(a).st_ino == os.stat(b).st_ino
+    except OSError:
+        return False
+
+
+def _alias():
+    # 同一 inode 的多种写法：尾斜杠、自指软链；大小写仅在文件系统确实不区分时才加入。
+    # Several spellings of one inode: trailing slash, a self symlink; the upper-case variant is
+    # added only when the filesystem really maps it to the same inode.
+    link = os.path.join(d, 'self_link')
+    if not os.path.exists(link):
+        os.symlink(d, link)
+    aliases = [d, d + '/', link]
+    if _same_inode(d, d.upper()):
+        aliases.append(d.upper())
+    ids = []
+    for a in aliases:
+        r = safeio.Root._from_dir_path(a)
+        ids.append(r.dev_ino)
+        r.close()
+    print('IDENT_OK' if len(set(ids)) == 1 else 'IDENT_BAD %r' % (ids,))
+
+
+def _nest():
+    # 同一 inode 的另一种写法，同线程第二次取锁必须毫秒级 RuntimeError（不得等超时）。
+    # Another spelling of one inode: a second acquisition in the same thread must raise
+    # RuntimeError in milliseconds instead of waiting.
+    r1 = safeio.Root._from_dir_path(d)
+    r2 = safeio.Root._from_dir_path(d.upper() if _same_inode(d, d.upper()) else d + '/')
+    t0 = time.time()
+    try:
+        with r1.lock():
+            try:
+                r2.lock(timeout=1.0)
+                print('NEST_ACQUIRED')
+            except RuntimeError:
+                print('NEST_OK' if time.time() - t0 < 0.2 else 'NEST_SLOW')
+            except TimeoutError:
+                print('NEST_TIMEOUT')
+    finally:
+        r1.close()
+        r2.close()
+
+
+def _swap():
+    # 持锁后根路径被替换：写必须落打开时的 inode，路径上的新 inode 零触碰。
+    # After the root path is swapped while locked: the write must land on the inode opened,
+    # and the new inode on the path must stay untouched.
+    base = tempfile.mkdtemp(prefix='rootswap_')
+    A = os.path.join(base, 'A')
+    B = os.path.join(base, 'B')
+    os.makedirs(A)
+    os.makedirs(B)
+    open(os.path.join(A, 'vol.txt'), 'wb').write(b'a-original\n')
+    open(os.path.join(B, 'vol.txt'), 'wb').write(b'b-original\n')
+    with safeio.locked(A):
+        os.rename(A, os.path.join(base, 'A-moved'))
+        os.rename(B, A)
+        safeio.atomic_write(os.path.join(A, 'vol.txt'), b'written-after-swap\n', root=A)
+    new = open(os.path.join(A, 'vol.txt'), 'rb').read()
+    old = open(os.path.join(base, 'A-moved', 'vol.txt'), 'rb').read()
+    print('SWAP_OK' if new == b'b-original\n' and old == b'written-after-swap\n'
+          else 'SWAP_BAD new=%r old=%r' % (new, old))
+
+
+def _split():
+    # 换根后 B 重新 open 得到新 inode/新锁；A 已持有的 LockedRoot 仍写旧 inode，
+    # 因此 A 的整文件换入不会覆盖 B 的追加（丢更新=False）。
+    # After the swap B re-opens (new inode, new lock); A's held LockedRoot keeps writing the old
+    # inode, so A's whole-file replace cannot overwrite B's append (lost update = False).
+    base = tempfile.mkdtemp(prefix='splitlock_')
+    A = os.path.join(base, 'A')
+    B = os.path.join(base, 'B')
+    os.makedirs(A)
+    os.makedirs(B)
+    open(os.path.join(A, 'derived.txt'), 'wb').write(b'v0\n')
+    open(os.path.join(B, 'derived.txt'), 'wb').write(b'v0\n')
+    gate = threading.Event()
+
+    def writer_a():
+        with safeio.locked(A):
+            gate.set()
+            old = open(os.path.join(A, 'derived.txt'), 'rb').read()
+            time.sleep(0.6)
+            safeio.atomic_write(os.path.join(A, 'derived.txt'), old + b'v2-from-A\n', root=A)
+
+    def writer_b():
+        gate.wait()
+        safeio.atomic_append(os.path.join(A, 'derived.txt'), b'v1-from-B\n', root=A)
+
+    ta = threading.Thread(target=writer_a)
+    ta.start()
+    gate.wait()
+    os.rename(A, os.path.join(base, 'A-moved'))
+    os.rename(B, A)
+    tb = threading.Thread(target=writer_b)
+    tb.start()
+    ta.join()
+    tb.join()
+    final = open(os.path.join(A, 'derived.txt'), 'rb').read()
+    old = open(os.path.join(base, 'A-moved', 'derived.txt'), 'rb').read()
+    lost = b'v1-from-B' not in final
+    ok = (not lost) and b'v2-from-A' in old
+    print('SPLIT_OK' if ok else 'SPLIT_BAD lost=%s final=%r old=%r' % (lost, final, old))
+
+
+try:
+    {'alias': _alias, 'nest': _nest, 'swap': _swap, 'split': _split}[mode]()
+finally:
+    pass
+'''
+
+
+def _root_case(src, mode, timeout=30):
+    """跑一个根句柄/换根场景，返回最后一行与 stderr。
+    Run one root-handle / root-swap scenario; return its last line and stderr."""
+    d = tempfile.mkdtemp(prefix='rootcase_')
+    try:
+        r = subprocess.run([sys.executable, '-B', '-c', _ROOT_CHILD, src, d, mode],
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=timeout)
+        return (r.stdout.strip().splitlines() or ['ERR'])[-1], (r.stderr or '').strip()
+    except subprocess.TimeoutExpired:
+        return 'TIMEOUT', '子进程超时（挂起）'
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 _SHARED_TOKEN = 'sha' + 'red='          # 不写出整词，便于「全仓 grep」保持干净
 
 
@@ -2389,21 +2538,22 @@ def _case_lock_assert(tmp):
     _ok('AK[R10-1 自然竞态 300 次追加 ⇒ 零逃逸且观察到拒绝]',
         got.startswith('RACE ') and got.strip().endswith('esc=0')
         and 'rej=0' not in got, '%s %s' % (got, err[:120]))
-    # R10-1/R11-1 静态：唯一走查实现在场，四个原语全部经它；旧的「字面打开/祖先 stat +
-    # 事后 before 比对」必须已删
-    # R10-1/R11-1 static: the single walk is present and all four primitives use it; the old
-    # literal open / stat ancestry / `before` comparison must be gone
-    walk = ('def _open_parent_at' in safeio_src and 'dir_fd=fd' in safeio_src
+    # 步骤 1 静态：唯一 openat 走查在场；写链只存在于 LockedRoot；旧的「加锁后现算 inode
+    # 复核」与以路径字符串为键的 _ident 必须已删
+    # Step-1 static: the single openat walk is present; the write chain exists only on
+    # LockedRoot; the old "recompute inode after locking" check and string-keyed _ident are gone
+    walk = ('def _walk_parent' in safeio_src and 'dir_fd=fd' in safeio_src
             and 'os.O_NOFOLLOW | os.O_DIRECTORY' in safeio_src
             and 'for comp in parts[:-1]:' in safeio_src)
-    shared = safeio_src.count('_open_parent_at(') >= 4
-    legacy_gone = ('before is not None' not in safeio_src
-                   and 'os.stat(rp)' not in safeio_src
+    shared = safeio_src.count('_walk_parent(') >= 3 and 'def write(self, rel' in safeio_src
+    legacy_gone = ('_open_root_dir' not in safeio_src
+                   and 'def _ident(' not in safeio_src
+                   and 'before is not None' not in safeio_src
                    and 'tempfile.mkstemp' not in safeio_src)
-    _ok('AK[R10-1/R11-1 静态] 唯一 openat 走查被四原语共用（append_inplace 经 _append_now），'
-        '旧字面路径/before 比对已删',
+    _ok('AK[步骤1 静态] 唯一 openat 走查 + 写链只在 LockedRoot；'
+        '「加锁后现算 inode 复核」与字符串身份已删',
         walk and shared and legacy_gone,
-        '走查=%s 共用=%s 旧法已删=%s' % (walk, shared, legacy_gone))
+        '走查=%s 写链=%s 旧法已删=%s' % (walk, shared, legacy_gone))
     # R11-1/R12-1：静态软链祖先下四个原语全部拒绝且根外零写
     # R11-1/R12-1: under a static symlinked ancestor all four primitives reject with zero outside
     got, err = _ak_scenario(here, 'prims')
@@ -2448,13 +2598,14 @@ def _case_lock_assert(tmp):
     # R11-5: a write-only (0200) target can still be appended
     got, err = _ak_scenario(here, 'mode200')
     _ok('AK[R11-5 0200 只写目标仍可追加]', got == 'MODE200_OK', '%s %s' % (got, err[:120]))
-    # R11-2 静态：atomic_write 纳入同一条路（root 必填 + dir_fd 临时件/replace），不取锁
-    # R11-2 static: atomic_write joined the same path (mandatory root + dir_fd temp/replace),
-    # still lock-free
+    # 步骤 1 静态：atomic_write 适配器只做「Rel + 走唯一写链」，replace/fsync 在 LockedRoot
+    # Step-1 static: the atomic_write adapter only builds a Rel and enters the single write
+    # chain; the replace/fsync live on LockedRoot
     aw = ('def atomic_write(path, data, mode=None, root=None):' in safeio_src
-          and '_atomic_replace_at(dfd, name, data, mode, who)' in safeio_src
-          and 'os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)' in safeio_src)
-    _ok('AK[R11-2 静态] atomic_write 走 dir_fd 临时件+replace、root 必填、不取锁',
+          and 'mode=WriteMode.REPLACE' in safeio_src
+          and 'os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)' in safeio_src
+          and 'os.fsync(dfd)' in safeio_src)
+    _ok('AK[步骤1 静态] atomic_write 走唯一写链（dir_fd 临时件 + replace + fsync(dfd)）',
         aw, 'ok=%s' % aw)
     # R8-3：账本根不存在 ⇒ 明确报错（不是 FileNotFoundError）
     # R8-3: a missing ledger root ⇒ explicit error (not a bare FileNotFoundError)
@@ -2475,37 +2626,12 @@ def _case_lock_assert(tmp):
     else:
         _skip('AK R5：当前盒无 agent_lock.py')
 
-    # 变异：逐一破坏约束 ⇒ 对应场景必须被放行/走样（判据红）
-    # Mutations: break one constraint at a time ⇒ the matching scenario must slip through (red)
-    excl_block = "    if not exclusive_held(resolved):"
-    assert excl_block in safeio_src
-    # 变异②：别的线程持锁也算（进程级）⇒ thread_sub 场景必须抛错，否则判据红
-    # 旧「根一致检查」的两条变异已不再可观察：现在由 openat 物理走查兜住——删掉字面检查
-    # 也出不去，故不再以「应变红却仍红」的假变异充数（R10-1 的改回字面路径变异另列）。
-    # Mutation 2: counting another thread's lock as ours ⇒ the thread_sub scenario must raise.
-    # The two old mutations for the literal root-consistency check are no longer observable:
-    # the openat walk contains the write even when that check is deleted, so they are not kept
-    # as fake mutations (the literal-path revert mutation is listed separately under R10-1).
-    muts = (
-        ('thread_ok', '变异②：别的线程持锁也算（进程级）',
-         safeio_src.replace(excl_block, "    if not (_ident(resolved)[0] in _PROC):")),
-    )
-    for mode, label, text in muts:
-        md = os.path.join(tmp, 'ak_mut_' + mode)
-        os.makedirs(md)
-        io.open(os.path.join(md, 'safeio.py'), 'w', encoding='utf-8').write(text)
-        try:
-            io.open(os.path.join(md, 'ledger_root.py'), 'w', encoding='utf-8').write(
-                io.open(os.path.join(here, 'ledger_root.py'), encoding='utf-8').read())
-        except IOError:
-            pass
-        got, err = _ak_scenario(md, mode)
-        _ok('AK %s ⇒ 判据红（场景被放行/走样）' % label,
-            got != 'RAISED_ZERO' or 'RAISED_DIRTY' in got,
-            '%s %s' % (got, err[:120]))
-    # 变异⑤（R10-1）：append_inplace 改回字面路径打开 ⇒ 祖先软链逃逸（判据必须红）
-    # Mutation 5 (R10-1): append_inplace reverts to a literal-path open ⇒ ancestor symlink escapes
-    def _mutant_run(tag, text, mode):
+    # 变异矩阵（步骤 1）：每条都必须让某条属性/回归场景变红；锚点消失记「死变异」，
+    # 未被杀死记「存活变异」。两者都会让本次判据红——「共 N 项全绿」不再作为结论。
+    # Mutation matrix (step 1): each must turn an attribute/scenario red; a missing anchor is a
+    # dead mutation, an uncaught one a survivor. Both make this run red — "N checks green" is
+    # no longer a conclusion.
+    def _mutant_safeio(tag, text):
         md = os.path.join(tmp, 'ak_mut_' + tag)
         os.makedirs(md)
         io.open(os.path.join(md, 'safeio.py'), 'w', encoding='utf-8').write(text)
@@ -2514,89 +2640,60 @@ def _case_lock_assert(tmp):
                 io.open(os.path.join(here, 'ledger_root.py'), encoding='utf-8').read())
         except IOError:
             pass
-        return _ak_scenario(md, mode)
+        return md
 
-    anc_mut_line = ("    dfd = os.open(os.path.dirname(os.path.abspath(path)),\n"
-                    "                  os.O_RDONLY | os.O_DIRECTORY)\n"
-                    "    name = os.path.basename(path)")
-    # 变异⑤（R10-1）：追加原语改回字面路径打开 ⇒ 静态祖先软链下写到根外（判据必须红）
-    # Mutation 5 (R10-1): the append primitive reverts to a literal-path open ⇒ a static
-    # symlinked ancestor lets the write escape (the criterion must go red)
-    app_block = ("    root_real = _real_root(root, who)\n"
-                 "    dfd, name = _open_parent_at("
-                 "root_real, _rel_parts(path, root_real, who), who)\n"
-                 "    try:\n        padded = False\n"
-                 "        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW")
-    if app_block in safeio_src:
-        got, err = _mutant_run('r10', safeio_src.replace(
-            app_block, app_block.replace(
-                "    dfd, name = _open_parent_at("
-                "root_real, _rel_parts(path, root_real, who), who)",
-                anc_mut_line), 1), 'ancestor')
-        _ok('AK 变异 R10-1 追加原语改回字面路径打开 ⇒ 祖先软链逃逸（判据红）',
-            got in ('WROTE', 'ANCESTOR_DIRTY'), '%s %s' % (got, err[:120]))
-    else:
-        _ok('AK 变异 R10-1 追加原语改回字面路径打开 ⇒ 祖先软链逃逸（判据红）', False,
-            '找不到 _append_now 走查锚点')
-    # 变异⑥（R11-1）：_append_now 改回字面打开 ⇒ 软链祖先下追加原语放行（判据必须红）
-    # Mutation 6 (R11-1): _append_now reverts to a literal open ⇒ the append primitives slip
-    # through under the symlinked ancestor (the criterion must go red)
-    if app_block in safeio_src:
-        got, err = _mutant_run('r11', safeio_src.replace(
-            app_block, app_block.replace(
-                "    dfd, name = _open_parent_at("
-                "root_real, _rel_parts(path, root_real, who), who)",
-                anc_mut_line), 1), 'prims')
-        _ok('AK 变异 R11-1 _append_now 改回字面打开 ⇒ 软链祖先下放行（判据红）',
-            got.startswith('PRIMS_LEAK'), '%s %s' % (got, err[:120]))
-    else:
-        _ok('AK 变异 R11-1 _append_now 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
-            '找不到 _append_now 走查锚点')
-    # 变异⑦（R12-1）：atomic_write 改回字面打开 ⇒ 软链祖先下只有它放行（判据必须红）
-    # Mutation 7 (R12-1): atomic_write reverts to a literal open ⇒ only it slips through
-    aw_block = ("    who = 'safeio.atomic_write'\n"
-                "    root_real = _real_root(root, who)\n"
-                "    dfd, name = _open_parent_at("
-                "root_real, _rel_parts(path, root_real, who), who)")
-    if aw_block in safeio_src:
-        got, err = _mutant_run('r12aw', safeio_src.replace(
-            aw_block, aw_block.replace(
-                "    dfd, name = _open_parent_at("
-                "root_real, _rel_parts(path, root_real, who), who)",
-                anc_mut_line), 1), 'prims')
-        _ok('AK 变异 R12-1 atomic_write 改回字面打开 ⇒ 软链祖先下放行（判据红）',
-            got.startswith('PRIMS_LEAK'), '%s %s' % (got, err[:120]))
-    else:
-        _ok('AK 变异 R12-1 atomic_write 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
-            '找不到 atomic_write 走查锚点')
-    # 变异⑧（R12-1）：read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据必须红）
-    # Mutation 8 (R12-1): read_modify_write reverts to a literal open ⇒ it slips through
-    rmw_line = "        dfd, name = _open_parent_at(root_real, _rel_parts(path, root_real, who), who)"
-    if rmw_line in safeio_src:
-        rmw_mut = ("        dfd = os.open(os.path.dirname(os.path.abspath(path)),\n"
-                   "                      os.O_RDONLY | os.O_DIRECTORY)\n"
-                   "        name = os.path.basename(path)")
-        got, err = _mutant_run('r12rmw', safeio_src.replace(rmw_line, rmw_mut, 1), 'prims')
-        _ok('AK 变异 R12-1 read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据红）',
-            got.startswith('PRIMS_LEAK'), '%s %s' % (got, err[:120]))
-    else:
-        _ok('AK 变异 R12-1 read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
-            '找不到 read_modify_write 走查锚点')
-    # 变异⑨（R13-1）：归属判改回 abspath 词法折叠 ⇒ `link/..` 被折成根内路径、静默改道
-    # Mutation 9 (R13-1): containment reverts to abspath lexical folding ⇒ `link/..` collapses
-    # to an in-root path and is silently rerouted (the criterion must go red)
-    lex_line = "    cur = os.path.realpath(os.path.dirname(raw))"
-    if lex_line in safeio_src:
-        got, err = _mutant_run(
-            'r13', safeio_src.replace(
-                lex_line,
-                "    cur = os.path.realpath(os.path.dirname(os.path.abspath(path)))", 1),
-            'posix')
-        _ok('AK 变异 R13-1 归属判改回 abspath 词法折叠 ⇒ link/.. 静默改道（判据红）',
-            got.startswith('POSIX_BAD'), '%s %s' % (got, err[:120]))
-    else:
-        _ok('AK 变异 R13-1 归属判改回 abspath 词法折叠 ⇒ link/.. 静默改道（判据红）', False,
-            '找不到 _rel_parts realpath 锚点')
+    def _mut(anchor, new, tag):
+        if anchor not in safeio_src:
+            _mut_ok('变异[%s] ⇒ 判据红' % tag, False, '死变异：锚点消失', dead=True)
+            return None
+        text = safeio_src.replace(anchor, new)
+        if text == safeio_src:
+            _mut_ok('变异[%s] ⇒ 判据红' % tag, False, '死变异：变换后无差异', dead=True)
+            return None
+        return _mutant_safeio(tag, text)
+
+    # M1：锁身份退回 label 字符串 ⇒ P1 的「同 inode 另一种写法」不再互认
+    # M1: lock identity back to the label string ⇒ P1's "another spelling of one inode" breaks
+    md = _mut("        key = self.dev_ino", "        key = self.label", 'M1 锁身份改 label')
+    if md:
+        got, err = _root_case(md, 'nest')
+        _mut_ok('M1 锁身份改 label ⇒ P1 红（不互认/等超时）', got != 'NEST_OK',
+                '%s %s' % (got, err[:100]))
+    # M2：去掉走查的 O_NOFOLLOW ⇒ 软链祖先被跟随，写逃到根外
+    # M2: drop O_NOFOLLOW in the walk ⇒ a symlinked ancestor is followed and the write escapes
+    md = _mut("os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY",
+              "os.O_RDONLY | os.O_DIRECTORY", 'M2 去 O_NOFOLLOW')
+    if md:
+        got, err = _ak_scenario(md, 'ancestor')
+        _mut_ok('M2 去掉走查 O_NOFOLLOW ⇒ 祖先软链逃逸（判据红）',
+                got != 'ANCESTOR_ZERO', '%s %s' % (got, err[:120]))
+    # M3：归属判退回 abspath 词法折叠 ⇒ root/link/../x 被折成根内、静默改道
+    # M3: containment back to abspath folding ⇒ root/link/../x is silently rerouted inside
+    md = _mut("        cur = os.path.realpath(os.path.dirname(raw))",
+              "        cur = os.path.realpath(os.path.dirname(os.path.abspath(path)))",
+              'M3 abspath 词法折叠')
+    if md:
+        got, err = _ak_scenario(md, 'posix')
+        _mut_ok('M3 归属判改 abspath 词法折叠 ⇒ link/.. 静默改道（判据红）',
+                got != 'POSIX_OK', '%s %s' % (got, err[:120]))
+    # M5：删掉 append_inplace 的持锁前置 ⇒ 无锁也能写
+    # M5: drop append_inplace's lock precondition ⇒ an unlocked write is allowed
+    md = _mut("    lr = _held_for(resolved)\n    if lr is None:",
+              "    lr = _held_for(resolved)\n    if False:", 'M5 去持锁前置')
+    if md:
+        got, err = _ak_scenario(md, 'nolock')
+        _mut_ok('M5 去掉 append_inplace 持锁前置 ⇒ 无锁写放行（判据红）',
+                got != 'RAISED_ZERO', '%s %s' % (got, err[:120]))
+    # M-root：写链按 label 重新打开根 ⇒ 换根后写落新 inode（fd 语义被破坏）
+    # M-root: the write chain re-opens the root by label ⇒ after a swap it writes the new inode
+    md = _mut("        dfd, name = _walk_parent(self.root._fd, rel.parts, 'safeio.write')",
+              "        dfd, name = _walk_parent("
+              "os.open(self.root.label, os.O_RDONLY | os.O_DIRECTORY), "
+              "rel.parts, 'safeio.write')", 'M-root 写链重开根')
+    if md:
+        got, err = _root_case(md, 'swap')
+        _mut_ok('M-root 写链按 label 重开根 ⇒ 换根写落新 inode（判据红）',
+                got != 'SWAP_OK', '%s %s' % (got, err[:120]))
     # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
     if not has_agent:
         _skip('AK 变异④：当前盒无 agent_lock.py')
@@ -2613,21 +2710,22 @@ def _case_lock_assert(tmp):
         # 同时把 safeio 的同线程检查也退回「重入直接放行」，否则变异会被下层拦住
         # Also revert safeio's same-thread check to "reentry passes through", otherwise the
         # lower layer masks the mutation
-        dup_safe = """    ent = _PROC.get(key)
-    if ent is not None and ent['owner'] == me:
-        raise RuntimeError('safeio.locked: 同线程重复获取账本根锁（%s）·拒绝等待'
-                           '（同线程重入必自死锁）' % lp)"""
+        dup_safe = """        ent = _PROC.get(key)
+        if ent is not None and ent['owner'] == me:
+            raise RuntimeError('safeio.locked: 同线程重复获取账本根锁（%s）·拒绝等待'
+                               '（同线程重入必自死锁）' % self.label)"""
         assert dup_safe in safeio_src
         mut_safeio = safeio_src.replace(
-            dup_safe, "    ent = _PROC.get(key)\n    if ent is not None and ent['owner'] == me:\n"
-                      "        yield ent['fd']\n        return")
+            dup_safe, "        ent = _PROC.get(key)\n"
+                      "        if ent is not None and ent['owner'] == me:\n"
+                      "            pass")
         for f, text in (('safeio.py', mut_safeio), ('ledger_root.py', None)):
             if text is None:
                 text = io.open(os.path.join(here, f), encoding='utf-8').read()
             io.open(os.path.join(md, f), 'w', encoding='utf-8').write(text)
         got, err = _ak_scenario(md, 'agent', code=_AK_AGENT, timeout=5)
-        _ok('AK 变异④：删掉同线程重复检查 ⇒ 静默放行/挂起（判据红）',
-            not _agent_verdict(got), '%s %s' % (got, err[:120]))
+        _mut_ok('AK 变异④：删掉同线程重复检查 ⇒ 静默放行/挂起（判据红）',
+                not _agent_verdict(got), '%s %s' % (got, err[:120]))
     # 变异⑤：把共享锁分支塞回去 ⇒ 静态判据必须红
     # Mutation ⑤: put a shared-lock branch back ⇒ the static criterion must go red
     def _has_shared(txt):
@@ -2637,20 +2735,26 @@ def _case_lock_assert(tmp):
     _ok('AK 变异⑤：保留 shared 分支 ⇒ 静态判据红',
         (not _has_shared(safeio_src)) and _has_shared(mut_shared),
         '原=%s 变异=%s' % (_has_shared(safeio_src), _has_shared(mut_shared)))
-    # 变异⑥：锁身份退回 realpath 字符串 ⇒ 同 inode 不同写法不再视为同一把锁（等超时/挂起）⇒ 红
-    # Mutation ⑥: identity back to the realpath string ⇒ different spellings of one inode stop
-    # being the same lock (timeout/hang) ⇒ red
-    ident_anchor = "    return (st.st_dev, st.st_ino), lp"
-    assert ident_anchor in safeio_src
-    md = os.path.join(tmp, 'ak_mut_ident')
-    os.makedirs(md)
-    io.open(os.path.join(md, 'safeio.py'), 'w', encoding='utf-8').write(
-        safeio_src.replace(ident_anchor, "    return lp, lp"))
-    io.open(os.path.join(md, 'ledger_root.py'), 'w', encoding='utf-8').write(
-        io.open(os.path.join(here, 'ledger_root.py'), encoding='utf-8').read())
-    got, err = _ak_scenario(md, 'variants')
-    _ok('AK 变异⑥：锁身份退回字符串 ⇒ 同 inode 写法不再互认（判据红）',
-        not _variants_ok(got), '%s %s' % (got, err[:120]))
+
+
+def _case_root_handle(tmp):
+    """P1 根身份 / 换根语义（属性层）：同一根的任意写法同一 dev_ino；换根后写打开时的 inode。
+    P1 root identity / root-swap semantics: every spelling of one root gives one dev_ino; after
+    a swap the write lands on the inode that was opened."""
+    print('  -- P1 根身份 + 换根语义（属性层；变异见 AK 矩阵） --')
+    here = os.path.dirname(SRC_BIN)
+    got, err = _root_case(here, 'alias')
+    _ok('P1 根身份：同一根的多种写法 ⇒ 同一 dev_ino', got == 'IDENT_OK',
+        '%s %s' % (got, err[:120]))
+    got, err = _root_case(here, 'nest')
+    _ok('P1 同一 inode 另一种写法 ⇒ 同线程毫秒级 RuntimeError（不挂起）', got == 'NEST_OK',
+        '%s %s' % (got, err[:120]))
+    got, err = _root_case(here, 'swap')
+    _ok('P1 换根后写落打开时的 inode（路径上的新 inode 零触碰）', got == 'SWAP_OK',
+        '%s %s' % (got, err[:120]))
+    got, err = _root_case(here, 'split')
+    _ok('P1/P5 换根下整写不覆盖追加（丢更新=False）', got == 'SPLIT_OK',
+        '%s %s' % (got, err[:120]))
 
 
 _HOLD = r'''
@@ -4367,6 +4471,7 @@ def main():
         _case_home_flag(work)
         _case_tail_no_truncate(work)
         _case_lock_assert(work)
+        _case_root_handle(work)
         _case_serial_cost(work)
         _case_lease_leak(work)
         _case_no_root(work)
@@ -4400,10 +4505,17 @@ def main():
     if SKIPS:
         for _r in SKIPS:
             print('  [跳过] %s' % _r)
+    p1_bad = [f for f in FAILS if f.startswith('P1')]
+    print('属性层：P1 根身份/换根语义 = %s' % ('红' if p1_bad else '绿'))
+    print('变异矩阵：总数 %d / 杀死 %d / 存活 %d / 死变异 %d'
+          % (MUT['total'], MUT['killed'], len(MUT['survivors']), MUT['dead']))
+    if MUT['survivors']:
+        print('  存活变异：' + '；'.join(MUT['survivors']))
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: A–AO 三十三组用例全绿')
+    print('PASS: 回归层 0 红；健康度=存活变异 %d / 死变异 %d（P1 绿）'
+          % (len(MUT['survivors']), MUT['dead']))
     return 0
 
 

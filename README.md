@@ -104,7 +104,7 @@ daybook-suite/            ← this repo
 | daybook-mcp  | v4.0.6  | 13                  | 6017         |
 | daybook-orch | v4.0.6  | 11                  | 3695         |
 
-**Code size**: **13,561 lines** across the three packages' product files (3,849 + 6,017 + 3,695).
+**Code size**: **14,514 lines** across the three packages' product files (4,170 + 6,332 + 4,012).
 
 The **authoritative file list** is `src/pack.py` (each package's `prog` list). Reproduce any time:
 
@@ -284,11 +284,11 @@ daybook-suite/            ← 本仓
 
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
-| 起居注 | v4.0.6 | 8          | 3973         |
-| 璇玑  | v4.0.6 | 13         | 6135         |
-| 司南  | v4.0.6 | 11         | 3815         |
+| 起居注 | v4.0.6 | 8          | 4170         |
+| 璇玑  | v4.0.6 | 13         | 6332         |
+| 司南  | v4.0.6 | 11         | 4012         |
 
-**代码规模**：三包产品件合计 **13,923 行**（3,973 ＋ 6,135 ＋ 3,815）。
+**代码规模**：三包产品件合计 **14,514 行**（4,170 ＋ 6,332 ＋ 4,012）。
 
 > 构建号变动记录：2026-10-14 为 10 个产品件**补齐 SPDX 许可头**（每件 +2 行：`SPDX-License-Identifier` 与  
 > `Copyright`），起居注 1354→1362、璇玑 2367→2381、司南不变（其产品件原已带头）。**纯注释改动·零逻辑变更**。  

@@ -204,6 +204,37 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     `(st_dev, st_ino)`；不一致（追加期间被外部 `os.replace` 换掉）即 `RuntimeError`
     「目标在追加期间被替换·数据可能未落盘」。判据注入替换 ⇒ 报错、不静默成功（`REPLACE_OK`）。
 
+### 架构收口 · 步骤 0／1（2026-11-15）
+
+45. **步骤 0：写路径先变成运行时观测**：新增 `src/tools/write_audit.py`，用
+    `sys.addaudithook` 记录 `open` / `os.rename` / `os.remove` / `os.mkdir`，只保留落在账本根内的
+    写事件，打印「调用栈顶层函数 + 目标相对段」并与登记表对账。三态读数（判据自己打印）：
+    绿 `登记=4 实扫=4 未登记=0`；红（夹具插一行 stray 写）`未登记=1 命中stray=True`；
+    变异红（过滤条件改成全部忽略）`登记=4 实扫=0 登记未实扫=4`。跳过一律打印原因与计数。
+46. **步骤 1：根句柄 `Root` + 锁挂目录 fd**：`safeio.py` 引入四个单一所有权——
+    `Root`（`O_RDONLY|O_DIRECTORY` fd + 一次 `fstat` 取得的 `dev_ino`；`label`/`orig` 只用于文案与
+    取名，不参与锁判定）、`Rel`（构造即校验，`..`/`.`/空段/分隔符直接拒绝）、`LockedRoot`
+    （写方法只存在于该类型，模块外只能经 `Root.lock()` 取得）、`WriteMode`
+    （`APPEND_CREATE` / `APPEND_EXISTING` / `REPLACE`，不再有布尔参数分叉）。`_PROC` / `_MUTEX`
+    只以 `dev_ino` 为键，`flock` 挂在 `root._fd` 上；写链只有一条：走查 →
+    `O_APPEND` 追加或临时件 + `os.replace(dir_fd)` + `fsync(dfd)` → 追加后 inode 复核。
+    旧 `locked` / `atomic_append` / `append_inplace` / `atomic_write` / `read_modify_write`
+    保留为薄适配器（只做「路径 → Rel」与「复用本线程已持 LockedRoot」），迁移方案步骤 3 删除。
+47. **删掉自证死判据，换根由 fd 语义定义**：`_ident()` 与 `_open_root_dir()` 的「加锁后现算
+    inode 再比对」整段删除——那种比较两边同时刻现算，根被换时会一起变成新 inode。
+    现在写永远落在 `Root` 打开时的 inode 上；入口若需要「路径仍是我」显式调用
+    `Root.revalidate()`，写路径不调用。两条红探针转绿：
+    `probe_root_swap.py` → `旧 A(moved)/vol.txt = b'written-after-swap\n'`、
+    `新 A/vol.txt = b'b-original\n'`；`probe_split_lock.py` → `B 的追加是否丢失 = False`。
+48. **判据分层与变异记分（步骤 1 范围）**：新增属性层 P1（`IDENT_OK` 同一根多写法同一
+    `dev_ino`、`NEST_OK` 同 inode 另一种写法毫秒级报错、`SWAP_OK` 换根写旧 inode、`SPLIT_OK`
+    换根下整写不覆盖追加），变异矩阵改为 AST/场景级并打印
+    `总数 / 杀死 / 存活 / 死变异`：源树 6 条全杀、`daybook` 盒 5 条全杀，存活 0、死变异 0；
+    锚点消失或变换无差异记「死变异」并判红，跳过的变异打印原因。
+49. **收口读数**：源树 `0 红 / 442 项（PASS 442；跳过 0）`；`daybook` 盒
+    `0 红 / 340 项（PASS 340；跳过 10）`；两套 `python3 src/pack.py --verify` rc=0；
+    构建号 起居注 **4170** ／ 璇玑 **6332** ／ 司南 **4012**（代码规模 14,514 行）。
+
 ## v4.0.5 · 2026-11-14
 
 **内容**：压测工具 `bench/` 入仓（开发者工具，不入发行件）。
