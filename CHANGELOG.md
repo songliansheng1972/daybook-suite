@@ -116,8 +116,8 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     `root=` 即红；变异「删掉一处 root 实参」必须红。调用点残留的 `root or dirname(...)` 兜底
     全部删除（`daybook_hook.mark_processed`、`Heartbeat`），确定不了根就按根解析失败处理。
 22. **判据跳过显式化**：`[跳过]` 统一进跳过清单并在汇总打印数量与原因，不计入判据条数；
-    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 430 项（PASS 430；
-    跳过 0 项）`，`daybook/` 盒 `0 红 / 328 项（PASS 328；跳过 10 项）`。盒内 10 条跳过为
+    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 436 项（PASS 436；
+    跳过 0 项）`，`daybook/` 盒 `0 红 / 334 项（PASS 334；跳过 10 项）`。盒内 10 条跳过为
     AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）＋
     R10-3×3（缺 `orchestrator.py` ×2／`mcp_server.py`）；其余项数差异来自 AH 等按文件集扫描的
     判据随文件数变化。不手写换算，也不报「恒差 3」。
@@ -165,16 +165,32 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 34. **软链别名拼写不再误拒（R11-4）**：`/tmp` 与 `/private/tmp` 两种写法此前只有一边命中根
     前缀即 `RuntimeError`。现相对分量计算前先 `realpath` 归一父目录（末段保留原名、由
     `O_NOFOLLOW` 拒绝软链），两种拼写混用都能写（判据 `ALIAS_OK`）。
-35. **末段 `O_RDWR` 回退 `O_WRONLY`（R11-5）**：只写权限（0200）的目标此前从「可追加」变成
-    报错。现先试 `O_RDWR|O_APPEND`，`PermissionError` 时回退 `O_WRONLY|O_APPEND`（读不到末
-    字节则不补换行）；判据 `MODE200_OK` 断言 0200 目标仍可追加。`append_inplace` 与
-    `_append_now` 同法。
+35. **末段 `O_RDWR` 回退 `O_WRONLY`（R11-5，R12-3 已改为单路）**：只写权限（0200）的目标此前从
+    「可追加」变成报错。当时先试 `O_RDWR|O_APPEND`，`PermissionError` 时回退 `O_WRONLY|O_APPEND`；
+    该回退分支已在第 39 条整段删除，改为「写固定 `O_WRONLY`、末字节另开只读 fd」。
 36. **收口补遗（R11-6）**：①README 新增退出码表（0/2/3/4/5/6 与 3>4>6>2>5 优先级），与
     `--help` 逐字对齐；②CHANGELOG 写明 MCP 请求期的 `RuntimeError` 走 RPC
     `ERR_INTERNAL_ERROR`，进程启动期失败才是 rc=6；③`orchestrator._main` 在 `except Exception`
     之前先 `except RuntimeError: raise`，`Hub` 初始化的 `RuntimeError` 透传给顶层（rc=6），
     不再被吞成 rc=2，其余 `Exception` 保持原行为。判据 `R10-3 orchestrator.py（注入 Hub）`
     断言 rc=6、文案一致、无 traceback（删掉该分支即红）。
+37. **四个原语各配一条专属变异（R12-1）**：此前只有 `append_inplace` 与 `atomic_append` 有
+    「改回字面打开」的变异，`atomic_write` / `read_modify_write` 只被静态计数兜着。现
+    `prims` 场景覆盖四个原语（`PRIMS 4/4 leak=0`），并各补一条专属变异：把对应原语的
+    `_open_parent_at` 换成字面父目录打开 ⇒ `PRIMS_LEAK 3/4 leak=1`，判据必红。
+38. **归属判据改用 inode（R12-2）**：`_rel_parts` 不再拿 `realpath` 字符串比前缀，改为从目标
+    父目录起逐级向上，按 `(st_dev, st_ino)` 找到与根同一 inode 的目录即止。大小写变体、
+    NFC/NFD 混写、`/tmp` ↔ `/private/tmp`、尾斜杠四种写法都能写（`SPELL 4/4 escape=R`）；
+    含 `..` 归一后逃逸仍拒绝且根外零写。`_open_parent_at` 的物理走查不变，两者同一 inode 口径。
+39. **追加只剩一条路（R12-3）**：删除 `O_RDWR → O_WRONLY` 的回退分支——写固定用
+    `O_WRONLY|O_CREAT|O_APPEND|O_NOFOLLOW`；末字节检查另开 `O_RDONLY|O_NOFOLLOW` fd，
+    打不开（只写/拒读）就跳过补换行。判据：`0200` 与 ACL 拒读目标仍可追加且 `padded=False`
+    （`MODE200_OK`）；`0400`／`0000` 仍拒绝，ENOENT／EISDIR／ELOOP 不被吞（`REFUSE_OK`）。
+40. **读不到末字节的例外写进公开 docstring（R12-4）**：`append_inplace` 明确写明「读不到末字节
+    时（只写或拒读权限）跳过补换行、返回 False」，不只写在代码注释里。
+41. **`daybook_session_hook --state` 越界收口（R12-5）**：`--state` 指到 `ROOT` 之外此前抛裸
+    traceback、exit 1。现在顶层先捕 `RuntimeError`，打印 `★ 运行失败（rc=6）：<原因>` 并退 6，
+    不抛 traceback、越界零写；判据注入越界路径断言 rc/文案/无 traceback/零写。
 
 ## v4.0.5 · 2026-11-14
 

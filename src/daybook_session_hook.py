@@ -266,6 +266,11 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
+    except RuntimeError as exc:
+        # 越界/写拒绝等运行期错误（如 --state 指到 ROOT 之外）按统一口径收口为 rc=6。
+        # Runtime refusals (e.g. --state outside ROOT) use the shared rc=6 boundary.
+        print('★ 运行失败（rc=6）：%s' % exc, file=sys.stderr)
+        sys.exit(6)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print('会话归档器失败：%s' % exc, file=sys.stderr)
         sys.exit(1)

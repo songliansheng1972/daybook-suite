@@ -175,22 +175,41 @@ def _real_root(root, who):
 
 
 def _rel_parts(path, root_real, who):
-    """归一后算目标相对根的分量：父目录先 realpath（/tmp 与 /private/tmp 别名视为同一处），
-    最后一段保留原样（末段若是软链，由 O_NOFOLLOW 拒绝）。
-    Normalise before matching: the parent directory is realpath'ed (so /tmp and /private/tmp
-    aliases count as the same place); the final component is kept verbatim (a symlink there is
-    refused by O_NOFOLLOW)."""
+    """算目标相对根的分量：从目标的父目录起逐级向上，按 (st_dev, st_ino) 找到与根同一 inode
+    的目录即止。归属判据是 **inode**，不是字符串前缀——大小写变体、NFC/NFD 混写、
+    `/tmp` ↔ `/private/tmp`、尾斜杠等写法只要指向同一 inode 都算根内；父目录 `realpath`
+    归一后仍找不到根 inode（含 `..` 归一后逃逸）即拒绝（零写）。末段保留原名，由
+    `O_NOFOLLOW` 拒绝软链。
+    Components are computed by walking **up by inode**: from the target's parent directory until
+    a directory with the same (st_dev, st_ino) as the root. Containment is judged by inode, not
+    a string prefix, so case variants, NFC/NFD spellings, `/tmp` ↔ `/private/tmp` and trailing
+    slashes all count as inside when they hit the same inode; a parent that (after realpath)
+    never reaches the root inode — including `..` escapes — is refused (zero write). The final
+    component keeps its original spelling and a symlink there is refused by O_NOFOLLOW."""
     ap = os.path.abspath(path)
-    preal = os.path.realpath(os.path.dirname(ap))
-    rb = root_real.rstrip(os.sep) or os.sep
-    if not (preal == rb or preal.startswith(rb if rb.endswith(os.sep) else rb + os.sep)):
-        raise RuntimeError('%s: 目标（%s）不在账本根（%s）内·拒绝写入（零写）'
-                           % (who, path, root_real))
-    rd = os.path.relpath(preal, rb)
-    parts = [] if rd == os.curdir else [p for p in rd.split(os.sep) if p not in ('', '.')]
-    if '..' in parts:
-        raise RuntimeError('%s: 目标（%s）不在账本根（%s）内·拒绝写入（零写）'
-                           % (who, path, root_real))
+    cur = os.path.realpath(os.path.dirname(ap))
+    try:
+        rst = os.stat(root_real)
+    except OSError as exc:
+        raise RuntimeError('%s: 账本根（%s）不可访问（%s）·拒绝写入（零写）'
+                           % (who, root_real, exc)) from None
+    root_id = (rst.st_dev, rst.st_ino)
+    parts = []
+    while True:
+        try:
+            st = os.stat(cur)
+        except OSError as exc:
+            raise RuntimeError('%s: 目标（%s）的祖先目录不可用（%s）·拒绝写入（零写）'
+                               % (who, path, exc)) from None
+        if (st.st_dev, st.st_ino) == root_id:
+            break
+        up = os.path.dirname(cur)
+        if up == cur:
+            raise RuntimeError('%s: 目标（%s）不在账本根（%s）内·拒绝写入（零写）'
+                               % (who, path, root_real))
+        parts.append(os.path.basename(cur))
+        cur = up
+    parts.reverse()
     parts.append(os.path.basename(ap))
     return parts
 
@@ -290,23 +309,25 @@ def _append_now(root, path, data, ensure_newline):
     dfd, name = _open_parent_at(root_real, _rel_parts(path, root_real, who), who)
     try:
         padded = False
+        tfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                      0o644, dir_fd=dfd)
         try:
-            tfd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                          0o644, dir_fd=dfd)
-            readable = True
-        except PermissionError:
-            # R11-5：只有写权限（如 0200）的目标仍可追加；此时读不到末字节，不补换行。
-            # R11-5: write-only targets (e.g. 0200) still append; without read access the last
-            # byte cannot be inspected, so no newline is padded.
-            tfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                          0o644, dir_fd=dfd)
-            readable = False
-        try:
-            if ensure_newline and data and readable:
-                size = os.fstat(tfd).st_size
-                if size > 0 and os.pread(tfd, 1, size - 1) != b'\n':
-                    data = b'\n' + data
-                    padded = True
+            if ensure_newline and data:
+                # 末字节检查另开只读 fd；读不到（只写/拒读）就跳过补换行，不影响追加。
+                # The last-byte check uses a separate read-only fd; if it cannot be opened
+                # (write-only / read denied) padding is skipped and the append proceeds.
+                try:
+                    rfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+                except PermissionError:
+                    rfd = None
+                if rfd is not None:
+                    try:
+                        size = os.fstat(rfd).st_size
+                        if size > 0 and os.pread(rfd, 1, size - 1) != b'\n':
+                            data = b'\n' + data
+                            padded = True
+                    finally:
+                        os.close(rfd)
             os.write(tfd, data)
         finally:
             os.close(tfd)
@@ -434,10 +455,15 @@ def append_inplace(path, data, root=None, conf_path=None):
 
     锁前置：**本线程**必须在**该账本根**上持**独占**锁（别的线程持锁、子目录锁、别的根都不算）。
     先判后开文件 ⇒ 不满足时零写。返回 True 表示补过换行，False 表示末字节本来是换行。
+    读不到末字节时（只写目标，或 ACL／权限拒读）**跳过补换行**：只追加、不加前缀换行，
+    此时返回 False——不看末字节就无法判定是否需要补。
     Lock precondition: **this thread** must hold an **exclusive** lock on **that ledger root**
     (a lock held by another thread, a sub-directory lock and another root do not count). All
     checks run before the file is opened ⇒ nothing is written when they fail. Returns True when
-    a newline was padded, False when the last byte already was one."""
+    a newline was padded, False when the last byte already was one. When the last byte cannot be
+    read (write-only target, or read denied by ACL/permissions) padding is **skipped**: the data
+    is appended as-is and False is returned — without inspecting the tail there is no way to
+    tell whether padding is needed."""
     from ledger_root import locate, read_conf_value, resolve_root
     who = 'safeio.append_inplace'
     if conf_path:
@@ -460,22 +486,25 @@ def append_inplace(path, data, root=None, conf_path=None):
     dfd, name = _open_parent_at(resolved, _rel_parts(path, resolved, who), who)
     try:
         padded = False
+        tfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+                      0o644, dir_fd=dfd)
         try:
-            tfd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                          0o644, dir_fd=dfd)
-            readable = True
-        except PermissionError:
-            # R11-5：0200 等只写目标仍可追加；读不到末字节则不补换行。
-            # R11-5: write-only targets (e.g. 0200) still append; without read access no padding.
-            tfd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-                          0o644, dir_fd=dfd)
-            readable = False
-        try:
-            if data and readable:
-                size = os.fstat(tfd).st_size
-                if size > 0 and os.pread(tfd, 1, size - 1) != b'\n':
-                    data = b'\n' + data
-                    padded = True
+            if data:
+                # 末字节检查另开只读 fd；读不到（只写/拒读权限）就跳过补换行。
+                # The last-byte check uses a separate read-only fd; if it cannot be opened
+                # (write-only / read denied) padding is skipped.
+                try:
+                    rfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+                except PermissionError:
+                    rfd = None
+                if rfd is not None:
+                    try:
+                        size = os.fstat(rfd).st_size
+                        if size > 0 and os.pread(rfd, 1, size - 1) != b'\n':
+                            data = b'\n' + data
+                            padded = True
+                    finally:
+                        os.close(rfd)
             os.write(tfd, data)
         finally:
             os.close(tfd)

@@ -1864,7 +1864,7 @@ def _case_tail_no_truncate(tmp):
 
 
 _AK_CHILD = r'''
-import os, sys, tempfile, threading, time
+import os, sys, tempfile, threading, time, subprocess
 sys.path.insert(0, sys.argv[1])
 d, mode = sys.argv[2], sys.argv[3]
 import safeio
@@ -1992,8 +1992,8 @@ elif mode == 'race':
     esc = 0 if open(leak, 'rb').read() == b'ORIG\n' else 1
     print('RACE ok=%d rej=%d esc=%d' % (ok, rej, esc))
 elif mode == 'prims':
-    # R11-1：软链祖先下 append_inplace / atomic_append / read_modify_write 三者都必须拒绝
-    # R11-1: under a symlinked ancestor all three primitives must refuse
+    # R11-1/R12-1：软链祖先下四个原语（含 atomic_write / read_modify_write）都必须拒绝
+    # R11-1/R12-1: under a symlinked ancestor all four primitives must refuse
     out = tempfile.mkdtemp(prefix='akprims_')
     sub = os.path.join(d, 'psub')
     os.makedirs(sub, exist_ok=True)
@@ -2001,18 +2001,56 @@ elif mode == 'prims':
     os.symlink(out, sub)
     bad = 0
     with safeio.locked(d):
-        for fn in ('x.txt', 'y.txt', 'z.txt'):
+        for fn in ('x.txt', 'y.txt', 'z.txt', 'w.txt'):
             try:
                 if fn == 'x.txt':
                     safeio.append_inplace(os.path.join(sub, fn), 'APP\n', d, conf_path=cp)
                 elif fn == 'y.txt':
                     safeio.atomic_append(os.path.join(sub, fn), 'APP\n', root=d)
-                else:
+                elif fn == 'z.txt':
                     safeio.read_modify_write(os.path.join(sub, fn), lambda b: b'RMW\n', root=d)
+                else:
+                    safeio.atomic_write(os.path.join(sub, fn), b'ATW\n', root=d)
             except RuntimeError:
                 bad += 1
     leak = len(os.listdir(out))
-    print('PRIMS %d/3 leak=%d' % (bad, leak) if leak == 0 else 'PRIMS_LEAK %d/3 leak=%d' % (bad, leak))
+    print('PRIMS %d/4 leak=%d' % (bad, leak) if leak == 0 else 'PRIMS_LEAK %d/4 leak=%d' % (bad, leak))
+elif mode == 'spellings':
+    # R12-2：归属按 inode 判——大小写、NFC/NFD、/tmp↔/private/tmp、尾斜杠四种混写都能写；
+    # `..` 归一后逃逸仍必须拒绝
+    # R12-2: containment is inode-based — case, NFC/NFD, /tmp↔/private/tmp and trailing-slash
+    # spellings all write; a `..` escape must still be refused
+    rp = os.path.realpath(d)
+    nd = os.path.join(d, 'caf\u00e9')                       # NFC on disk
+    os.makedirs(nd, exist_ok=True)
+    esc = os.path.join(os.path.dirname(rp), os.path.basename(rp) + '_escape.txt')
+    tries = []
+
+    def _spell(tag, target, root):
+        try:
+            safeio.atomic_write(target, b'W\n', root=root)
+            ok = os.path.exists(target) and open(target, 'rb').read() == b'W\n'
+        except RuntimeError:
+            ok = False
+        tries.append(ok)
+
+    _spell('case', os.path.join(d.upper(), 'case.txt'), d)
+    _spell('nfd', os.path.join(d, 'cafe\u0301', 'nfd.txt'), d)
+    r2 = tempfile.mkdtemp(prefix='aksym_', dir='/tmp')
+    _spell('tmp', os.path.join('/private' + r2, 'tmp.txt'), r2)
+    _spell('slash', os.path.join(d, 'slash.txt'), d + '/')
+    for junk in (r2,):
+        for name in os.listdir(junk):
+            os.unlink(os.path.join(junk, name))
+        os.rmdir(junk)
+    try:
+        safeio.atomic_write(os.path.join(d, '..', os.path.basename(esc)), b'X\n', root=d)
+        escape = 'E'
+    except RuntimeError:
+        escape = 'R'
+    if os.path.exists(esc):
+        escape = 'DIRTY'
+    print('SPELL %d/4 escape=%s' % (sum(1 for t in tries if t), escape))
 elif mode == 'alias':
     # R11-4：root 与目标用不同别名拼写（软链别名目录）⇒ 归一后仍能写回根内
     # R11-4: root and target use different alias spellings (symlinked alias dir) ⇒ normalise,
@@ -2026,22 +2064,67 @@ elif mode == 'alias':
         except RuntimeError as exc:
             print('ALIAS_REJECT %s' % exc)
 elif mode == 'mode200':
-    # R11-5：0200 只写目标仍可追加（末段回退 O_WRONLY）
-    # R11-5: a 0200 write-only target can still be appended (final open falls back to O_WRONLY)
+    # R12-3：0200 与 ACL 拒读目标仍可追加，且末字节不可读时 padded=False
+    # R12-3: 0200 and ACL-read-denied targets still append; with an unreadable tail padded=False
     p7 = os.path.join(d, 'wonly.txt')
     fd = os.open(p7, os.O_WRONLY | os.O_CREAT, 0o200)
     os.write(fd, b'a\n')
     os.close(fd)
     os.chmod(p7, 0o200)
+    p8 = os.path.join(d, 'acl.txt')
+    fd = os.open(p8, os.O_WRONLY | os.O_CREAT, 0o600)
+    os.write(fd, b'a\n')
+    os.close(fd)
+    subprocess.run(['chmod', '+a', 'everyone deny read', p8],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    acl_readable = os.access(p8, os.R_OK)
     with safeio.locked(d):
         try:
-            safeio.append_inplace(p7, 'b\n', d, conf_path=cp)
-            size = os.stat(p7).st_size
+            padded7 = safeio.append_inplace(p7, 'b\n', d, conf_path=cp)
+            size7 = os.stat(p7).st_size
             os.chmod(p7, 0o600)
-            print('MODE200_OK' if size == 4 else 'MODE200_BAD size=%d' % size)
+            padded8 = safeio.append_inplace(p8, 'b\n', d, conf_path=cp)
+            size8 = os.stat(p8).st_size
+            ok = (size7 == 4 and padded7 is False and not acl_readable
+                  and size8 == 4 and padded8 is False)
+            print('MODE200_OK' if ok else
+                  'MODE200_BAD size7=%d padded7=%s acl_r=%s size8=%d padded8=%s'
+                  % (size7, padded7, acl_readable, size8, padded8))
         except RuntimeError as exc:
             os.chmod(p7, 0o600)
             print('MODE200_REJECT %s' % exc)
+elif mode == 'refuse':
+    # R12-3：0400／0000 仍拒绝；ENOENT／EISDIR／ELOOP 不被吞
+    # R12-3: 0400/0000 still refuse; ENOENT/EISDIR/ELOOP are never swallowed
+    bad = []
+    for tag, perm in (('r400', 0o400), ('r000', 0o000)):
+        q = os.path.join(d, tag + '.txt')
+        fd = os.open(q, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.write(fd, b'a\n')
+        os.close(fd)
+        os.chmod(q, perm)
+        try:
+            safeio.append_inplace(q, 'b\n', d, conf_path=cp)
+            bad.append(tag)
+        except RuntimeError:
+            pass
+        os.chmod(q, 0o600)
+    cases = ('enoent', 'eisdir', 'eloop')
+    os.makedirs(os.path.join(d, 'eisdir'), exist_ok=True)
+    os.symlink(os.path.join(d, 'target.tsv'), os.path.join(d, 'eloop'))
+    for tag in cases:
+        try:
+            if tag == 'enoent':
+                safeio.append_inplace(os.path.join(d, 'nope_dir', 'x.txt'), 'b\n',
+                                      d, conf_path=cp)
+            elif tag == 'eisdir':
+                safeio.append_inplace(os.path.join(d, 'eisdir'), 'b\n', d, conf_path=cp)
+            else:
+                safeio.append_inplace(os.path.join(d, 'eloop'), 'b\n', d, conf_path=cp)
+            bad.append(tag)
+        except RuntimeError:
+            pass
+    print('REFUSE_OK' if not bad else 'REFUSE_LEAK %s' % ','.join(bad))
 elif mode == 'missing':
     try:
         with safeio.locked(os.path.join(d, 'nope', 'missing')):
@@ -2264,10 +2347,25 @@ def _case_lock_assert(tmp):
     _ok('AK[R10-1/R11-1 静态] 唯一 openat 走查被四原语共用，旧字面路径/before 比对已删',
         walk and shared and legacy_gone,
         '走查=%s 共用=%s 旧法已删=%s' % (walk, shared, legacy_gone))
-    # R11-1：静态软链祖先下三个原语全部拒绝且根外零写
-    # R11-1: under a static symlinked ancestor all three primitives reject with zero outside write
+    # R11-1/R12-1：静态软链祖先下四个原语全部拒绝且根外零写
+    # R11-1/R12-1: under a static symlinked ancestor all four primitives reject with zero outside
     got, err = _ak_scenario(here, 'prims')
-    _ok('AK[R11-1 三个原语在软链祖先下全部拒绝且根外零写]', got.startswith('PRIMS 3/3'),
+    _ok('AK[R11-1 四个原语在软链祖先下全部拒绝且根外零写]', got.startswith('PRIMS 4/4'),
+        '%s %s' % (got, err[:120]))
+    # R12-2：归属按 inode 判，四种混写都能写；`..` 逃逸仍拒绝
+    # R12-2: containment is inode-based; four mixed spellings write, a `..` escape still refuses
+    got, err = _ak_scenario(here, 'spellings')
+    _ok('AK[R12-2 大小写/NFC-NFD//tmp 别名/尾斜杠混写都能写，`..` 逃逸仍拒绝]',
+        got == 'SPELL 4/4 escape=R', '%s %s' % (got, err[:120]))
+    # R12-3：0200 与 ACL 拒读仍可追加且 padded=False
+    # R12-3: 0200 and ACL-read-denied targets still append with padded=False
+    got, err = _ak_scenario(here, 'mode200')
+    _ok('AK[R12-3 0200 与 ACL 拒读目标仍可追加、padded=False]', got == 'MODE200_OK',
+        '%s %s' % (got, err[:120]))
+    # R12-3：0400/0000 仍拒绝；ENOENT/EISDIR/ELOOP 不被吞
+    # R12-3: 0400/0000 still refuse; ENOENT/EISDIR/ELOOP are never swallowed
+    got, err = _ak_scenario(here, 'refuse')
+    _ok('AK[R12-3 0400/0000 仍拒绝，ENOENT/EISDIR/ELOOP 不被吞]', got == 'REFUSE_OK',
         '%s %s' % (got, err[:120]))
     # R11-4：根与目标混用别名拼写（软链别名目录）必须能写
     # R11-4: mixing alias spellings for root and target (symlinked alias directory) must write
@@ -2375,6 +2473,36 @@ def _case_lock_assert(tmp):
     else:
         _ok('AK 变异 R11-1 atomic_append 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
             '找不到 _append_now 走查锚点')
+    # 变异⑦（R12-1）：atomic_write 改回字面打开 ⇒ 软链祖先下只有它放行（判据必须红）
+    # Mutation 7 (R12-1): atomic_write reverts to a literal open ⇒ only it slips through
+    aw_block = ("    who = 'safeio.atomic_write'\n"
+                "    root_real = _real_root(root, who)\n"
+                "    dfd, name = _open_parent_at("
+                "root_real, _rel_parts(path, root_real, who), who)")
+    if aw_block in safeio_src:
+        got, err = _mutant_run('r12aw', safeio_src.replace(
+            aw_block, aw_block.replace(
+                "    dfd, name = _open_parent_at("
+                "root_real, _rel_parts(path, root_real, who), who)",
+                anc_mut_line), 1), 'prims')
+        _ok('AK 变异 R12-1 atomic_write 改回字面打开 ⇒ 软链祖先下放行（判据红）',
+            got.startswith('PRIMS_LEAK'), '%s %s' % (got, err[:120]))
+    else:
+        _ok('AK 变异 R12-1 atomic_write 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
+            '找不到 atomic_write 走查锚点')
+    # 变异⑧（R12-1）：read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据必须红）
+    # Mutation 8 (R12-1): read_modify_write reverts to a literal open ⇒ it slips through
+    rmw_line = "        dfd, name = _open_parent_at(root_real, _rel_parts(path, root_real, who), who)"
+    if rmw_line in safeio_src:
+        rmw_mut = ("        dfd = os.open(os.path.dirname(os.path.abspath(path)),\n"
+                   "                      os.O_RDONLY | os.O_DIRECTORY)\n"
+                   "        name = os.path.basename(path)")
+        got, err = _mutant_run('r12rmw', safeio_src.replace(rmw_line, rmw_mut, 1), 'prims')
+        _ok('AK 变异 R12-1 read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据红）',
+            got.startswith('PRIMS_LEAK'), '%s %s' % (got, err[:120]))
+    else:
+        _ok('AK 变异 R12-1 read_modify_write 改回字面打开 ⇒ 软链祖先下放行（判据红）', False,
+            '找不到 read_modify_write 走查锚点')
     # 变异④：删掉「同线程重复获取」检查 ⇒ 第二次 acquire 被静默放行（或挂起）⇒ 红
     if not has_agent:
         _skip('AK 变异④：当前盒无 agent_lock.py')
@@ -3727,6 +3855,30 @@ def _case_entry_wrappers(tmp):
                 % (name, target),
                 'RC 6' in r.stdout and '★ 运行失败（rc=6）' in out
                 and 'Traceback' not in out, 'out=%s' % out[-200:])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+    # R12-5：session hook 的 --state 指到 ROOT 之外 ⇒ rc=6、文案、无 traceback、越界零写
+    # R12-5: session hook with --state outside ROOT ⇒ rc=6, shared wording, no traceback,
+    # nothing written outside
+    hook = os.path.join(here, 'daybook_session_hook.py')
+    if not os.path.exists(hook):
+        _skip('R12-5 daybook_session_hook.py：当前盒无 daybook_session_hook.py')
+    else:
+        d = tempfile.mkdtemp(prefix='daybook_hook_state_', dir=tmp)
+        events = os.path.join(d, 'events')
+        os.makedirs(events)
+        outside = os.path.join(d, 'outside_state.json')
+        try:
+            r = subprocess.run(
+                [sys.executable, '-B', hook, 'watch', '--once',
+                 '--events-root', events, '--state', outside],
+                cwd=d, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True)
+            out = r.stdout + r.stderr
+            _ok('R12-5 --state 越界 ⇒ rc=6、文案一致、无 traceback、越界零写',
+                r.returncode == 6 and '★ 运行失败（rc=6）' in out
+                and 'Traceback' not in out and not os.path.exists(outside),
+                'rc=%d out=%s' % (r.returncode, out[-200:]))
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
