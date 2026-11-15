@@ -178,7 +178,7 @@ def _write_cursor(agent_id, vol, resume_byte):
     cp = os.path.join(_root(), '.已读_%s_%s.json' % (agent_id, vol))
     cur = {'resume_byte': resume_byte, 'mtime': time.time()}
     from safeio import atomic_write
-    atomic_write(cp, json.dumps(cur, ensure_ascii=False))
+    atomic_write(cp, json.dumps(cur, ensure_ascii=False), root=_root())
 
 
 # ── v3.1 多级目录下钻（四库式：部=卷／类·作者／属=条目）──────

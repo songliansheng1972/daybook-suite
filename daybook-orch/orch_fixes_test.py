@@ -307,7 +307,8 @@ def _make_volume(path, n, hour=10, kind='报', author='汤姆'):
         lines.append('[2026-11-14 %02d:%02d:00] [%s] [条目%02d] [%s]' % (hour, i, kind, i, author))
         lines.append('正文 %d' % i)
         lines.append('')
-    atomic_write(path, '\n'.join(lines) + '\n')
+    atomic_write(path, '\n'.join(lines) + '\n',
+                 root=os.path.dirname(os.path.abspath(path)))
     return [1 + i * 3 for i in range(n)]
 
 

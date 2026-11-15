@@ -101,22 +101,25 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 18. **租约写失败不再泄漏根锁**：`acquire()` 的记账写包 try/finally——失败即摘登记并退锁；
     只读租约目录下复测 `exclusive_held=False`、`_ctx=0`、他人可正常获取。`AgentLock` 形参只剩
     `lease_vol` / `root`，被静默丢弃的 `lock_dir` 已删除。
-19. **归属＝openat 物理走查**：`append_inplace` 不再用字面路径逐级 stat（那条祖先链在父目录被
-    换成根外软链时仍会自洽），改为从账本根目录 fd 出发，用 `openat(dir_fd)` 逐级
-    `O_NOFOLLOW | O_DIRECTORY` 走到目标所在目录，最后一级 `openat` 打开目标（`O_APPEND |
-    O_NOFOLLOW`）。每级都必须是真目录，路径物理上出不去，不存在「检查后被换」的窗口；旧的
-    字面祖先链与事后 `before` inode 比对各删其一不留。**硬链接不再特殊处理**——同 inode 的
-    两个名字是文件系统语义，威胁模型是「按路径/inode 祖先归属」，不是「硬链接已封死」。
+19. **归属＝openat 物理走查（唯一实现·四原语共用）**：`append_inplace` 不再用字面路径逐级 stat
+    （那条祖先链在父目录被换成根外软链时仍会自洽），改为从账本根目录 fd 出发，用
+    `openat(dir_fd)` 逐级 `O_NOFOLLOW | O_DIRECTORY` 走到目标所在目录。该走查抽成**唯一一处**
+    `_open_parent_at`，`append_inplace` / `atomic_append` / `read_modify_write` / `atomic_write`
+    四个原语全部经它取父目录 fd，没有第二条路径字面打开的写路径；`os.replace` 与临时件
+    也都用 `dir_fd`（`src_dir_fd` / `dst_dir_fd` / 临时件 `os.open(..., dir_fd=dfd)`）。
+    每级都必须是真目录，路径物理上出不去，不存在「检查后被换」的窗口；旧的字面祖先链与
+    事后 `before` inode 比对各删其一不留。**硬链接不再特殊处理**——同 inode 的两个名字是
+    文件系统语义，威胁模型是「按路径/inode 祖先归属」，不是「硬链接已封死」。
 20. **`locked()` 缺路径明确报错**：路径不存在时抛 `RuntimeError('账本根不存在…不退回父目录')`，
     不再是裸 `FileNotFoundError`，也不再静默退到父目录去锁。
 21. **必填 root 有静态判据**：AST 级扫描 `atomic_append` / `read_modify_write` 的调用点，漏传
     `root=` 即红；变异「删掉一处 root 实参」必须红。调用点残留的 `root or dirname(...)` 兜底
     全部删除（`daybook_hook.mark_processed`、`Heartbeat`），确定不了根就按根解析失败处理。
 22. **判据跳过显式化**：`[跳过]` 统一进跳过清单并在汇总打印数量与原因，不计入判据条数；
-    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 424 项（PASS 424；
-    跳过 0 项）`，`daybook/` 盒 `0 红 / 323 项（PASS 323；跳过 9 项）`。盒内 9 条跳过为
+    汇总行同时打印 `项/PASS/跳过`。文档只引用打印值：本轮源树 `0 红 / 430 项（PASS 430；
+    跳过 0 项）`，`daybook/` 盒 `0 红 / 328 项（PASS 328；跳过 10 项）`。盒内 10 条跳过为
     AE（缺 mcp／orch）＋ AK×3、AM、AN（缺 `agent_lock.py`）＋ AL（缺 `orchestrator.py`）＋
-    R10-3×2（缺 `orchestrator.py`／`mcp_server.py`）；其余项数差异来自 AH 等按文件集扫描的
+    R10-3×3（缺 `orchestrator.py` ×2／`mcp_server.py`）；其余项数差异来自 AH 等按文件集扫描的
     判据随文件数变化。不手写换算，也不报「恒差 3」。
 23. **文档口径修正**：README 的串行保证限定为三条取锁原语（`append_inplace` / `atomic_append`
     / `read_modify_write`），并写明 `atomic_write` 是纯原子替换、不取锁、由调用方决定临界区；
@@ -144,6 +147,34 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 30. **动态取得写原语即红**：`functools.partial(atomic_append, …)` 与
     `getattr(mod, 'atomic_append')(…)` 在 AST 判据里直接红——看不到 root 的动态取得不允许
     默认放行；静态直呼不误报。
+31. **三原语同走一条路（R11-1）**：`atomic_append` / `read_modify_write` 此前仍按路径字面
+    打开，静态软链祖先下 `append_inplace` 拒绝零写、它们却照写根外（复签实测 `out/x.txt =
+    b'APP\n'`、`out/y.txt = b'RMW\n'`）。现全部改走唯一的 `_open_parent_at`；判据 `prims`
+    在软链祖先下断言三原语全部拒绝、根外零写（打印 `PRIMS 3/3 leak=0`），变异把任一条改回
+    字面打开即红。
+32. **`atomic_write` 定位定死（R11-2·选定①）**：它此前既不取锁也无 `root`，却在多处写账本内
+    派生件——「看起来在保证内、实际不在」。现纳入同一条路：`atomic_write(path, data, mode=None,
+    root=None)` 的 `root` **必填**，临时件与 `os.replace` 都走 `dir_fd` 走查；它**仍不取锁**
+    （纯原子替换，临界区由调用方决定），这一点写进 docstring。全部写账本内的调用点改用带
+    `root` 的写法（`daybook.py` 游标/清单/时戳/备份、`daybook_multidx.py` 四处、`mcp_tools.py`、
+    `agent_registry.py`、`daybook_record.py`、`daybook_append.py`、`task_volume.py`、
+    `agent_heartbeat.py`、`daybook_session_hook.py`）。
+33. **威胁模型写清 rename 边界（R11-3）**：持有某级目录 fd 后，该目录被整体 `rename` 搬走，
+    写入会落在被搬走的 inode 上——fd 语义固有，做不到就写清。`append_inplace` docstring 与
+    README「已知边界」均加「防路径重定向，不防已进入目录被整体搬走」，不写「已封死」。
+34. **软链别名拼写不再误拒（R11-4）**：`/tmp` 与 `/private/tmp` 两种写法此前只有一边命中根
+    前缀即 `RuntimeError`。现相对分量计算前先 `realpath` 归一父目录（末段保留原名、由
+    `O_NOFOLLOW` 拒绝软链），两种拼写混用都能写（判据 `ALIAS_OK`）。
+35. **末段 `O_RDWR` 回退 `O_WRONLY`（R11-5）**：只写权限（0200）的目标此前从「可追加」变成
+    报错。现先试 `O_RDWR|O_APPEND`，`PermissionError` 时回退 `O_WRONLY|O_APPEND`（读不到末
+    字节则不补换行）；判据 `MODE200_OK` 断言 0200 目标仍可追加。`append_inplace` 与
+    `_append_now` 同法。
+36. **收口补遗（R11-6）**：①README 新增退出码表（0/2/3/4/5/6 与 3>4>6>2>5 优先级），与
+    `--help` 逐字对齐；②CHANGELOG 写明 MCP 请求期的 `RuntimeError` 走 RPC
+    `ERR_INTERNAL_ERROR`，进程启动期失败才是 rc=6；③`orchestrator._main` 在 `except Exception`
+    之前先 `except RuntimeError: raise`，`Hub` 初始化的 `RuntimeError` 透传给顶层（rc=6），
+    不再被吞成 rc=2，其余 `Exception` 保持原行为。判据 `R10-3 orchestrator.py（注入 Hub）`
+    断言 rc=6、文案一致、无 traceback（删掉该分支即红）。
 
 ## v4.0.5 · 2026-11-14
 

@@ -366,7 +366,7 @@ def append_one(path, kind, title, msg, author='未标', to=None,
                 if _notice:
                     sys.stderr.write(_notice)
                 old += b'\n'
-            atomic_write(path, old + b)
+            atomic_write(path, old + b, root=ledger_root)
         return 0
     with locked(ledger_root):
         _need, _notice = pad_notice(path)

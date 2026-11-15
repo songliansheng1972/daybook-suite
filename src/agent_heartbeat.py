@@ -45,7 +45,7 @@ class Heartbeat:
         self.dead_after = dead_after
         if not os.path.exists(self.path):
             from safeio import atomic_write
-            atomic_write(self.path, b'')
+            atomic_write(self.path, b'', root=self.root)
 
     def beat(self, agent_id):
         """Agent 自报心跳·append-only。

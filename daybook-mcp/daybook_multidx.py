@@ -342,7 +342,8 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
         _header, rows = read_tsv(idf)
         vol_rows[vol] = rows
         per[vol] = len(rows)
-        _atomic_write(os.path.join(mdir, '%s_catalog.md' % vol), build_vol_md(vol, rows, now, l2name))
+        _atomic_write(os.path.join(mdir, '%s_catalog.md' % vol),
+                      build_vol_md(vol, rows, now, l2name), root=root)
         # 机读目录是只追加型：锁内原位追加新行（O(1)）；末行无换行则转整卷重建
         # （不截断：末行可能是合法的完整行）。Markdown 是摘要，仍原子替换。
         # The machine-readable catalogue is append-type: append the new rows in place under the
@@ -358,11 +359,12 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
                 append_inplace(tpath, '\n'.join(_tsv_row(vol, r, l2name) for r in rows[k:]) + '\n',
                                root, conf_path=conf_path)
         else:
-            _atomic_write(tpath, build_vol_tsv(vol, rows, l2name))
+            _atomic_write(tpath, build_vol_tsv(vol, rows, l2name), root=root)
         state[vol] = {'rows': len(rows)}
     if not only_vol:
-        _atomic_write(os.path.join(mdir, 'catalog.md'), build_total_md(vol_rows, now, orders))
-    _atomic_write(state_path, json.dumps(state, ensure_ascii=False, sort_keys=True))
+        _atomic_write(os.path.join(mdir, 'catalog.md'),
+                      build_total_md(vol_rows, now, orders), root=root)
+    _atomic_write(state_path, json.dumps(state, ensure_ascii=False, sort_keys=True), root=root)
     return per, sum(per.values())
 
 

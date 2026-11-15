@@ -64,7 +64,7 @@ class TaskVolume:
         self.root = os.path.realpath(root or HERE)
         if not os.path.exists(self.path):
             from safeio import atomic_write
-            atomic_write(self.path, b'')
+            atomic_write(self.path, b'', root=self.root)
 
     def _read_all(self):
         """单遍扫描任务卷·构建 (tid -> list of (时间, 状态, agent, 内容))。

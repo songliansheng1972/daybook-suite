@@ -33,7 +33,7 @@ def record(role, title, content, stamp=None, update_index=True):
     # Each original is a separate UTF-8 artifact; it goes through safeio.atomic_write
     # (the single atomic-replace implementation).
     from safeio import atomic_write
-    atomic_write(archive_path, content)
+    atomic_write(archive_path, content, root=HERE)
 
     entry_title = '%s %s' % (role, stamp)
     reference = '%s\nSHA256: %s' % (relative_path, digest)

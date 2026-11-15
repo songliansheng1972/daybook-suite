@@ -144,7 +144,7 @@ class Registry:
         fn = agent_id + '.key'
         p = os.path.join(d, fn)
         from safeio import atomic_write
-        atomic_write(p, secret + '\n', mode=0o600)
+        atomic_write(p, secret + '\n', mode=0o600, root=self.root)
         return KEY_DIR_NAME + '/' + fn
 
     def register(self, name):

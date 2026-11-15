@@ -36,8 +36,9 @@ def local_stamp(value):
 
 
 def atomic_json(path, value):
+    """写账本内的 json（root 显式为工作区根 ROOT；越界即拒绝）。"""
     from safeio import atomic_write
-    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True))
+    atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True), root=ROOT)
 
 
 def scan_code():

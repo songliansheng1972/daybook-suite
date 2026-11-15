@@ -70,27 +70,22 @@ MUTATIONS = [
     ]),
     (4, '派生件原子替换改回两段非原子写', [(
         'safeio.py',
-        """    fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', suffix='.tmp', dir=d)
-    try:
-        if mode is not None:
-            os.fchmod(fd, mode)
-        with os.fdopen(fd, 'wb') as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
+        """    try:
         try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise""",
-        """    with open(path, 'wb') as f:  # MUTANT 非原子两段写
-        half = len(data) // 2
-        f.write(data[:half])
-        f.flush()
-        threading.Event().wait(0.05)
-        f.write(data[half:])""",
+            os.write(tfd, data)
+            os.fsync(tfd)
+        finally:
+            os.close(tfd)
+        os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)""",
+        """    os.close(tfd)
+    os.unlink(tmp, dir_fd=dfd)  # MUTANT 非原子两段写
+    o = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600, dir_fd=dfd)
+    half = len(data) // 2
+    os.write(o, data[:half])
+    os.fsync(o)
+    threading.Event().wait(0.05)
+    os.write(o, data[half:])
+    os.close(o)""",
     )]),
     (6, 'digest 改回静默 0 条 / 互见失败改回空串', [
         ('orchestrator.py',

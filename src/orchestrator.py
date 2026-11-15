@@ -990,6 +990,11 @@ def _main(argv=None):
         # A missing root/conf is a config error (rc=2) with the same wording as the other four.
         sys.stderr.write('%s\n' % exc)
         return 2
+    except RuntimeError:
+        # 运行期拒绝（写原语/锁）不得吞成配置错 2：透传给顶层收口（rc=6）。
+        # A runtime refusal (write primitive / lock) must not be laundered into config error 2:
+        # pass it to the top-level boundary (rc=6).
+        raise
     except Exception as exc:  # 初始化失败也不许与「有硬警」共用 rc=1 · init failures must not share rc=1 with hard warnings
         sys.stderr.write('⚠ 初始化失败：%s: %s\n' % (type(exc).__name__, exc))
         if args.cmd == 'alarm':
