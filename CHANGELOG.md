@@ -331,6 +331,29 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
     - 三次判定都留档：① 首版 50% 相对阈值误判 FAIL；② 改绝对上限后的 PASS 属漏洞（本次作废）；
       ③ 稳态斜率 + 合成泄漏判红，才算本判据成立。
 
+60. **错误类与单一映射（步骤 4）**：新增 `src/errors.py`——类别 → 退出码**只有一张表**
+    （CONFIG=2 / VIOLATION=3 / AUTHOR=4 / EVIDENCE=5 / RUNTIME=6），严重度
+    VIOLATION > AUTHOR > RUNTIME > CONFIG > EVIDENCE；入口只 `raise`，文案与码由唯一出口
+    `run_entry` 给。`daybook.py` / `daybook_append.py` / `daybook_hook.py` /
+    `daybook_session_hook.py` / `mcp_server.py` / `orchestrator.py` 删除各自的 `EXIT_*` 与
+    `worst_exit` 副本；`mcp_server` 增加 `RPC_BY_KIND` 一张表。归类裁决写进 `errors.py`：
+    **入口期**的根/配置问题=2，**运行期**的根被换/写拒绝=6。
+    - **行为变化（对外契约）**：司南 `alarm` 硬警 `1→3`、执行异常 `3→6`；`checkauthors`
+      红 `1→4`（作者口径红全系统一个码）；`orchestrator selftest` 有红 `1→6`。
+      README 新增「退出码（只有一张表）」一节。
+    - **红证（改前 → 改后）**：`daybook_hook` 缺对话卷 `rc=1`、`daybook` 同语义（证据缺失）
+      `rc=5` ⇒ 同表后二者同为 **5**；司南执行异常 `rc=3` 与「违例 3」撞码 ⇒ 重映射后为 **6**。
+    - **绿证（P6 矩阵）**：6 入口 × 7 故障类 = **42 格全部落表**；同一故障跨入口同码
+      （配置 2、证据 5、运行 6、违例 3、作者 4）；多故障取最高严重度；全部探针输出无 traceback。
+      不适用的格（如「追加 CLI 不做 append-only 判定」）逐条打印原因并计入跳过数，不静默。
+    - **顺带修掉步骤 3 遗留**：`append_one` 在已持根锁的临界区内（司南认领/交活记日志）会
+      重复取锁自死锁；改为 `exclusive_held` + `held` 复用凭证，`_emit` 登记进 `WRITE_PATHS`。
+      常驻判据：司南 `selftest` 必须 `rc=0` 全绿。
+    - **读数**：源树 `0 红 / 490 项`（PASS 490；跳过 16 = P6 不适用 15 + W2 未在 Windows 验证）；
+      变异矩阵源树 **9/9 全杀**（新增 M6「入口插 `return 2`」、M6b「ConfigError 映射成 6」），
+      存活 0／死变异 0；`daybook/` 盒 `0 红 / 379 项`（PASS 379；跳过 35），盒变异 8/8 全杀；
+      两套 `pack.py --verify` 均 `rc=0`。
+
 ## v4.0.5 · 2026-11-14
 
 **内容**：压测工具 `bench/` 入仓（开发者工具，不入发行件）。

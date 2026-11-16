@@ -80,6 +80,8 @@ import argparse
 import hashlib
 import io
 import os
+
+import errors
 import re
 import secrets
 import sys
@@ -929,11 +931,7 @@ def main(argv=None):
     """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并退 6，不抛裸 traceback。
     CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
     exit 6 — never a bare traceback."""
-    try:
-        return _main(argv)
-    except RuntimeError as exc:
-        sys.stderr.write('★ 运行失败（rc=6）：%s\n' % exc)
-        return 6
+    return errors.run_entry(lambda: _main(argv))
 
 
 def _main(argv=None):
@@ -981,27 +979,21 @@ def _main(argv=None):
         return _selftest()
     if not args.cmd:
         ap.print_help()
-        return 2
+        raise errors.ConfigError('未指定子命令')
 
     try:
         hub = Hub(root=args.root, rule=args.rule, roles=args.roles)
     except ValueError as exc:
-        # 根/conf 定位失败就是配置错（rc=2），文案与其余四入口逐字一致。
-        # A missing root/conf is a config error (rc=2) with the same wording as the other four.
-        sys.stderr.write('%s\n' % exc)
-        return 2
+        # 根/conf 定位失败就是配置错（rc=2），文案与其余入口逐字一致。
+        # A missing root/conf is a config error (rc=2) with the same wording as the other entries.
+        raise errors.ConfigError(str(exc))
     except RuntimeError:
         # 运行期拒绝（写原语/锁）不得吞成配置错 2：透传给顶层收口（rc=6）。
         # A runtime refusal (write primitive / lock) must not be laundered into config error 2:
         # pass it to the top-level boundary (rc=6).
         raise
-    except Exception as exc:  # 初始化失败也不许与「有硬警」共用 rc=1 · init failures must not share rc=1 with hard warnings
-        sys.stderr.write('⚠ 初始化失败：%s: %s\n' % (type(exc).__name__, exc))
-        if args.cmd == 'alarm':
-            print('== 编排体检 ==')
-            print('判：执行异常（rc=3）')
-            return 3
-        return 2
+    except Exception as exc:  # 初始化失败＝运行失败（6），不与硬警(3)或配置错(2)共用
+        raise errors.RuntimeFailure('初始化失败：%s: %s' % (type(exc).__name__, exc))
 
     if args.cmd == 'join':
         aid, secret = hub.join(args.name)
@@ -1017,7 +1009,9 @@ def _main(argv=None):
     elif args.cmd == 'claim':
         ok, msg = hub.claim(args.tid, args.agent_id)
         print(('OK  ' if ok else 'FAIL ') + msg)
-        return 0 if ok else 1
+        if not ok:
+            raise errors.LedgerViolation(msg)
+        return 0
     elif args.cmd == 'submit':
         person, why = hub.submit(args.tid, args.agent_id, args.note, args.to,
                                  re_ref=args.re or None)
@@ -1043,17 +1037,17 @@ def _main(argv=None):
     elif args.cmd == 'alarm':
         try:
             issues = hub.alarm()
-        except Exception as exc:  # 执行异常与「有硬警」必须分开退出码 · execution errors vs hard warnings need distinct exit codes
-            sys.stderr.write('⚠ 体检执行失败：%s: %s\n' % (type(exc).__name__, exc))
-            print('== 编排体检 ==')
-            print('判：执行异常（rc=3）')
-            return 3
+        except Exception as exc:  # 执行异常（6）与硬警（3）必须分开
+            raise errors.RuntimeFailure('体检执行失败：%s: %s'
+                                        % (type(exc).__name__, exc))
         print('== 编排体检 ==')
         for it in issues:
             print('  · [%s]%s %s' % (it.code, '★' if it.hard else '·', it.msg))
         hard = any(it.hard for it in issues)
         print('判：%s' % ('★ 有硬警' if hard else '干净'))
-        return 1 if hard else 0
+        if hard:
+            raise errors.LedgerViolation('编排体检有硬警')
+        return 0
     return 0
 
 
@@ -1154,7 +1148,9 @@ def _selftest():
         shutil.rmtree(root, ignore_errors=True)
 
     print('== 编排中心自检：%s ==' % ('全绿' if ok else '有红'))
-    return 0 if ok else 1
+    if not ok:
+        raise errors.RuntimeFailure('编排中心自检有红')
+    return 0
 
 
 if __name__ == '__main__':

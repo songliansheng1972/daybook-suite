@@ -5,6 +5,8 @@
 """归档本工作区的 Copilot 会话事件与发生变更的源码文件。
 Archive Copilot session events and changed source files for this workspace."""
 import argparse
+
+import errors
 import datetime
 import glob
 import hashlib
@@ -250,7 +252,12 @@ def main():
     # ★ 步骤 2：入口只打开一次账本根句柄，向下传 Root（不再传根路径字符串）。
     # ★ Step 2: the entry opens the ledger-root handle once and passes the Root down.
     from safeio import Root
-    root = Root._from_dir_path(ROOT, 'daybook_session_hook.main')
+    try:
+        root = Root._from_dir_path(ROOT, 'daybook_session_hook.main')
+    except RuntimeError as exc:
+        # 入口期的根问题 = 2；运行期写拒绝走顶层收口 → 6。
+        # An entry-time root problem is 2; runtime write refusals travel to the top boundary → 6.
+        raise errors.ConfigError(str(exc))
 
     if args.command == 'install':
         install(root)
@@ -273,14 +280,21 @@ def main():
         process_once(events_root, args.state, workspace, root, True)
 
 
-if __name__ == '__main__':
+def _entry():
+    """入口期分类：读不到/读坏输入 → 证据缺失（5）；根/参数解析失败 → 配置错（2）。
+    Entry-time classification: unreadable/corrupt input → missing evidence (5); root/argument
+    resolution failure → config error (2)."""
     try:
-        sys.exit(main())
-    except RuntimeError as exc:
-        # 越界/写拒绝等运行期错误（如 --state 指到 ROOT 之外）按统一口径收口为 rc=6。
-        # Runtime refusals (e.g. --state outside ROOT) use the shared rc=6 boundary.
-        print('★ 运行失败（rc=6）：%s' % exc, file=sys.stderr)
-        sys.exit(6)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        print('会话归档器失败：%s' % exc, file=sys.stderr)
-        sys.exit(1)
+        return main()
+    except errors.DaybookError:
+        raise
+    except json.JSONDecodeError as exc:
+        raise errors.EvidenceMissing('会话归档器失败：%s' % exc)
+    except OSError as exc:
+        raise errors.EvidenceMissing('会话归档器失败：%s' % exc)
+    except ValueError as exc:
+        raise errors.ConfigError(str(exc))
+
+
+if __name__ == '__main__':
+    sys.exit(errors.run_entry(_entry))

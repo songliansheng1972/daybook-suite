@@ -33,6 +33,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import mcp_transport as tr
+import errors
+
+# 应用错误类 → JSON-RPC 码（唯一表；协议参数错仍由 RPCError 表达）
+# App error kind → JSON-RPC code (the only table; protocol-level param errors stay RPCError).
+RPC_BY_KIND = {
+    errors.CONFIG: tr.ERR_INVALID_PARAMS,
+    errors.EVIDENCE: tr.ERR_INVALID_PARAMS,
+    errors.AUTHOR: tr.ERR_INVALID_PARAMS,
+    errors.VIOLATION: tr.ERR_INTERNAL_ERROR,
+    errors.RUNTIME: tr.ERR_INTERNAL_ERROR,
+}
 import mcp_resources as res
 import mcp_tools as tools
 import mcp_prompts as prompts
@@ -185,6 +196,8 @@ def dispatch(msg, push_callable=None):
 
     except tr.RPCError as e:
         return tr.make_error(req_id, e.code, e.message, e.data)
+    except errors.DaybookError as e:
+        return tr.make_error(req_id, RPC_BY_KIND.get(e.kind, tr.ERR_INTERNAL_ERROR), str(e))
     except res.RootError as e:
         # 读错根必须报错·不许静默返回空资源
         # A wrong root must fail loudly · never return resources as an empty list
@@ -247,44 +260,35 @@ def serve(infile=None, outfile=None):
 
 
 def main():
-    """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并以 6 退出，不抛裸 traceback。
-    CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
-    exit 6 — never a bare traceback."""
-    try:
-        _main()
-    except RuntimeError as exc:
-        sys.stderr.write('★ 运行失败（rc=6）：%s\n' % exc)
-        sys.stderr.flush()
-        raise SystemExit(6)
+    """CLI 收口：只 raise，码与文案由 `errors.run_entry` 一处给（含写原语拒绝 → 6）。
+    CLI boundary: only raise; `errors.run_entry` owns the code and wording (write refusals → 6)."""
+    return errors.run_entry(_main)
 
 
 def _main():
-    """启动自检后进主循环。根无效 → stderr 报错并退出（不静默空跑）。
-    Run the startup self-check, then enter the main loop. An invalid root → stderr error and exit (never silently serve an empty ledger)."""
+    """启动自检后进主循环。根无效 → 配置错（2）；运行期写拒绝 → 6。
+    Run the startup self-check, then enter the main loop. An invalid root is a config error (2);
+    a runtime write refusal is 6."""
     from ledger_root import take_home
     _args, home, herr = take_home(sys.argv[1:])
     if herr:
-        sys.stderr.write('★ %s\n' % herr)
-        raise SystemExit(2)
+        raise errors.ConfigError(herr)
     if _args:
         if _args[0] in ('-h', '--help'):
             print(__doc__ or '用法：mcp_server.py [--home DIR]')
-            raise SystemExit(0)
-        sys.stderr.write('★ 未知参数：%s（stdio 服务端只接受 --home DIR / --help）\n'
-                         % ' '.join(_args))
-        raise SystemExit(2)
+            return 0
+        raise errors.ConfigError('未知参数：%s（stdio 服务端只接受 --home DIR / --help）'
+                                 % ' '.join(_args))
     res.HOME_OVERRIDE = home          # --home 只用来定位 conf
     try:
         root, nvol = res.self_check()
     except res.RootError as e:
         # 五入口同一句文案（逐字一致）· the one wording shared verbatim by all five entries
-        sys.stderr.write('%s\n' % e)
-        sys.stderr.flush()
-        raise SystemExit(2)
+        raise errors.ConfigError(str(e))
     sys.stderr.write('[daybook-mcp] root=%s volumes=%d\n' % (root, nvol))
     sys.stderr.flush()
     serve()
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

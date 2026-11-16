@@ -32,6 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import daybook as _db
+import errors as _errors
 import daybook_append as _dba
 import mcp_resources as _mr
 import mcp_transport as _tr
@@ -1015,15 +1016,11 @@ def call_tool(name, args, agent_id=None, signature=None):
             # nothing dropped. On 3 the build already wrote nothing for that volume, so one
             # signed call can never rebuild tampering into a fresh baseline.
             per, total, _rep = _db.build(conf, _root())
-            codes = []
-            if _db.CONFIG_ERRORS: codes.append(_db.EXIT_CONFIG)
-            if _db.VIOLATIONS: codes.append(_db.EXIT_VIOLATION)
-            if _db.EVIDENCE_MISSING: codes.append(_db.EXIT_EVIDENCE)
-            # 作者机检在 build 内只跑一次；这里只读取结果，不重复扫卷。
-            # The author check runs once inside build; read the result, do not rescan.
-            if _db.AUTHOR_RED:
-                codes.append(_db.EXIT_AUTHOR)
-            rc = _db.worst_exit(codes)
+            # 聚合只走 errors 一张表：这里不持有任何数字码。
+            # Aggregation goes through the single errors table; no numeric codes live here.
+            errs = _db._collected()
+            top = _errors.worst(errs)
+            rc = _errors.exit_code(top) if top else 0
             if rc:
                 detail = []
                 if _db.CONFIG_ERRORS:
@@ -1038,14 +1035,14 @@ def call_tool(name, args, agent_id=None, signature=None):
                                   'python3 daybook.py baseline' % (
                                       len(_db.EVIDENCE_MISSING),
                                       '；'.join('%s: %s' % (v, w) for v, w in _db.EVIDENCE_MISSING)))
-                if _db.EXIT_AUTHOR in codes:
-                    if rc == _db.EXIT_AUTHOR:
+                if _db.AUTHOR_RED:
+                    if rc == _errors.AUTHOR:
                         detail.append('已写回·作者口径红·只报不拦')
                     else:
                         detail.append('作者口径红·未写回（本轮 rc=%d 零落盘）' % rc)
-                if rc == _db.EXIT_VIOLATION:
+                if rc == _errors.VIOLATION:
                     _audit('index', agent_id, '违例·拒绝写回 → rc=3', ok=False)
-                elif rc == _db.EXIT_AUTHOR:
+                elif rc == _errors.AUTHOR:
                     _audit('index', agent_id, '已写回·作者口径红·只报不拦 → rc=4', ok=False)
                 raise _LedgerRefusal(rc, '｜'.join(detail))
             summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total

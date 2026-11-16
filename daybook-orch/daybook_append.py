@@ -36,7 +36,7 @@ import io, os, re, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))   # 脚本所在（不再用作账本根兜底）/ script dir (never a root fallback)
 
 FALLBACK_LIMIT = 4096          # POSIX PIPE_BUF 之保守值（探测失败兜底）· conservative POSIX PIPE_BUF value (fallback on probe failure)
-EXIT_RUN = 6                   # 运行期拒绝（写原语/锁）与配置错(2)分码 · runtime refusal, distinct from config(2)
+import errors
 PROMPT_TEMPLATE = '★ 本条超 {limit} 字节：POSIX 只保证 ≤ PIPE_BUF 之单次 write 原子。请拆条或改用加锁写入。\n'
 
 # ── 作者口径（作者位＝显示名·id 只作附注）──────────────────────
@@ -337,22 +337,21 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     # 所有账本写路径统一锁账本根（子目录卷、软链卷也争同一把锁）
     # Every ledger write path locks the ledger root (sub-directory and symlinked volumes contend too)
     if not root:
-        # 不知道账本根就不写：一条告警挡不住分裂锁，直接退回调用方判 rc=2。
-        # No ledger root means no write: a warning cannot prevent a split lock; the caller
-        # must turn this into rc=2.
-        sys.stderr.write('★ 未能确定账本根（请在账本目录下调用或设置 DAYBOOK_HOME）\n')
-        return 2
-    from safeio import root_scope, WriteMode
+        # 不知道账本根就不写：一条告警挡不住分裂锁，直接按配置错拒绝（统一出口给码）。
+        # No ledger root means no write: a warning cannot prevent a split lock; refuse as a
+        # config error (the single boundary assigns the code).
+        raise errors.ConfigError('未能确定账本根（请在账本目录下调用或设置 DAYBOOK_HOME）')
+    from safeio import root_scope, WriteMode, exclusive_held, held
     # ★ 步骤 2：根句柄由入口给出（Root）或由本函数临时打开；锁与写共用同一 inode。
     # ★ Step 2: the root handle comes from the entry (Root) or is opened here; the lock and
     #   the write share one inode.
     with root_scope(root, 'daybook_append.append_one') as rt:
-        if len(b) > limit:
-            # W-75 修③：超 PIPE_BUF 走账本根排他锁 + 整文件原子换入（读者不取锁也不撕裂）
-            # W-75 fix ③: over PIPE_BUF takes the ledger-root exclusive lock and swaps the whole
-            # file in atomically, so a lock-free reader never observes a torn entry.
-            sys.stderr.write('★ 超限 %d 字节·走加锁写入路径\n' % len(b))
-            with rt.lock() as lr:
+        def _emit(lr):
+            if len(b) > limit:
+                # W-75 修③：超 PIPE_BUF 走账本根排他锁 + 整文件原子换入（读者不取锁也不撕裂）
+                # W-75 fix ③: over PIPE_BUF takes the ledger-root exclusive lock and swaps the whole
+                # file in atomically, so a lock-free reader never observes a torn entry.
+                sys.stderr.write('★ 超限 %d 字节·走加锁写入路径\n' % len(b))
                 old = b''
                 if os.path.exists(path):
                     with open(path, 'rb') as f:
@@ -371,14 +370,22 @@ def append_one(path, kind, title, msg, author='未标', to=None,
                     old += b'\n'
                 lr.write(rt.rel_of(path, 'daybook_append.append_one'), old + b,
                          mode=WriteMode.REPLACE)
-            return 0
-        with rt.lock() as lr:
+                return 0
             _need, _notice = pad_notice(path)
             if _notice:
                 sys.stderr.write(_notice)
             lr.write(rt.rel_of(path, 'daybook_append.append_one'), b,
                      mode=WriteMode.APPEND_CREATE, pad_newline=_need)
-        return 0
+            return 0
+
+        # 已在同一账本根的临界区内（如司南持租约锁后记日志）⇒ 复用已持凭证，
+        # 不重复取锁（同线程重入必自死锁）；否则正常取锁。
+        # Already inside a critical section on this root (e.g. Sinan logging while holding a
+        # lease) ⇒ reuse the held token; never re-acquire (same-thread re-entry deadlocks).
+        if exclusive_held(rt):
+            return _emit(held(rt, 'daybook_append.append_one'))
+        with rt.lock() as lr:
+            return _emit(lr)
 
 
 def check_pipe_buf(path):
@@ -469,30 +476,29 @@ def _cli_root(override=None):
     override = --home（conf 所在目录）。
     The CLI's ledger-root handle: the same source as daybook.py / the MCP (one resolver in
     ledger_root). `override` is --home (the conf directory).
-    返回 None = 配置错（调用方退 2）；conf 只查两级（显式 > 当前目录），找不到即报错。
-    None = config error (the caller exits 2); the conf is looked up in two levels only
-    (explicit > cwd) and a miss fails immediately."""
+    配置错直接 raise ConfigError（退出码由唯一出口给）；conf 只查两级（显式 > 当前目录），
+    找不到即报错。A config error raises ConfigError (the single boundary owns the code); the
+    conf is looked up in two levels only (explicit > cwd) and a miss fails immediately."""
     from safeio import Root
     try:
         return Root.open(override)
     except RuntimeError as exc:
-        sys.stderr.write('%s\n' % exc)
-        return None
+        raise errors.ConfigError(str(exc))
 
 
 def _main():
     from ledger_root import take_home
     _args, _home, _herr = take_home(sys.argv[1:])
     if _herr:
-        sys.stderr.write('★ %s\n' % _herr)
-        return 2
+        raise errors.ConfigError(_herr)
     if _args and _args[0] in ('-h', '--help'):
         print(__doc__); return 0
     if _args and _args[0] in ('--check', '-c'):
         path = _args[1] if len(_args) >= 2 else os.curdir
         return check_pipe_buf(path)
     if len(_args) < 2:
-        print(__doc__); return 1
+        print(__doc__)
+        raise errors.ConfigError('缺参数：至少要有 <卷文件> 与 <类>')
     path = _args[0]
     # --name=显示名：显式指定作者位的显示名（作者位本就写显示名，此参作覆盖）
     # 作者必填、无后门：· The author is mandatory and there is no back door:
@@ -502,26 +508,21 @@ def _main():
     argv = _args[1:]
     bad = [a for a in argv if a.startswith('--')]
     if bad:
-        sys.stderr.write('不支持的选项：%s（作者位只接受显示名，不再有 --name= 后门）\n' % ' '.join(bad))
-        return 2
+        raise errors.ConfigError('不支持的选项：%s（作者位只接受显示名，不再有 --name= 后门）'
+                                 % ' '.join(bad))
     if len(argv) < 4:
-        sys.stderr.write('用法：daybook_append.py <卷文件> <类> <标题> <作者> "正文"\n'
-                         '（作者必填；没有默认「未标」，也没有 --name= 覆盖入口）\n')
-        return 2
+        raise errors.ConfigError('用法：daybook_append.py <卷文件> <类> <标题> <作者> "正文"'
+                                 '（作者必填；没有默认「未标」，也没有 --name= 覆盖入口）')
     kind, title, author, msg = argv[0], argv[1], argv[2], argv[3]
     if (author or '').strip() in AUTHOR_PLACEHOLDERS:
-        sys.stderr.write('作者必填：不许用空值/「未标」占位绕过作者口径\n')
-        return 2
+        raise errors.ConfigError('作者必填：不许用空值/「未标」占位绕过作者口径')
     if not msg.strip():
-        sys.stderr.write('空消息，未写。\n'); return 1
+        raise errors.ConfigError('空消息，未写')
     try:
         author_slot, author_id, unregistered = resolve_cli_author(author, path)
     except ValueError as exc:
-        sys.stderr.write('%s\n' % exc)
-        return 2
+        raise errors.ConfigError(str(exc))
     root = _cli_root(_home)
-    if root is None:
-        return 2
     return append_one(path, kind, title, msg, author_slot,
                       author_id=author_id, unregistered=unregistered, root=root)
 
@@ -530,11 +531,7 @@ def main():
     """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并退 6，不抛裸 traceback。
     CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
     exit 6 — never a bare traceback."""
-    try:
-        return _main()
-    except RuntimeError as exc:
-        sys.stderr.write('★ 运行失败（rc=%d）：%s\n' % (EXIT_RUN, exc))
-        return EXIT_RUN
+    return errors.run_entry(_main)
 
 
 if __name__ == '__main__':

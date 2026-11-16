@@ -448,15 +448,15 @@ def test_alarm_structure_and_exit_codes():
                                    '--root', r, 'alarm'], capture_output=True, text=True)
 
         rr = run_alarm(root)
-        check('有硬警 → rc=1', rr.returncode == 1, 'rc=%d' % rr.returncode)
+        check('有硬警 → rc=3（原 1 与违例同义，已归表）', rr.returncode == 3, 'rc=%d' % rr.returncode)
         ghost = _fresh_root('alarmghost')
         try:
             h = Hub(root=ghost)
             h.join('汤姆')
             h.tv.create('ag-ghost', '幽灵单')
             rc = run_alarm(ghost)
-            check('仅幽灵负责人 → rc=1（旧字串判据会误判干净）',
-                  rc.returncode == 1, 'rc=%d' % rc.returncode)
+            check('仅幽灵负责人 → rc=3（旧字串判据会误判干净）',
+                  rc.returncode == 3, 'rc=%d' % rc.returncode)
         finally:
             shutil.rmtree(ghost, ignore_errors=True)
         clean = _fresh_root('alarmclean')
@@ -470,7 +470,7 @@ def test_alarm_structure_and_exit_codes():
         try:
             os.makedirs(os.path.join(broken, '任务卷.txt'))  # 任务卷是目录 → 读失败 · task volume is a directory → read failure
             rc = run_alarm(broken)
-            check('执行异常 → rc=3（不与硬警共用 1）', rc.returncode == 3, 'rc=%d' % rc.returncode)
+            check('执行异常 → rc=6（不与硬警 3 共用）', rc.returncode == 6, 'rc=%d' % rc.returncode)
         finally:
             shutil.rmtree(broken, ignore_errors=True)
         return all(_results)

@@ -74,29 +74,28 @@ INDEX_FMT = 2        # 索引代次：写进 .head_stamp.json 与卷首清单，
 HASH_CHUNK = 1 << 20
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ── 退出码（互不掩盖）────────────────────────────────────────
-# ── Exit codes (never mask each other). ──
+# ── 退出码：只有一张表（errors.py）────────────────────────────
+# ── Exit codes: one table only (errors.py) ──
 # 2 配置错 / 3 append-only 违例 / 4 作者口径 / 5 派生件证据缺失 / 6 运行失败。
-# 同时出现多类时按语义严重度取最高：违例(3) > 作者(4) > 运行失败(6) > 配置错(2) > 证据缺失(5)。
-# 屏幕各类都会打印，退出码反映最重那类——「检测到篡改」不能被 2 盖掉，也不会被 5 洗掉。
-# 运行失败与配置错分属 6/2，脚本可区分。
+# 本件不再持有任何数字码或 EXIT_* 常量；合成与出口都在 errors.py，入口只 raise。
 # 2 config / 3 append-only violation / 4 author convention / 5 derived-evidence missing /
-# 6 runtime failure. When several occur, the highest semantic severity wins: violation(3) >
-# author(4) > runtime(6) > config(2) > evidence(5). Every class is printed; tampering is never
-# masked by 2 and never laundered into 5. Runtime failure and config error keep distinct codes.
-EXIT_CONFIG = 2
-EXIT_VIOLATION = 3
-EXIT_AUTHOR = 4
-EXIT_EVIDENCE = 5
-EXIT_RUN = 6
-_EXIT_SEVERITY = {EXIT_VIOLATION: 5, EXIT_AUTHOR: 4, EXIT_RUN: 3,
-                  EXIT_CONFIG: 2, EXIT_EVIDENCE: 1}
+# 6 runtime failure. This module holds no numeric code and no EXIT_* constant; composition
+# and the single boundary live in errors.py, and entries only raise.
+import errors
 
 
-def worst_exit(codes):
-    """多类同时出现时取最严重的一类（0=无问题）。Pick the most severe code (0 = clean)."""
-    codes = [c for c in codes if c]
-    return max(codes, key=lambda c: _EXIT_SEVERITY.get(c, 0)) if codes else 0
+def _collected():
+    """运行中收集到的其它错误（供唯一出口合成）；这里不再持有任何退出码。"""
+    out = []
+    if CONFIG_ERRORS:
+        out.append(errors.ConfigError('卷配置错误 %d 处' % len(CONFIG_ERRORS)))
+    if VIOLATIONS:
+        out.append(errors.LedgerViolation('append-only 违例 %d 处' % len(VIOLATIONS)))
+    if EVIDENCE_MISSING:
+        out.append(errors.EvidenceMissing('派生件证据缺失 %d 处' % len(EVIDENCE_MISSING)))
+    if AUTHOR_RED:
+        out.append(errors.AuthorConvention('作者口径红'))
+    return out
 
 
 _RULE_WARN_SEEN = set()
@@ -961,15 +960,15 @@ def build(conf, root='.', baseline=False, dry=False):
         # ── 唯一写入门：退出码非 0 ⇒ 一个派生件、一个时戳都不写，也不删任何东西 ──
         # ── The single write gate: a non-zero exit writes no derived artifact and no
         #    timestamp, and deletes nothing. ──
-        codes = []
-        if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
-        if VIOLATIONS: codes.append(EXIT_VIOLATION)
-        if EVIDENCE_MISSING: codes.append(EXIT_EVIDENCE)
+        errs = []
+        if CONFIG_ERRORS: errs.append(errors.ConfigError('配置错'))
+        if VIOLATIONS: errs.append(errors.LedgerViolation('违例'))
+        if EVIDENCE_MISSING: errs.append(errors.EvidenceMissing('证据缺失'))
         AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True,
                                                    cache=author_cache, verified=author_verified)
         if AUTHOR_RED and not baseline:
-            codes.append(EXIT_AUTHOR)
-        rc = worst_exit(codes)
+            errs.append(errors.AuthorConvention('作者口径红'))
+        rc = errors.exit_code(errors.worst(errs)) if errs else 0
         # 不可信即零落盘：配置错(2)/违例(3)/证据缺失(5) ⇒ 派生件与时戳一个不写；
         # 作者红(4) 不是账本不可信，照写（文案另报红）。
         # Zero write when the ledger is untrustworthy: config error / violation / lost evidence
@@ -1460,8 +1459,7 @@ def _main():
     from ledger_root import take_home
     _args, _home, _herr = take_home(sys.argv[1:])
     if _herr:
-        sys.stderr.write('★ %s\n' % _herr)
-        return 2
+        raise errors.ConfigError(_herr)
     cmd = _args[0] if _args else 'index'
     known = ('index', 'baseline', '认基线', 'checkauthors', '查作者口径',
              'multiindex', '多级索引',
@@ -1470,9 +1468,8 @@ def _main():
         print(__doc__)
         return 0
     if cmd not in known:
-        sys.stderr.write('★ 未知子命令：%r\n' % cmd)
         print(__doc__)
-        return 2
+        raise errors.ConfigError('未知子命令：%r' % cmd)
     # 根目录：conf 的 [index] root 唯一决定；conf 只查两级（显式指定 > 当前目录），
     # 找不到立刻 rc=2，不以本件目录兜底、不换下一个候选。
     # Root: decided only by conf's [index] root; the conf is looked up in two levels only
@@ -1480,8 +1477,7 @@ def _main():
     from ledger_root import locate, not_found_message
     conf_dir, conf_path = locate(_home)
     if conf_path is None:
-        sys.stderr.write(not_found_message(conf_dir) + '\n')
-        return 2
+        raise errors.ConfigError(not_found_message(conf_dir))
     from safeio import Root
     try:
         conf = load_conf(conf_path)
@@ -1489,8 +1485,10 @@ def _main():
         # ★ Step 2: the entry resolves the root once and passes the Root handle down.
         root = Root.open(_home)
     except (OSError, UnicodeDecodeError, ValueError, RuntimeError) as exc:
-        sys.stderr.write('★ 配置错（检查 daybook.conf 与 [index] root）：%s\n' % exc)
-        return 2
+        # 入口期 的根/配置问题 = 2（errors.py 唯一裁决）；运行期写拒绝走顶层收口 → 6。
+        # An entry-time root/config problem is 2 (the ruling in errors.py); runtime write
+        # refusals travel to the top boundary → 6.
+        raise errors.ConfigError('配置错（检查 daybook.conf 与 [index] root）：%s' % exc)
     # watch 监视面＝所有真实卷文件（内部卷变动也要触发）；索引面仍只认 conf['volumes']
     # The watch surface = every real volume file (internal changes must trigger too);
     # the index surface remains conf['volumes'].
@@ -1512,42 +1510,42 @@ def _main():
                   + '｜合计 %d 条' % total, flush=True)
         else:
             print('索引已生成：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total, flush=True)
-        codes = []
+        errs = []
         if CONFIG_ERRORS:
             sys.stderr.write('★ 卷配置错误 %d 处（不是 append-only 违例·是 conf 写错）：\n'
                              % len(CONFIG_ERRORS))
             for v, w in CONFIG_ERRORS:
                 sys.stderr.write('  %s: %s\n' % (v, w))
-            codes.append(EXIT_CONFIG)
+            errs.append(errors.ConfigError('卷配置错误'))
         if VIOLATIONS:
             sys.stderr.write('★ append-only 违例 %d 处（违例卷未写回，账本本身已被改写）：\n'
                              % len(VIOLATIONS))
             for v, w in VIOLATIONS:
                 sys.stderr.write('  %s: %s\n' % (v, w))
-            codes.append(EXIT_VIOLATION)
+            errs.append(errors.LedgerViolation('append-only 违例'))
         if EVIDENCE_MISSING:
             sys.stderr.write('★ 派生件证据缺失 %d 处（索引/游标/封存丢失或不可解析·本轮不写回）：\n'
                              % len(EVIDENCE_MISSING))
             for v, w in EVIDENCE_MISSING:
                 sys.stderr.write('  %s: %s\n' % (v, w))
             sys.stderr.write('  要重建并写回派生证据，请显式认基线：python3 daybook.py baseline\n')
-            codes.append(EXIT_EVIDENCE)
+            errs.append(errors.EvidenceMissing('派生件证据缺失'))
         # ★ 作者口径机检：作者位必须是显示名，机器 id 或混用直接报红
         # ★ Author-convention gate: the author slot must hold a display name; ids or mixing go red
         # 机检在 build 内只跑一次（写入门也用同一结果），这里只读取，不重复扫卷。
         # The check runs once inside build (the write gate uses the same result); read it here.
         if AUTHOR_RED:
-            codes.append(EXIT_AUTHOR)
-        rc = worst_exit(codes)
+            errs.append(errors.AuthorConvention('作者口径红'))
+        rc = errors.exit_code(errors.worst(errs)) if errs else 0
         if AUTHOR_RED:
             # 只有「本轮真的写回了」才能说已写回：rc=2/3/5 是零落盘，文案必须是「未写回」
             # Only claim a write-back when this run actually wrote; rc=2/3/5 wrote nothing.
-            if rc == EXIT_AUTHOR:
+            if rc == errors.AUTHOR:
                 sys.stderr.write('★ 已写回·作者口径红·只报不拦（作者位出现机器 id 或同卷混用）\n')
             else:
                 sys.stderr.write('★ 作者口径红·未写回（本轮 rc=%d：配置错/违例/证据缺失 ⇒ 零落盘）\n' % rc)
         if rc:
-            sys.exit(rc)
+            raise errors.worst(errs)
     elif cmd in ('baseline', '认基线'):
         # 显式认基线：证据缺失后由人确认「以当前卷为新基线」。先只验不写；
         # 一旦有 append-only 违例或配置错，拒绝认基线——不把「被改过」替你认成新基线。
@@ -1563,10 +1561,10 @@ def _main():
             if VIOLATIONS:
                 sys.stderr.write('★ append-only 违例 %d 处：认基线被拒·未写任何派生件'
                                  '（请先恢复账本原文）\n' % len(VIOLATIONS))
-            codes = []
-            if CONFIG_ERRORS: codes.append(EXIT_CONFIG)
-            if VIOLATIONS: codes.append(EXIT_VIOLATION)
-            sys.exit(worst_exit(codes))
+            errs = []
+            if CONFIG_ERRORS: errs.append(errors.ConfigError('卷配置错误'))
+            if VIOLATIONS: errs.append(errors.LedgerViolation('append-only 违例'))
+            raise errors.worst(errs)
         # 作者口径红只报不拦（人记账不必因未注册被卡），认基线继续
         # Author-convention red is reported but does not block a baseline
         per, total, rep = build(conf, root, baseline=True)
@@ -1575,11 +1573,13 @@ def _main():
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         print('基线已认：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
               + '｜合计 %d 条' % total, flush=True)
-        sys.exit(0)
+        return 0
     elif cmd in ('checkauthors', '查作者口径'):
-        # 只跑作者口径机检：绿返 0，红返 1
-        # Author-convention check only: 0 green, 1 red
-        sys.exit(1 if _report_authors(conf, root) else 0)
+        # 只跑作者口径机检：绿 0，红 4（与 build 的作者口径红同一个码，不再自持 1）
+        # Author-convention check only: 0 green, 4 red — same code as build's author red.
+        if _report_authors(conf, root):
+            raise errors.AuthorConvention('作者口径红')
+        return 0
     elif cmd in ('multiindex', '多级索引'):
         # 四库式多级目录（部/类/属·跨卷总目）·派生件·零依赖·与 index 同源同入口
         # Four-branch multilevel catalogue (derived data; same entry point as index)
@@ -1648,9 +1648,8 @@ def _main():
         try:
             import mcp_server
         except ImportError:
-            sys.stderr.write('未安装 daybook-mcp：统一入口 `daybook mcp` 需该包提供 mcp_server。\n'
-                             '请先 pip install daybook-mcp。\n')
-            sys.exit(2)
+            raise errors.ConfigError('未安装 daybook-mcp：统一入口 `daybook mcp` 需该包提供 '
+                                     'mcp_server。请先 pip install daybook-mcp')
         mcp_server.serve()
     elif cmd in ('orchestrate', '编排', '司南'):
         # 智能体编排中心「司南」（第三产品线）·零依赖·与 index/mcp 同一二进制
@@ -1659,9 +1658,8 @@ def _main():
         try:
             import orchestrator
         except ImportError:
-            sys.stderr.write('未安装 daybook-orch：统一入口 `daybook orchestrate` 需该包提供 orchestrator。\n'
-                             '请先 pip install daybook-orch。\n')
-            sys.exit(2)
+            raise errors.ConfigError('未安装 daybook-orch：统一入口 `daybook orchestrate` 需该包提供 '
+                                     'orchestrator。请先 pip install daybook-orch')
         sys.exit(orchestrator.main(_args[1:]))
     else:
         print(__doc__)
@@ -1672,20 +1670,7 @@ def main():
     并入既有严重度合成，不硬返回 2，也不把 traceback 抛给用户。
     CLI boundary: any RuntimeError (write primitive refusals included) joins the existing
     severity composition — never a hard return of 2 — and is never shown as a traceback."""
-    try:
-        return _main()
-    except RuntimeError as exc:
-        sys.stderr.write('★ 运行失败：%s\n' % exc)
-        codes = [EXIT_RUN]
-        if CONFIG_ERRORS:
-            codes.append(EXIT_CONFIG)
-        if VIOLATIONS:
-            codes.append(EXIT_VIOLATION)
-        if EVIDENCE_MISSING:
-            codes.append(EXIT_EVIDENCE)
-        if AUTHOR_RED:
-            codes.append(EXIT_AUTHOR)
-        return worst_exit(codes)
+    return errors.run_entry(_main, collect=_collected)
 
 
 if __name__ == '__main__':

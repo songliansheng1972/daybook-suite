@@ -99,6 +99,7 @@ WRITE_PATHS = (
     ('daybook.py', 'build', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（REPLACE）'),
     ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
+    ('daybook_append.py', '_emit', 'ledger', '账本内容/派生件（临界区内复用已持凭证）'),
     ('daybook_hook.py', 'mark_processed', 'ledger', '账本内容/派生件'),
     ('daybook_multidx.py', '_build_locked', 'ledger', '账本内容/派生件'),
     ('daybook_record.py', 'record', 'ledger', '账本内容/派生件'),
@@ -1051,7 +1052,8 @@ def _prepare(tmp):
     （index 的作者口径机检走 daybook_append.check_author_consistency，故须随拷。）
     (The index author-convention gate calls daybook_append.check_author_consistency, so it must be staged too.)"""
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                 'errors.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(tmp, name))
     with io.open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -1327,7 +1329,8 @@ def _case_stagger(tmp):
     d = os.path.join(tmp, 'stagger')
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                 'errors.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -1471,7 +1474,8 @@ def _case_partial_commit(tmp):
     d = os.path.join(tmp, 'partial')
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                 'errors.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -1549,7 +1553,8 @@ def _case_append(tmp):
     d = os.path.join(tmp, 'append')
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                 'errors.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -3078,7 +3083,8 @@ def _case_push_load_bearing(tmp):
 def _stage(d):
     """把被测件拷进隔离目录（含 ledger_root：根解析已三处同源）。
     Stage the artifacts under test (including ledger_root: one shared root resolver)."""
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
+                 'errors.py'):
         shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), name), os.path.join(d, name))
 
 
@@ -3336,7 +3342,7 @@ def _case_five_roots(tmp):
     # so those entries are skipped instead of erroring.
     present = []
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
-                 'daybook_hook.py', 'mcp_resources.py', 'mcp_transport.py',
+                 'errors.py', 'daybook_hook.py', 'mcp_resources.py', 'mcp_transport.py',
                  'volume_paths.py'):
         src = os.path.join(os.path.dirname(SRC_BIN), name)
         if os.path.exists(src):
@@ -3439,7 +3445,7 @@ _MATRIX_COPY = ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'
                 'mcp_tools.py', 'mcp_prompts.py', 'mcp_subscribe.py',
                 'volume_paths.py', 'orchestrator.py', 'agent_registry.py', 'cross_ref.py',
                 'task_volume.py', 'agent_lock.py', 'agent_heartbeat.py', 'agent_message.py',
-                'daybook_multidx.py')
+                'daybook_multidx.py', 'errors.py')
 
 
 def _matrix_cmds(exedir, ledger, kinds):
@@ -3854,15 +3860,21 @@ def _case_pad_notice(tmp):
             _ok('AG[%s] 文案可读（卷名/行号/缺字段）' % label,
                 notice.startswith('★ 卷末行不完整·已补换行') and '卷=' in notice
                 and '行=' in notice and contains in notice, notice[:120])
-    # 不知道账本根就不写：append_one(root=None) 必须 rc=2 且一个字节都不动
-    # No root means no write: append_one(root=None) must return 2 and leave the file untouched.
+    # 不知道账本根就不写：append_one(root=None) 必须抛 ConfigError（码 2）且一个字节都不动
+    # No root means no write: append_one(root=None) must raise ConfigError (code 2) and leave
+    # the file untouched.
     p = os.path.join(d, '无根卷.txt')
     io.open(p, 'w', encoding='utf-8').write('[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
     before = io.open(p, 'rb').read()
-    rc = da.append_one(p, '测试', '无根', '正文', author='皮特')
+    rc = 0
+    try:
+        da.append_one(p, '测试', '无根', '正文', author='皮特')
+    except Exception as exc:          # 入口只 raise，码由 errors 表给
+        import errors as _err
+        rc = _err.exit_code(exc)
     after = io.open(p, 'rb').read()
-    _ok('AG 无账本根 ⇒ append_one rc=2 且不写', rc == 2 and before == after,
-        'rc=%r changed=%s' % (rc, before != after))
+    _ok('AG 无账本根 ⇒ append_one raise ConfigError（码 2）且不写',
+        rc == 2 and before == after, 'rc=%r changed=%s' % (rc, before != after))
 
 
 _CHILD_INBOX = r'''import sys
@@ -4056,6 +4068,310 @@ def _case_entry_wrappers(tmp):
                 'rc=%d out=%s' % (r.returncode, out[-200:]))
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+_ENTRIES6 = ('daybook.py', 'daybook_append.py', 'daybook_hook.py',
+             'daybook_session_hook.py', 'orchestrator.py', 'mcp_server.py')
+_FAULTS7 = ('CONFIG', 'VIOLATION', 'AUTHOR', 'EVIDENCE', 'RUNTIME', 'COMPOSE', 'NO_TRACE')
+
+
+def _load_mod(path, name):
+    """按路径加载一个模块（用于加载变异副本，不污染 sys.modules 里的原件）。
+    Load a module by path (used for mutant copies; never the original in sys.modules)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _literal_codes(path):
+    """入口函数里出现字面非 0 退出码（return N / sys.exit(N) / raise SystemExit(N)）即返回清单。
+    Non-zero literal exit codes inside entry functions (return N / sys.exit(N) / SystemExit(N))."""
+    try:
+        tree = ast.parse(io.open(path, encoding='utf-8').read())
+    except (OSError, SyntaxError) as exc:
+        return ['解析失败：%s' % exc]
+    bad = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in ('main', '_main', '_entry', '_selftest'):
+            continue
+        for sub in ast.walk(node):
+            if (isinstance(sub, ast.Return) and isinstance(sub.value, ast.Constant)
+                    and isinstance(sub.value.value, int) and sub.value.value != 0):
+                bad.append('%s:return %s' % (node.name, sub.value.value))
+            switch = (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                      and sub.func.attr == 'exit' and sub.args)
+            se = (isinstance(sub, ast.Raise) and isinstance(sub.exc, ast.Call)
+                  and getattr(sub.exc.func, 'id', '') == 'SystemExit' and sub.exc.args)
+            if switch or se:
+                a0 = (sub.args if switch else sub.exc.args)[0]
+                if (isinstance(a0, ast.Constant) and isinstance(a0.value, int)
+                        and a0.value != 0):
+                    bad.append('%s:exit(%s)' % (node.name, a0.value))
+    return bad
+
+
+def _case_error_table(tmp):
+    """P6：错误表唯一映射——6 入口 × 7 故障类；同故障同码、多故障取最高严重度、无 traceback。
+    P6: the single error table — 6 entries × 7 fault classes; the same fault maps to the same
+    code everywhere, composition takes the highest severity, and no entry prints a traceback."""
+    here = os.path.dirname(SRC_BIN)
+    py = sys.executable
+
+    E = _load_mod(os.path.join(here, 'errors.py'), 'p6_errors')
+    _ok('P6 表：类别名 ↔ 码唯一且恰为 2/3/4/5/6',
+        sorted(E.TABLE.values()) == [2, 3, 4, 5, 6]
+        and set(E.TABLE) == {E.CONFIG, E.VIOLATION, E.AUTHOR, E.EVIDENCE, E.RUNTIME},
+        'TABLE=%r' % (E.TABLE,))
+    want = {E.ConfigError: 2, E.LedgerViolation: 3, E.AuthorConvention: 4,
+            E.EvidenceMissing: 5, E.RuntimeFailure: 6, E.WriteRefused: 6}
+    off = [(c.__name__, E.exit_code(c('x')), n) for c, n in want.items()
+           if E.exit_code(c('x')) != n]
+    _ok('P6 表：每个错误子类 → 固定码（WriteRefused 随父类 = 6）', not off, '偏差=%r' % off)
+    off = []
+    for classes, n in (((E.ConfigError, E.EvidenceMissing), 2),
+                       ((E.AuthorConvention, E.RuntimeFailure), 4),
+                       ((E.LedgerViolation, E.AuthorConvention, E.RuntimeFailure), 3),
+                       ((E.RuntimeFailure, E.ConfigError), 6)):
+        got = E.exit_code(E.worst([c('x') for c in classes]))
+        if got != n:
+            off.append(([c.__name__ for c in classes], got, n))
+    _ok('P6 合成：多故障取最高严重度（违例 > 作者 > 运行 > 配置 > 证据）', not off,
+        '偏差=%r' % off)
+    _ok('P6 合成：空列表 ⇒ None；未知类别 ⇒ 6（绝不返回 0）',
+        E.worst([]) is None and E.exit_code(type('X', (Exception,), {'kind': 99})()) == 6)
+
+    # 静态：每个入口只有一个出口，且不持有数字码
+    for name in _ENTRIES6:
+        p = os.path.join(here, name)
+        if not os.path.exists(p):
+            _skip('P6 %s：当前盒无此文件' % name)
+            continue
+        text = io.open(p, encoding='utf-8').read()
+        lits = _literal_codes(p)
+        n_run = len(re.findall(r'errors\.run_entry\(', text))
+        holds = re.search(r'\bEXIT_[A-Z_]+\b', text) or re.search(r'\bworst_exit\b', text)
+        _ok('P6 %s：唯一出口 errors.run_entry ×1、入口无字面非 0 码、无 EXIT_*/worst_exit'
+            % name,
+            n_run == 1 and not lits and not holds,
+            'run_entry=%d 字面码=%r 旧常量=%s' % (n_run, lits, bool(holds)))
+
+    cells = [0]
+    outs = {n: [] for n in _ENTRIES6}
+
+    def probe(entry, kind, argv, cwd, env=None):
+        """跑一格：退出码必须等于 TABLE[kind]，且输出无 traceback。
+        入口文件不在当前盒里就显式跳过——不能拿「文件不存在也 rc=2」冒充同码。
+        Run one cell: the status must equal TABLE[kind] and the output must have no traceback.
+        When the entry file is absent from this box, skip explicitly — a missing file that also
+        exits 2 must never masquerade as the same code."""
+        ap = argv[0]
+        full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
+        if os.path.basename(ap) in _ENTRIES6 and not os.path.exists(full):
+            na(entry, kind, '当前盒无 %s' % os.path.basename(ap))
+            return
+        e = dict(os.environ)
+        if env:
+            e.update(env)
+        r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, env=e)
+        out = r.stdout + r.stderr
+        outs[entry].append(out)
+        cells[0] += 1
+        _ok('P6 %s × %s ⇒ rc=%d（表 %d）' % (entry, kind, E.TABLE[
+            getattr(E, kind)], E.TABLE[getattr(E, kind)]),
+            r.returncode == E.TABLE[getattr(E, kind)] and 'Traceback' not in out,
+            'rc=%d out=%s' % (r.returncode, out[-160:].replace('\n', ' ')))
+
+    def na(entry, kind, why):
+        cells[0] += 1
+        _skip('P6 %s × %s 不适用：%s' % (entry, kind, why))
+
+    missing = os.path.join(tmp, 'no_such_home_%d' % os.getpid())
+    d = tempfile.mkdtemp(prefix='p6_', dir=tmp)
+    try:
+        _prepare(d)
+        # CONFIG：六个入口对「无 conf/无根」同码 2
+        probe('daybook.py', 'CONFIG', ['daybook.py', '--home', missing], d)
+        probe('daybook_append.py', 'CONFIG',
+              [os.path.join(here, 'daybook_append.py'), '--home', missing,
+               '账卷.txt', '测试', '标题', '皮特', '正文'], d)
+        probe('daybook_hook.py', 'CONFIG',
+              [os.path.join(here, 'daybook_hook.py'), '--home', missing], d)
+        probe('daybook_session_hook.py', 'CONFIG',
+              [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
+               '--events-root', missing, '--state', os.path.join(d, 'st.json'),
+               '--workspace', d], d)
+        probe('orchestrator.py', 'CONFIG',
+              [os.path.join(here, 'orchestrator.py'), '--home', missing, 'who'], d)
+        probe('mcp_server.py', 'CONFIG',
+              [os.path.join(here, 'mcp_server.py'), '--home', missing], d)
+
+        # EVIDENCE：daybook（无封存）/ hook（缺对话卷）/ session（坏游标）同为 5
+        d_ev = tempfile.mkdtemp(prefix='p6ev_', dir=tmp)
+        try:
+            _prepare(d_ev)
+            probe('daybook.py', 'EVIDENCE', ['daybook.py'], d_ev)
+            probe('daybook_hook.py', 'EVIDENCE',
+                  [os.path.join(here, 'daybook_hook.py'), '--home', d_ev], d_ev)
+            ev = os.path.join(d_ev, 'events')
+            os.makedirs(ev)
+            bad_state = os.path.join(d_ev, 'bad_state.json')
+            io.open(bad_state, 'w', encoding='utf-8').write('{bad json')
+            probe('daybook_session_hook.py', 'EVIDENCE',
+                  [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
+                   '--events-root', ev, '--state', bad_state, '--workspace', d_ev], d_ev)
+        finally:
+            shutil.rmtree(d_ev, ignore_errors=True)
+        for e in ('daybook_append.py', 'orchestrator.py', 'mcp_server.py'):
+            na(e, 'EVIDENCE', '该入口不读取派生证据，缺件在它这里表现为配置错或运行失败')
+
+        # VIOLATION：daybook 等长改写 / 司南 幽灵负责人硬警 → 同为 3
+        d_v = tempfile.mkdtemp(prefix='p6v_', dir=tmp)
+        try:
+            _prepare(d_v)
+            _base(d_v)
+            volp = os.path.join(d_v, '账卷.txt')
+            lines = io.open(volp, encoding='utf-8').read().splitlines(True)
+            mid = len(lines) // 2
+            lines[mid] = lines[mid].replace('[皮特]', '[皮大]', 1)
+            io.open(volp, 'w', encoding='utf-8').write(''.join(lines))
+            probe('daybook.py', 'VIOLATION', ['daybook.py'], d_v)
+        finally:
+            shutil.rmtree(d_v, ignore_errors=True)
+        d_o = tempfile.mkdtemp(prefix='p6ov_', dir=tmp)
+        try:
+            with io.open(os.path.join(d_o, 'daybook.conf'), 'w', encoding='utf-8') as f:
+                f.write(CONF)
+            _make_volume(os.path.join(d_o, '账卷.txt'), n=2)
+            orch = os.path.join(here, 'orchestrator.py')
+            subprocess.run([py, '-B', orch, '--home', d_o, 'join', '汤姆'],
+                           cwd=d_o, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([py, '-B', orch, '--home', d_o, 'open', '幽灵单', '--by',
+                            'ag-ghost'],
+                           cwd=d_o, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            probe('orchestrator.py', 'VIOLATION',
+                  [orch, '--home', d_o, 'alarm'], d_o)
+        finally:
+            shutil.rmtree(d_o, ignore_errors=True)
+        for e in ('daybook_append.py', 'daybook_hook.py',
+                  'daybook_session_hook.py', 'mcp_server.py'):
+            na(e, 'VIOLATION', '该入口不做 append-only 判定，违例在 CLI 与 MCP 的 index 处判')
+
+        # AUTHOR：只有 daybook 有作者口径机检 → 4
+        d_a = tempfile.mkdtemp(prefix='p6a_', dir=tmp)
+        try:
+            _prepare(d_a)
+            _base(d_a)
+            with io.open(os.path.join(d_a, '账卷.txt'), 'a', encoding='utf-8') as f:
+                f.write('[2026-11-13 16:00:00] [测试] [机器id作者]'
+                        ' [ag-0123456789abcdef] 正文\n')
+            probe('daybook.py', 'AUTHOR', ['daybook.py'], d_a)
+        finally:
+            shutil.rmtree(d_a, ignore_errors=True)
+        for e in _ENTRIES6[1:]:
+            na(e, 'AUTHOR', '该入口不跑作者口径机检（作者位只经 daybook index 判）')
+
+        # RUNTIME：append 目标不可写 / session 状态越界 / 司南 体检读失败 → 同为 6
+        d_r = tempfile.mkdtemp(prefix='p6r_', dir=tmp)
+        try:
+            _prepare(d_r)
+            os.makedirs(os.path.join(d_r, '目录卷.txt'))
+            probe('daybook_append.py', 'RUNTIME',
+                  [os.path.join(here, 'daybook_append.py'), '--home', d_r,
+                   '目录卷.txt', '测试', '标题', '皮特', '正文'], d_r)
+        finally:
+            shutil.rmtree(d_r, ignore_errors=True)
+        hook_run = [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
+                    '--events-root', os.path.join(tmp, 'p6_events_%d' % os.getpid()),
+                    '--workspace', here]
+        ev6 = hook_run[4]
+        os.makedirs(ev6, exist_ok=True)
+        try:
+            probe('daybook_session_hook.py', 'RUNTIME',
+                  hook_run + ['--state', os.path.join(tmp,
+                                                      'p6_outside_%d.json' % os.getpid())],
+                  here)
+        finally:
+            shutil.rmtree(ev6, ignore_errors=True)
+        d_or = tempfile.mkdtemp(prefix='p6orr_', dir=tmp)
+        try:
+            with io.open(os.path.join(d_or, 'daybook.conf'), 'w', encoding='utf-8') as f:
+                f.write(CONF)
+            os.makedirs(os.path.join(d_or, '任务卷.txt'))
+            probe('orchestrator.py', 'RUNTIME',
+                  [os.path.join(here, 'orchestrator.py'), '--home', d_or, 'alarm'], d_or)
+        finally:
+            shutil.rmtree(d_or, ignore_errors=True)
+        for e, why in (('daybook.py', '运行期写拒绝由 R9-2/R10-2 专项覆盖'),
+                       ('daybook_hook.py', '运行期写拒绝由 R10-3 专项覆盖'),
+                       ('mcp_server.py', 'stdio 运行期拒绝需注入签名会话，由 R10-3 覆盖')):
+            na(e, 'RUNTIME', why)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+    # COMPOSE：合成只在 errors.worst 一处，六个入口共用同一份（逐入口记一格）
+    comp_ok = E.worst([E.LedgerViolation('v'), E.AuthorConvention('a'),
+                       E.RuntimeFailure('r')]).kind == E.VIOLATION
+    for entry in _ENTRIES6:
+        cells[0] += 1
+        _ok('P6 %s × COMPOSE（表级 worst 合成）' % entry, comp_ok)
+
+    # NO_TRACE：本入口所有动态探针的输出里都不得有 traceback
+    for entry in _ENTRIES6:
+        if not outs[entry]:
+            cells[0] += 1
+            _skip('P6 %s × NO_TRACE 不适用：本层没有该入口的动态探针' % entry)
+            continue
+        cells[0] += 1
+        _ok('P6 %s × NO_TRACE：全部探针输出无 traceback' % entry,
+            all('Traceback' not in o for o in outs[entry]))
+
+    _ok('P6 矩阵格数对账（6 入口 × 7 故障类 = 42）', cells[0] == 42,
+        '已判 %d 格' % cells[0])
+
+    # 收口回归：司南自检全绿——「持租约锁后再记日志」不得同线程重入根锁（会自死锁）
+    # Boundary regression: Sinan's self-test must be green — logging while holding a lease must
+    # not re-enter the root lock in the same thread (that self-deadlocks).
+    osel = os.path.join(here, 'orchestrator.py')
+    if os.path.exists(osel):
+        r = subprocess.run([py, '-B', osel, 'selftest'], cwd=here,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True)
+        out = r.stdout + r.stderr
+        _ok('P6 司南自检：持租约锁内记日志不重入锁 ⇒ rc=0 全绿',
+            r.returncode == 0 and '全绿' in out and 'Traceback' not in out,
+            'rc=%d out=%s' % (r.returncode, out[-200:].replace('\n', ' ')))
+    else:
+        _skip('P6 司南自检：当前盒无 orchestrator.py')
+
+    # 变异 M6：入口插字面 `return 2` ⇒ 静态判据必须红
+    src = io.open(os.path.join(here, 'daybook.py'), encoding='utf-8').read()
+    anchor = 'def _main():'
+    if anchor not in src:
+        _mut_ok('M6 入口插 return 2 ⇒ 必红', False, '锚点缺失', dead=True)
+    else:
+        mut = os.path.join(tmp, 'p6_m6_daybook.py')
+        io.open(mut, 'w', encoding='utf-8').write(
+            src.replace(anchor, anchor + '\n    return 2', 1))
+        lits = _literal_codes(mut)
+        _mut_ok('M6 入口插 return 2 ⇒ 必红（静态判据抓到 %r）' % lits, bool(lits), '')
+
+    # 变异 M6b：把 ConfigError 映射成 6 ⇒ 表判据必须红
+    esrc = io.open(os.path.join(here, 'errors.py'), encoding='utf-8').read()
+    eanchor = 'class ConfigError(DaybookError):\n    kind = CONFIG'
+    if eanchor not in esrc:
+        _mut_ok('M6b ConfigError 映射成 6 ⇒ 必红', False, '锚点缺失', dead=True)
+    else:
+        emut = os.path.join(tmp, 'p6_m6b_errors.py')
+        io.open(emut, 'w', encoding='utf-8').write(
+            esrc.replace(eanchor, 'class ConfigError(DaybookError):\n    kind = RUNTIME', 1))
+        EM = _load_mod(emut, 'p6_errors_m6b')
+        got = EM.exit_code(EM.ConfigError('x'))
+        _mut_ok('M6b ConfigError 映射成 6 ⇒ 必红（变异体给出 rc=%d）' % got, got != 2, '')
 
 
 _WIN_CHILD = r'''
@@ -4682,6 +4998,7 @@ def main():
         _case_cli_write_fail(work)
         _case_run_fail_compose(work)
         _case_entry_wrappers(work)
+        _case_error_table(work)
         safeio_src = io.open(os.path.join(os.path.dirname(SRC_BIN), 'safeio.py'),
                              encoding='utf-8').read()
         _ok('静态：Windows 写路径/互斥实现存在（命名互斥量 + realpath 归属判 + 拒绝重解析点）',

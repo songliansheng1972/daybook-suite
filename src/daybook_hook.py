@@ -29,6 +29,7 @@ Usage:
   Default: 对话卷.txt + hook_a_关键词.txt
 """
 import os, sys, re, time, io
+import errors
 
 # 复用 daybook_append 的原子写 · reuse daybook_append's atomic write
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -157,14 +158,12 @@ def run(dialog_path, kw_path, root='.'):
     HOOK-A main flow: scan the original content registered in the dialog volume → keyword hit → follow into the target volume."""
     rules = load_keywords(kw_path)
     if not rules:
-        print('关键词表为空：%s' % kw_path)
-        return 1
+        raise errors.EvidenceMissing('关键词表为空：%s' % kw_path)
     print('加载 %d 条规则' % len(rules))
 
     blocks = parse_dialog(dialog_path, root)
     if not blocks:
-        print('对话卷为空：%s' % dialog_path)
-        return 1
+        raise errors.EvidenceMissing('对话卷为空：%s' % dialog_path)
     print('对话卷 %d 条' % len(blocks))
 
     record_path = os.path.join(root, '.hook_a_已处理.txt')
@@ -197,15 +196,14 @@ def run(dialog_path, kw_path, root='.'):
         target_path = os.path.join(root, '%s卷.txt' % target_vol)
         msg = 'HOOK-A 追更·来源 对话卷 行=%d·原件=%s·命中「%s」\n%s' % (
             ln, orig_path, kw, orig_text.rstrip()[:100])  # 截 100 字防超 512B · truncate to 100 chars to stay under 512B
-        rc = append_one(target_path, target_kind, 'HOOK-A 追更', msg,
-                        author=author, author_id=author_id,
-                        unregistered=unregistered, root=root)
-        if rc == 0:
-            mark_processed(record_path, ln, root)
-            n_hit += 1
-            print('  追更 → %s卷 [category=%s author=%s keywords=%s]' % (target_vol, target_kind, author, kw))  # 卷名沿用数据件命名（协作卷.txt）· volume name follows the data-file naming (协作卷.txt)
-        else:
-            print('  ★ 追更失败（rc=%d）行=%d 超长?' % (rc, ln))
+        append_one(target_path, target_kind, 'HOOK-A 追更', msg,
+                   author=author, author_id=author_id,
+                   unregistered=unregistered, root=root)
+        # 失败一律 raise（唯一出口给码），这里不再有「rc!=0 却继续」的吞错分支。
+        # Failures raise (the single boundary owns the code); no swallowed rc!=0 branch remains.
+        mark_processed(record_path, ln, root)
+        n_hit += 1
+        print('  追更 → %s卷 [category=%s author=%s keywords=%s]' % (target_vol, target_kind, author, kw))  # 卷名沿用数据件命名（协作卷.txt）· volume name follows the data-file naming (协作卷.txt)
 
     print('追更完成：%d 条' % n_hit)
     return 0
@@ -228,19 +226,14 @@ def main():
     """CLI 收口：RuntimeError（写原语拒绝等）打一条文案并退 6，不抛裸 traceback。
     CLI boundary: RuntimeError (write-primitive refusals included) becomes one message and
     exit 6 — never a bare traceback."""
-    try:
-        return _main()
-    except RuntimeError as exc:
-        sys.stderr.write('★ 运行失败（rc=6）：%s\n' % exc)
-        return 6
+    return errors.run_entry(_main)
 
 
 def _main():
     from ledger_root import take_home
     args, home, herr = take_home(sys.argv[1:])
     if herr:
-        sys.stderr.write('★ %s\n' % herr)
-        return 2
+        raise errors.ConfigError(herr)
     if args and args[0] in ('-h', '--help'):
         print(__doc__ or '用法：daybook_hook.py [--home DIR] [对话卷 [关键词表]]')
         return 0
@@ -250,16 +243,16 @@ def _main():
         # ★ Step 2: the entry resolves the root once (a Root handle) and passes it down.
         root = Root.open(home)
     except (ValueError, RuntimeError) as exc:
-        sys.stderr.write('%s\n' % exc)
-        return 2
+        # 入口期的根问题 = 2（errors.py 唯一裁决）；运行期写拒绝由顶层收口给 6。
+        # An entry-time root problem is 2 (the ruling in errors.py); runtime write refusals
+        # get 6 from the top boundary.
+        raise errors.ConfigError(str(exc))
     dialog_path = args[0] if len(args) >= 2 else os.path.join(root, '对话卷.txt')
     kw_path = args[1] if len(args) >= 2 else os.path.join(root, 'hook_a_关键词.txt')
     if not os.path.exists(dialog_path):
-        print('对话卷不存在：%s' % dialog_path)
-        return 1
+        raise errors.EvidenceMissing('对话卷不存在：%s' % dialog_path)
     if not os.path.exists(kw_path):
-        print('关键词表不存在：%s' % kw_path)
-        return 1
+        raise errors.EvidenceMissing('关键词表不存在：%s' % kw_path)
     print('=== HOOK-A 选择性追更 ===')
     print('对话卷: %s' % dialog_path)
     print('关键词表: %s' % kw_path)
