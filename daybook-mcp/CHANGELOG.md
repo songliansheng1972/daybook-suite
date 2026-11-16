@@ -23,6 +23,24 @@
 >    **The author is mandatory.** Legacy 3/4-arg forms, `未标`/empty placeholders and `--name=`
 >    are removed and refused with rc=2; standalone mode also refuses machine ids.
 >    The MCP tool path is unaffected.
+>
+> ### ⚠ 退出码变更（对外契约，单列）· Exit-code changes (external contract)
+>
+> **按旧码判断的外部脚本需要改 / external scripts keyed on the old codes must change.** 逐条旧码 → 新码：
+>
+> | 命令 | 场景 | 旧码 → 新码 | 说明 |
+> |---|---|---|---|
+> | `orchestrator.py alarm` | 有硬警 | **1 → 3** | 硬警即违例，与 `daybook` 的 3 同义 |
+> | `orchestrator.py alarm` | 执行异常 | **3 → 6** | 运行失败单独成码，不再与违例混 |
+> | `daybook.py checkauthors` | 作者口径红 | **1 → 4** | 作者口径红全系统统一为 4 |
+> | `orchestrator.py selftest` | 自检有红 | **1 → 6** | 自检失败＝运行失败 |
+>
+> 其余数值不变：`index`/`baseline` 的 0/2/3/4/5/6 一个都没动，只是来源收成一张表
+> （`errors.py`；入口只 `raise`，唯一出口 `run_entry` 给码）。凡是把旧码写死的外部脚本
+> （`if rc == 1`、`case $? in 1)`、按「1=硬警/3=异常」分派）**必须改成按上表新码判断**，
+> 否则会把「硬警」判成成功、把「执行异常」判成「违例」。
+> **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
+> hard-codes the old 1/3 meanings must be updated as above.
 
 ### 复核 P0（海东青四项）
 
@@ -37,7 +55,7 @@
   `baseline`（认基线）。首次建立同样走这条。
 - **认基线遇违例一律拒**：`baseline` 先只验不写；有 append-only 违例或配置错即退 3/2，
   不写任何派生件——不把「账本被改过」替人认成新基线。作者口径红只报不拦。
-- **判拒只有一个聚合**：CLI 与 MCP 的 `daybook_index` 共用 `worst_exit`（2/3/4/5 全部上报，
+- **判拒只有一个聚合**：CLI 与 MCP 的 `daybook_index` 共用 `errors.worst`（2/3/4/5 全部上报，
   屏幕/审计记违例）；违例卷在落笔前再次收紧，一次调用不能把篡改重建为新基线。
 - **证据缺失路径不再崩溃**：正常追加后删索引会走「卷变大」分支数不存在的索引文件
   （`FileNotFoundError` rc=1）；现于分支前判「索引不存在」，直接退 5。
@@ -46,7 +64,7 @@
 ### 复核 P1
 
 - 退出码「不互掩」的口径写进 `--help`：屏幕全打，退出码取语义严重度最高
-  （违例 3 > 作者 4 > 配置错 2 > 证据缺失 5）；3 不被 2 掩盖，也不被 5 洗掉。
+  （违例 3 > 作者 4 > 运行 6 > 配置错 2 > 证据缺失 5）；3 不被 2 掩盖，也不被 5 洗掉。
 - `backup` 在默认 `out_dir` 为空时备份根目录下的已知索引件，不再直接返回。
 - CLI 收掉「作者默认未标」的 4/2 参形态与 `--name=` 后门：作者必填，占位值拒写。
 
