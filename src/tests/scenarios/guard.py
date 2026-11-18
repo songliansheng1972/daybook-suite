@@ -5525,36 +5525,65 @@ def _case_conf_dual_e2e(tmp):
 
 
 _ALIAS_TABLES = ('SEC_ALIAS', 'KEY_ALIAS', 'FIELD_ALIAS')
+_ALIAS_EXPECTED_KEYS = 26
 
 
-def _alias_pairs(here):
-    """从 conf_norm.py 读出「中文别名 → 英文正名」的字面对集合，供结构扫描比对。
-    Read the literal (Chinese alias → canonical) pair set from conf_norm.py for the scan.
+def _alias_tables(here):
+    """逐表读出「中文别名 → 正名」的字面对；读不出的表**不出现**（由闸判红并点名）。
+    Read each alias table separately; a table whose literal cannot be read is absent, so the
+    gate can name it. 三张表各要读到，缺哪张点哪张。
     用集合而非映射：同一中文键在不同表里可对应不同正名（`卷`→`volumes` 与 `卷`→`volume`）。
-    A set, not a map: one Chinese key can map to different canonicals per table
-    (`卷`→`volumes` and `卷`→`volume`)."""
+    A set per table, not a map: one key can map to different canonicals per table."""
     tree = ast.parse(io.open(os.path.join(here, 'conf_norm.py'), encoding='utf-8').read())
-    pairs = set()
+    tables = {}
     for node in tree.body:
-        if not (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id in _ALIAS_TABLES and isinstance(node.value, ast.Dict)):
+        target = None
+        value = None
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id in _ALIAS_TABLES:
+                    target, value = t.id, node.value
+        elif (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+              and node.target.id in _ALIAS_TABLES):
+            # 注解赋值（`FIELD_ALIAS: dict = {...}`）按「读不出」处理：不静默适配新的赋值形态，
+            # 由闸判红并点名该表——判据的参照来源是固定形态，换形态必须有人看见。
+            # AnnAssign counts as unreadable: do not silently adapt to a new assignment shape.
             continue
-        for k, v in zip(node.value.keys, node.value.values):
+        if target is None:
+            continue
+        pairs = tables.setdefault(target, set())
+        for k, v in zip(value.keys, value.values):
             if (isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
                     and isinstance(k.value, str) and isinstance(v.value, str)
                     and any('\u4e00' <= c <= '\u9fff' for c in k.value)):
                 pairs.add((k.value, v.value))
-    return pairs
+    return {t: s for t, s in tables.items() if s}
 
 
-def _alias_ref_gate(keys):
-    """通则：参照集为空即红——空是「看不见表在哪」，不是「没有第二张表」。
-    General rule: an empty reference set is red — it means "cannot see the table",
-    not "there is no second table"."""
-    if keys:
-        return True, '参照集 %d 项' % len(keys)
-    return False, ('参照集为空：conf_norm.py 的别名表读不出来（如三张表改成注解赋值），'
-                   '无从判断，按红处理')
+def _alias_pairs(here):
+    """三张表的并集，供扫描使用。Union of the three tables for scanning."""
+    out = set()
+    for s in _alias_tables(here).values():
+        out |= s
+    return out
+
+
+def _alias_ref_gate(tables):
+    """通则：参照集为空即红；这里更严——参照集必须**完整**（三表各读到、键数应够）。
+    「非空」只是下界，下界不是判据：只改一张表，参照集从 26 掉到 23 也必须红。
+    Empty is red; complete is required: every table readable and the expected key count.
+    "Non-empty" is only a lower bound, and a lower bound is not a judge."""
+    keys = set()
+    for s in tables.values():
+        keys |= {k for k, _v in s}
+    missing = [t for t in _ALIAS_TABLES if t not in tables]
+    if missing:
+        return False, ('参照集不完整：读不出 %s（不在 `NAME = {...}` 形态）；现有中文键 %d 个'
+                       % ('/'.join(missing), len(keys)))
+    if len(keys) != _ALIAS_EXPECTED_KEYS:
+        return False, ('参照集不完整：中文键 %d 个，应有 %d 个'
+                       % (len(keys), _ALIAS_EXPECTED_KEYS))
+    return True, '参照集 %d 键 / 三表齐全' % len(keys)
 
 
 def _alias_table_hits(here, skip=(), keys=None):
@@ -5584,30 +5613,34 @@ def _alias_table_hits(here, skip=(), keys=None):
             for node in ast.walk(tree):
                 if isinstance(node, ast.Dict):
                     for k, v in zip(node.keys, node.values):
-                        if (isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
-                                and isinstance(k.value, str) and k.value in keys
-                                and isinstance(v.value, str)):
+                        if (isinstance(k, ast.Constant) and isinstance(k.value, str)
+                                and k.value in keys and isinstance(v, ast.Constant)):
                             hits.append((path, node.lineno, k.value, v.value, 'dict'))
                 elif isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2:
                     a, b = node.elts
-                    if (isinstance(a, ast.Constant) and isinstance(b, ast.Constant)
-                            and isinstance(a.value, str) and a.value in keys
+                    # 元组对只认「名字 → 字符串」：`('标题', 1)` 是 (名字, 下标)，不是映射。
+                    # A pair counts only with a string target: `('标题', 1)` is (name, index).
+                    if (isinstance(a, ast.Constant) and isinstance(a.value, str)
+                            and a.value in keys and isinstance(b, ast.Constant)
                             and isinstance(b.value, str)):
                         hits.append((path, node.lineno, a.value, b.value, 'pair'))
                 elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                       and node.func.id == 'dict'):
                     for kw in node.keywords:
-                        if (kw.arg in keys and isinstance(kw.value, ast.Constant)
-                                and isinstance(kw.value.value, str)):
-                            hits.append((path, node.lineno, kw.arg, kw.value.value, 'dict()'))
+                        if kw.arg in keys and isinstance(kw.value, ast.Constant):
+                            hits.append((path, node.lineno, kw.arg,
+                                         kw.value.value, 'dict()'))
     return hits
 
 
 def _alias_pair_verdict(here, skip=()):
-    """成对字面量判据的唯一出口：参照集为空也在这里红。
-    Single exit for the pair-literal judgement; an empty reference set is red here too."""
-    keys = {k for k, _v in _alias_pairs(here)}
-    ref_ok, ref_detail = _alias_ref_gate(keys)
+    """成对字面量判据的唯一出口：参照集不完整（缺表/键数不够）也在这里红。
+    Single exit for the pair-literal judgement; an incomplete reference set is red here too."""
+    tables = _alias_tables(here)
+    ref_ok, ref_detail = _alias_ref_gate(tables)
+    keys = set()
+    for s in tables.values():
+        keys |= {k for k, _v in s}
     hits = _alias_table_hits(here, skip=skip, keys=keys)
     return (ref_ok and not hits), ref_ok, ref_detail, hits
 
@@ -5725,6 +5758,45 @@ def _alias_baseline_diff(hits, base):
     return len(hits), len(base), new, gone, moved
 
 
+def _alias_name_verdict(here, base_path):
+    """单点中文名判据的唯一出口，口径写在这里：
+    - 新增：基线外的新名，或同名实际超出基线的部分 ⇒ 红；
+    - 消失：同名缺口之和。源树上 >0 即红（疑似漏扫）；盒内豁免，但必须打印豁免语；
+    - 位移：同名同数、`(文件, 行号)` 多重集变了 ⇒ 只报，不红；
+    - 整批消失（实际 0、基线非空）⇒ 红：判据看不见树。
+    Single exit. New: a fresh name or growth ⇒ red. Gone: name deficit; red on the source tree
+    (suspected missed scan), exempt in a box but the exemption must be printed. Moved: same
+    count with different (file, line) multiset ⇒ reported only. All gone ⇒ red."""
+    tables = _alias_tables(here)
+    ref_ok, ref_detail = _alias_ref_gate(tables)
+    keys = set()
+    for s in tables.values():
+        keys |= {k for k, _v in s}
+    hits = _alias_name_hits(here, keys=keys)
+    base = _read_alias_baseline(base_path)
+    total, base_total, new, gone, moved = _alias_baseline_diff(hits, base)
+    is_box = not os.path.exists(os.path.join(here, 'pack.py'))
+    blind = base_total > 0 and total == 0
+    red = (not ref_ok) or bool(new) or blind or (gone > 0 and not is_box)
+    if not ref_ok:
+        reason = ref_detail
+    elif blind:
+        reason = '基线整批消失：实际 0 处、基线 %d 条，判据看不见树' % base_total
+    elif new:
+        reason = '新增=%s' % (['%s:%d %s' % (f, ln, n) for f, ln, n in new])
+    elif gone and not is_box:
+        reason = '消失 %d，疑似漏扫' % gone
+    elif gone:
+        reason = '盒内豁免，消失 %d 属产物边界' % gone
+    elif moved:
+        reason = '位移=%s' % (['%s:%s→%s' % m for m in moved])
+    else:
+        reason = '新增=[]'
+    return {'ok': not red, 'hits': hits, 'total': total, 'base_total': base_total,
+            'new': new, 'gone': gone, 'moved': moved, 'reason': reason,
+            'ref_ok': ref_ok, 'blind': blind, 'is_box': is_box}
+
+
 def _case_conf_alias_single(here):
     """P0 归一表只许一张：按字面量位置判，不按变量名。
     P0 exactly one alias table: judged by literal positions, not by variable names.
@@ -5788,40 +5860,41 @@ def _case_conf_alias_single(here):
                                          for p, ln, k, v, _how in found]))
     finally:
         shutil.rmtree(wrong, ignore_errors=True)
-    # 反向自证：三张表改注解赋值 ⇒ 参照集为空 ⇒ 判红，不许只报「消失 28」。
-    # AnnAssign turns the reference set empty; the judge must be red and say why.
+    # 反向自证：只改 FIELD_ALIAS 一张为注解赋值 ⇒ 参照集不完整 ⇒ 判红并点名该表。
+    # Only one table becomes unreadable: incomplete reference set, red, naming that table.
     stage3 = tempfile.mkdtemp()
     try:
         src = io.open(os.path.join(here, 'conf_norm.py'), encoding='utf-8').read()
-        for t in _ALIAS_TABLES:
-            src = re.sub(r'(?m)^%s = ' % t, '%s: dict = ' % t, src)
+        src = re.sub(r'(?m)^FIELD_ALIAS = ', 'FIELD_ALIAS: dict = ', src)
         io.open(os.path.join(stage3, 'conf_norm.py'), 'w', encoding='utf-8').write(src)
         ok3, ref3, det3, hits3 = _alias_pair_verdict(stage3)
-        _ok('P0 反向自证：三张表改注解赋值 ⇒ 判红且原因是「参照集为空」',
-            (not ok3) and (not ref3) and ('参照集为空' in det3),
+        _ok('P0 反向自证：只改 FIELD_ALIAS 为注解赋值 ⇒ 判红并点名该表',
+            (not ok3) and (not ref3) and ('FIELD_ALIAS' in det3) and ('不完整' in det3),
             '判红=%s；%s；命中=%d' % (not ok3, det3, len(hits3)))
     finally:
         shutil.rmtree(stage3, ignore_errors=True)
-    # 单点中文名：键是中文名（不是「文件×名字」）；超基线红，消失/位移只报。
-    # Single-token Chinese names: keyed by name (not file×name); over-baseline is red,
-    # disappearance and movement are reported only.
+    # 反向自证：值只要求「是常量」——None、空串、尾空格都算成对映射，必须红。
+    # Any constant value counts as a pair: None, empty string, trailing-space string are red.
+    nils = tempfile.mkdtemp()
+    try:
+        shutil.copy2(os.path.join(here, 'conf_norm.py'), os.path.join(nils, 'conf_norm.py'))
+        io.open(os.path.join(nils, victim), 'w', encoding='utf-8').write(
+            text + '\n_A = {"二级": None}\n_B = {"二级": ""}\n_C = {"二级": " name "}\n')
+        found = _alias_table_hits(nils)
+        _ok('P0 反向自证：值类型/空值/尾空格（None、""、" name "）都判红',
+            len(found) == 3 and all(k == '二级' for _p, _ln, k, _v, _h in found),
+            '命中=%d %s' % (len(found), [(ln, k, v) for _p, ln, k, v, _h in found]))
+    finally:
+        shutil.rmtree(nils, ignore_errors=True)
+    # 单点中文名：键是中文名（不是「文件×名字」）；新增红，源树消失红、盒内豁免。
+    # Single-token Chinese names: keyed by name; new is red; gone is red on the source tree
+    # and exempt in a box.
     base_path = os.path.join(here, _ALIAS_NAME_BASELINE)
-    keys = {k for k, _v in _alias_pairs(here)}
-    name_ref_ok, name_ref_detail = _alias_ref_gate(keys)
-    name_hits = _alias_name_hits(here, keys=keys)
-    base = _read_alias_baseline(base_path)
-    total, base_total, new_names, gone, moved = _alias_baseline_diff(name_hits, base)
-    if not name_ref_ok:
-        name_detail = name_ref_detail
-    elif new_names:
-        name_detail = '新增=%s' % (['%s:%d %s' % (f, ln, n) for f, ln, n in new_names])
-    elif moved:
-        name_detail = '位移=%s' % (['%s:%s→%s' % m for m in moved])
-    else:
-        name_detail = '新增=[]'
+    v = _alias_name_verdict(here, base_path)
+    name_hits = v['hits']
     _ok('单点中文名 %d 处（基线 %d）｜新增 %d｜消失 %d｜位移 %d'
-        % (total, base_total, len(new_names), gone, len(moved)),
-        name_ref_ok and not new_names, name_detail)
+        % (v['total'], v['base_total'], len(v['new']), v['gone'], len(v['moved'])),
+        v['ok'], v['reason'])
     # 反向自证三件：新名必红；纯跨文件迁移判绿只报位移；拿掉一处只报消失。
     # Three reverse proofs: a new name is red; pure migration is green with movement only;
     # one literal removed is green with one more disappearance.
@@ -5892,6 +5965,45 @@ def _case_conf_alias_single(here):
         shutil.rmtree(stage2, ignore_errors=True)
         shutil.rmtree(base2, ignore_errors=True)
         shutil.rmtree(base3, ignore_errors=True)
+    # 反向自证：把含命中的产品文件移出扫描路径（挪进 tests/）⇒ 源树必须红并说「疑似漏扫」；
+    # 盒内按产物边界豁免，但必须打印豁免语，不许静默。
+    # Move a product file out of the scan path: red on the source tree (suspected missed scan);
+    # in a box the product boundary exempts it, but the exemption must be printed.
+    movedout = tempfile.mkdtemp()
+    try:
+        _copy_tree(here, movedout)
+        src_file = next((f for f, _ln, _n in name_hits
+                         if os.path.isfile(os.path.join(here, f))), None)
+        exp_gone = sum(1 for f, _ln, _n in name_hits if f == src_file)
+        os.makedirs(os.path.join(movedout, 'tests'), exist_ok=True)
+        shutil.move(os.path.join(movedout, src_file),
+                    os.path.join(movedout, 'tests', src_file))
+        vm = _alias_name_verdict(movedout, os.path.join(movedout, _ALIAS_NAME_BASELINE))
+        if vm['is_box']:
+            _ok('P0 反向自证：产品件移出扫描路径 ⇒ 盒内豁免并打印豁免语',
+                vm['ok'] and ('盒内豁免' in vm['reason']),
+                '判绿=%s 消失=%d %s' % (vm['ok'], vm['gone'], vm['reason']))
+        else:
+            _ok('P0 反向自证：产品件移出扫描路径 ⇒ 判红，理由是「消失，疑似漏扫」',
+                (not vm['ok']) and ('疑似漏扫' in vm['reason']) and vm['gone'] >= exp_gone,
+                '移出=%s 判绿=%s %s'
+                % (src_file, vm['ok'], vm['reason']))
+    finally:
+        shutil.rmtree(movedout, ignore_errors=True)
+    # 反向自证：产品件整批消失（只剩 conf_norm.py 与基线）⇒ 必须红，不许「新增 0｜消失 28」绿。
+    # All product files gone ⇒ red: "0 new / 28 disappeared" must not pass.
+    vanished = tempfile.mkdtemp()
+    try:
+        shutil.copy2(os.path.join(here, 'conf_norm.py'), os.path.join(vanished, 'conf_norm.py'))
+        shutil.copy2(base_path, os.path.join(vanished, _ALIAS_NAME_BASELINE))
+        vv = _alias_name_verdict(vanished, os.path.join(vanished, _ALIAS_NAME_BASELINE))
+        _ok('P0 反向自证：产品件整批消失 ⇒ 判红（不是消失 28 的绿）',
+            (not vv['ok']) and vv['blind'] and not vv['new']
+            and vv['total'] == 0 and vv['gone'] == vv['base_total'],
+            '判绿=%s 实际=%d 基线=%d 新增=%d 消失=%d'
+            % (vv['ok'], vv['total'], vv['base_total'], len(vv['new']), vv['gone']))
+    finally:
+        shutil.rmtree(vanished, ignore_errors=True)
 
 
 _HOME_STATIC = (('daybook.py', 'take_home('), ('daybook_append.py', 'take_home('),
