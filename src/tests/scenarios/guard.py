@@ -59,6 +59,7 @@ Cases
 退出码 / Exit code: 0=全绿 1=有红
 """
 import ast
+import builtins
 import hashlib
 import io
 import json
@@ -180,6 +181,110 @@ WRITE_PATHS = (
     ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
     ('task_volume.py', 'create', 'ledger', '账本内容/派生件'),
     ('task_volume.py', '_transition_locked', 'ledger', '账本内容/派生件'),
+    # ── 闭包面补签（第一方写能力）─────────────────────────────────────────────
+    # 静态闭包从账本写原语向上传播得到的写能力函数，逐条登记（入口 main/_main/__init__/
+    # dispatch/serve 不签；随包测试只报告）。桶名仍是「预期」，实扫类别不符一样红。
+    # Closure-surface registrations: write-capable first-party functions reached from ledger
+    # primitives. Entry names are never signed; bundled tests are report-only.
+    ('agent_heartbeat.py', 'recover', 'ledger', '心跳恢复：写 alive 条目到账本卷'),
+    ('agent_lock.py', 'acquire', 'ledger', '取根锁 + 租约日志（账本卷）'),
+    ('agent_lock.py', 'release', 'ledger', '释放锁 + 租约日志（账本卷）'),
+    ('agent_message.py', 'handle', 'ledger', '收件箱/回执落账'),
+    ('agent_message.py', 'send', 'ledger', '发消息：收件箱追加'),
+    ('agent_message.py', 'server_close', 'ledger', '关服务：socket 清理 + 关闭记录'),
+    ('agent_registry.py', '_load', 'other', '只读加载注册表；静态经 _write_secret 卷进来'),
+    ('daybook.py', '_build_lock', 'ledger', '复用已持凭证的 build 锁'),
+    ('daybook.py', 'backup', 'ledger', '备份：持根锁写 backup/'),
+    ('daybook_hook.py', 'run', 'ledger', 'HOOK-A：追更目标卷'),
+    ('daybook_multidx.py', 'build', 'ledger', '多级目录派生件写入'),
+    ('daybook_record.py', '_open_ledger', 'other', '只解析 conf/Root；静态经 build 卷进来'),
+    ('daybook_record.py', '_precheck', 'other', 'dry build 判 2/3/4/5，零落盘'),
+    ('daybook_session_hook.py', '_entry', 'ledger', '入口期：归档会话输入'),
+    ('daybook_session_hook.py', 'archive_code_changes', 'ledger', '归档代码变更（原件）'),
+    ('daybook_session_hook.py', 'archive_message', 'ledger', '归档消息（原件）'),
+    ('daybook_session_hook.py', 'handle_event', 'ledger', '处理事件：归档 + 登记'),
+    ('daybook_session_hook.py', 'uninstall', 'ledger', '卸载：清 hook 登记'),
+    ('mcp_resources.py', '_audit_vol', 'other', '只读路径（经根句柄）'),
+    ('mcp_resources.py', '_multidx_dir', 'other', '只读路径（多级目录）'),
+    ('mcp_resources.py', '_root', 'other', '只读根句柄解析（经 _from_dir_path）'),
+    ('mcp_resources.py', '_vol_path', 'other', '只读路径（卷名→路径）'),
+    ('mcp_resources.py', 'find_resource', 'other', '只读查找'),
+    ('mcp_resources.py', 'list_resources', 'other', '只读列卷'),
+    ('mcp_resources.py', 'read_resource', 'other', '只读读取'),
+    ('mcp_resources.py', '_read_dir_resource', 'other', '只读目录资源'),
+    ('mcp_resources.py', 'resource_exists', 'other', '只读存在性'),
+    ('mcp_resources.py', 'resource_file_path', 'other', '只读路径映射'),
+    ('mcp_resources.py', 'resource_path', 'other', '只读路径映射（subscribe 用）'),
+    ('mcp_resources.py', 'self_check', 'other', '启动自检：只读根/conf/卷'),
+    ('mcp_subscribe.py', '_cur_mtime', 'other', '只读取 mtime'),
+    ('mcp_subscribe.py', '_watch_loop', 'other', '轮询 mtime 并推送，不落盘'),
+    ('mcp_subscribe.py', 'subscribe', 'other', '登记内存订阅，不落盘'),
+    ('mcp_tools.py', '_agent_reg', 'other', '取注册表实例（只读路径）'),
+    ('mcp_tools.py', '_audit', 'ledger', '审计卷 append-only'),
+    ('mcp_tools.py', '_audit_vol', 'other', '只读路径（审计卷）'),
+    ('mcp_tools.py', '_entry_full', 'other', '只读条目原文'),
+    ('mcp_tools.py', '_entry_ref', 'other', '只读互见引用'),
+    ('mcp_tools.py', '_multi_query', 'other', '只读层级下钻'),
+    ('mcp_tools.py', '_multidx_dir', 'other', '只读多级目录路径'),
+    ('mcp_tools.py', '_read_cursor', 'other', '只读游标'),
+    ('mcp_tools.py', '_read_multidx_tsv', 'other', '只读多级目录 TSV'),
+    ('mcp_tools.py', '_record_signature', 'ledger', '签名边车 append-only'),
+    ('mcp_tools.py', '_root', 'other', '只读根句柄（经 mcp_resources._root）'),
+    ('mcp_tools.py', '_verify_agent', 'other', '只读身份校验'),
+    ('mcp_tools.py', '_vp', 'other', '只读卷路径'),
+    ('mcp_tools.py', '_write_cursor', 'ledger', '写游标（账本派生件）'),
+    ('mcp_tools.py', 'call_tool', 'ledger', '工具派发：写工具经各登记点落账'),
+    ('orchestrator.py', '_ledger_alarms', 'other', 'dry build 体检，零落盘'),
+    ('orchestrator.py', '_log', 'ledger', '编排卷条目'),
+    ('orchestrator.py', 'alarm', 'other', '体检只读（心跳/注册表/状态机）'),
+    ('orchestrator.py', 'claim', 'ledger', '认领：加锁迁移状态'),
+    ('orchestrator.py', 'digest', 'other', '只读多级目录摘要'),
+    ('orchestrator.py', 'join', 'ledger', '加入：注册 + 落编排卷'),
+    ('orchestrator.py', 'leave', 'ledger', '离开：注销 + 落编排卷'),
+    ('orchestrator.py', 'open', 'ledger', '开工：建任务 + 落编排卷'),
+    ('orchestrator.py', 'push_digest', 'ledger', '推送摘要（落编排卷）'),
+    ('orchestrator.py', 'review', 'ledger', '裁决：迁移状态 + 落编排卷'),
+    ('orchestrator.py', 'submit', 'ledger', '交活：迁移状态 + 落编排卷'),
+    ('safeio.py', '__exit__', 'impl', 'safeio 句柄退出（释放锁/关 fd）'),
+    ('safeio.py', 'as_root', 'impl', 'safeio 根句柄归一'),
+    ('safeio.py', 'held', 'impl', 'safeio 已持凭证查询'),
+    ('safeio.py', 'locked', 'impl', 'safeio 根锁上下文'),
+    ('safeio.py', 'mkdirs_path', 'impl', 'safeio 归属判 + 建目录（dir_fd）'),
+    ('safeio.py', 'root_scope', 'impl', 'safeio 句柄作用域'),
+    ('safeio.py', 'write', 'impl', 'safeio 唯一写链入口'),
+    ('task_volume.py', 'transition', 'ledger', '状态迁移落账本'),
+    # 闭包面第二层：经属性类型/局部类型解析后新增的只读路径（自身无直接写类别）。
+    # Second closure layer: read-only paths newly reached after attribute/local type resolution
+    # (no direct write kind of their own).
+    ('agent_heartbeat.py', '_last_beat', 'other', '只读心跳卷末条'),
+    ('agent_heartbeat.py', '_last_beats', 'other', '只读心跳卷'),
+    ('agent_heartbeat.py', 'dead_agents', 'other', '只读心跳判死'),
+    ('agent_heartbeat.py', 'is_alive', 'other', '只读心跳查询'),
+    ('cross_ref.py', '_read_text', 'other', '只读卷文本'),
+    ('cross_ref.py', 'find_backrefs', 'other', '只读反查引用'),
+    ('cross_ref.py', 'make_ref', 'other', '只读构造引用串'),
+    ('cross_ref.py', 'resolve', 'other', '只读解析引用'),
+    ('cross_ref.py', 'verify', 'other', '只读验引用'),
+    ('cross_ref.py', 'verify_ref', 'other', '只读验单条引用'),
+    ('daybook_append.py', '_cli_root', 'other', '只读解析账本根'),
+    ('daybook_hook.py', 'parse_dialog', 'other', '只读解析对话卷'),
+    ('mcp_resources.py', 'read_vol', 'other', '只读卷内容'),
+    ('orchestrator.py', '_load', 'other', '只读编排卷'),
+    ('orchestrator.py', '_scan_vol_rows', 'other', '只读扫卷行'),
+    ('orchestrator.py', 'board', 'other', '只读看板'),
+    ('orchestrator.py', 'entry_sha8', 'other', '只读算条目 SHA8'),
+    ('orchestrator.py', 'make_entry_ref', 'other', '只读构造条目引用'),
+    ('orchestrator.py', 'parse_ledger', 'other', '只读解析编排卷'),
+    ('orchestrator.py', 'pull', 'other', '只读拉取动态'),
+    ('orchestrator.py', 'read_multidx_rows', 'other', '只读多级目录行'),
+    ('orchestrator.py', 'volume_text', 'other', '只读卷文本'),
+    ('orchestrator.py', 'who', 'other', '只读成员查询'),
+    ('safeio.py', 'open', 'impl', 'safeio 底层打开（O_NOFOLLOW/dir_fd，读或建）'),
+    ('safeio.py', 'read_vol', 'impl', 'safeio 根内整卷读取'),
+    ('task_volume.py', '_next_tid', 'other', '只读算下一个任务号'),
+    ('task_volume.py', '_read_all', 'other', '只读任务卷'),
+    ('task_volume.py', 'get', 'other', '只读任务历史'),
+    ('task_volume.py', 'list', 'other', '只读任务清单'),
 )
 
 # 唯一写链的调用形态：持有 LockedRoot 的 `lr.write(...)` / `lr.update(...)`（步骤 3 起
@@ -1291,21 +1396,6 @@ def _call_kind(sub, al, scope=None, pure=None, paths=None, site=None):
 def _scope_of(call, parent, tree):
     p = parent.get(call)
     while p is not None and not isinstance(
-            p, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                ast.AsyncFunctionDef, ast.Lambda)):
-        p = parent.get(p)
-    if p is None or isinstance(p, ast.Module):
-        return '<module>', tree
-    if isinstance(p, ast.ClassDef):
-        return '<class %s>' % p.name, p
-    if isinstance(p, ast.Lambda):
-        return '<lambda@%d>' % p.lineno, p
-    return p.name, p
-
-
-def _scope_of(call, parent, tree):
-    p = parent.get(call)
-    while p is not None and not isinstance(
             p, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
         p = parent.get(p)
     if p is None or isinstance(p, ast.Module):
@@ -1343,6 +1433,363 @@ def _scope_kinds(scope, calls, al, site=None):
         if k:
             kinds.add(k)
     return kinds
+
+
+# 闭包面：入口函数不签（它们本来就什么都可达，签字信息量为零），归入已有的 8 入口清单。
+# Closure surface: entry functions are never signed (they reach everything by definition);
+# they are covered by the existing 8-entry table instead.
+_ENTRY_NAMES = frozenset({'main', '_main', '__init__', 'dispatch', 'serve'})
+_BUILTIN_NAMES = frozenset(dir(builtins))
+# 逐条豁免的未解析边（(文件, 函数, callee)）：写明为什么它不可能落在写能力函数上。
+# 宁红勿漏：默认红，只有在这里逐条签字才放行。
+# Per-edge exemptions for unresolved calls ((file, function, callee)): each states why it
+# cannot target a write-capable function. Red by default; only a line here lets it through.
+_CLOSURE_EXEMPT = {
+    ('daybook.py', '_run_ops', 'write'): 'lr（LockedRoot 凭证）的 write，已解析为 safe 链',
+    ('daybook.py', '_run_ops', 'unlink'): 'lr（LockedRoot 凭证）的 unlink，已解析为 safe 链',
+    ('daybook_append.py', 'append_one', 'write'): 'lr.write：safe 链（已登记 safe）',
+    ('daybook_append.py', 'append_one', 'lock'): 'rt.lock()：取锁不是写',
+    ('agent_lock.py', 'release', 'release'): 'ent["lr"].release()：凭证释放，不是账本写',
+    ('daybook_record.py', '_open_ledger', 'read'): 'rt.read()：Root 根内读取',
+    ('safeio.py', 'lock', 'release'): 'mx.release()：线程互斥量释放',
+    ('safeio.py', 'release', 'release'): '_proc_mutex(key).release()：线程互斥量释放',
+    ('safeio.py', 'update', 'read'): 'self.root.read(rel)：Root 根内读取',
+    ('mcp_transport.py', 'write_message', 'write'): 'outfile 是协议输出流（stdout/管道），非第一方写函数',
+    ('safeio.py', 'lock', 'acquire'): 'mx.acquire()：线程互斥量获取（_proc_mutex），非文件写',
+}
+
+
+def _func_index(tree):
+    out = {}
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            out.setdefault(n.name, []).append(n)
+    return out
+
+
+def _class_index(tree):
+    return {n.name: n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)}
+
+
+def _enclosing_class(node, parent):
+    p = parent.get(node)
+    while p is not None:
+        if isinstance(p, ast.ClassDef):
+            return p
+        p = parent.get(p)
+    return None
+
+
+def _chain_root(node):
+    while isinstance(node, ast.Attribute):
+        node = node.value
+    return node
+
+
+def _value_external(node, al, mod2file):
+    """赋值右侧可证明不是第一方函数对象：字面量/容器/字符串变换/文件对象/stdlib 构造。
+    Provably not a first-party function object: literals/containers/string ops/file objects/
+    stdlib constructors."""
+    if isinstance(node, (ast.Constant, ast.JoinedStr, ast.Dict, ast.List, ast.Tuple,
+                         ast.Set, ast.BinOp, ast.IfExp, ast.Subscript, ast.Compare)):
+        return True
+    if isinstance(node, ast.Call):
+        t = _resolve_callee(node.func, al)
+        if t in ('str', 'repr', 'format', 'json.dumps', 'json.loads', 'hashlib.sha256',
+                 'hashlib.md5', 'hashlib.sha1', 'set', 'dict', 'list', 'frozenset', 'tuple'):
+            return True
+        last = t.split('.')[-1]
+        if last in ('open', 'read_text', 'read_bytes', 'readlines', 'split', 'splitlines',
+                    'strip', 'encode', 'decode', 'StringIO', 'BytesIO'):
+            return True
+        mod = t.split('.')[0]
+        if '.' in t and mod not in mod2file:
+            return True
+    return False
+
+
+def _external_locals(scope, al, mod2file):
+    """作用域里可证明不是第一方对象的局部名（文件对象/字符串/hashlib/dict 等）。
+    Locals provably not first-party objects (file handles, strings, hashlib, dicts...)."""
+    out = set()
+    for n in ast.walk(scope):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name) and _value_external(n.value, al, mod2file):
+                    out.add(t.id)
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) \
+                and n.annotation is not None \
+                and _annotation_name(n.annotation) in ('str', 'bytes', 'dict', 'list', 'int', 'float'):
+            out.add(n.target.id)
+        elif isinstance(n, ast.With):
+            for it in n.items:
+                if it.optional_vars is None:
+                    continue
+                if _value_external(it.context_expr, al, mod2file):
+                    for t in ast.walk(it.optional_vars):
+                        if isinstance(t, ast.Name):
+                            out.add(t.id)
+    return out
+
+
+def _local_types(scope, f, al, mod2file, classes):
+    """局部实例类型：`x = ClassName(...)` / `x = 首方类构造(...)` ⇒ x 的类。
+    Local instance types: `x = ClassName(...)` for a same-file or from-import first-party class."""
+    out = {}
+    for n in ast.walk(scope):
+        if not isinstance(n, ast.Assign) or not isinstance(n.value, ast.Call):
+            continue
+        fn = n.value.func
+        cand = None
+        if isinstance(fn, ast.Name):
+            if fn.id in classes[f]:
+                cand = (f, fn.id)
+            else:
+                o = al.get(fn.id)
+                if o and o[0] == 'from':
+                    mod, _, nm = o[1].partition('.')
+                    if mod in mod2file and nm in classes.get(mod2file[mod], {}):
+                        cand = (mod2file[mod], nm)
+        if cand is None:
+            continue
+        for t in n.targets:
+            if isinstance(t, ast.Name):
+                out[t.id] = cand
+    return out
+
+
+def _class_attr_types(tree, f, al, mod2file, classes):
+    """类属性类型：`self.x = ClassName(...)` ⇒ x 的类（同文件或 from 导入的首方类）。
+    Class attribute types: `self.x = ClassName(...)` for a same-file or imported first-party class."""
+    out = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        attrs = {}
+        for n in ast.walk(node):
+            if not isinstance(n, ast.Assign) or not isinstance(n.value, ast.Call):
+                continue
+            fn = n.value.func
+            cand = None
+            if isinstance(fn, ast.Name):
+                if fn.id in classes[f]:
+                    cand = (f, fn.id)
+                else:
+                    o = al.get(fn.id)
+                    if o and o[0] == 'from':
+                        mod, _, nm = o[1].partition('.')
+                        if mod in mod2file and nm in classes.get(mod2file[mod], {}):
+                            cand = (mod2file[mod], nm)
+            elif isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+                o = al.get(fn.value.id)
+                if o and o[0] == 'mod' and o[1].split('.')[0] in mod2file \
+                        and fn.attr in classes.get(mod2file[o[1].split('.')[0]], {}):
+                    cand = (mod2file[o[1].split('.')[0]], fn.attr)
+            if cand is None:
+                continue
+            for t in n.targets:
+                if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) \
+                        and t.value.id == 'self':
+                    attrs[t.attr] = cand
+        if attrs:
+            out[node.name] = attrs
+    return out
+
+
+def _class_attr_external(tree, f, al, mod2file):
+    """类属性来自 stdlib 对象（如 threading.Thread）⇒ 其方法不是第一方边。
+    Class attributes built from stdlib objects (e.g. threading.Thread) are not first-party."""
+    out = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        attrs = set()
+        for n in ast.walk(node):
+            if not isinstance(n, ast.Assign) or not isinstance(n.value, ast.Call):
+                continue
+            fn = n.value.func
+            if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+                o = al.get(fn.value.id)
+                if o and o[0] == 'mod' and o[1].split('.')[0] not in mod2file:
+                    for t in n.targets:
+                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) \
+                                and t.value.id == 'self':
+                            attrs.add(t.attr)
+        if attrs:
+            out[node.name] = attrs
+    return out
+
+
+def _resolve_edge(call, al, f, mod2file, funcs, classes, cls, pure=(), local_ext=(),
+                  local_ty=None, attr_ty=None, attr_ext=None):
+    """一次调用能否落到第一方函数；返回 (kind, target, callee)。
+    kind='edge' 时 target=(文件, 函数)；否则 kind 是未解析类型，callee 是不确定的名字。
+    Resolve one call to a first-party function; kind='edge' carries the target, otherwise
+    kind is the unresolved category and callee is the undetermined name."""
+    func = call.func
+    t = _resolve_callee(func, al)
+    if isinstance(func, ast.Name):
+        if func.id in funcs[f]:
+            return 'edge', (f, func.id), func.id
+        if func.id in classes[f]:
+            body = functions_of(classes[f][func.id])
+            return ('edge', (f, '__init__'), '__init__') if '__init__' in body \
+                else ('other', None, func.id)
+        o = al.get(func.id)
+        if o and o[0] == 'from':
+            mod, _, nm = o[1].partition('.')
+            if mod in mod2file:
+                tf = mod2file[mod]
+                if nm in funcs[tf]:
+                    return 'edge', (tf, nm), nm
+                if nm in classes[tf] and '__init__' in functions_of(classes[tf][nm]):
+                    return 'edge', (tf, '__init__'), '__init__'
+                return 'from-import', None, nm
+            return 'external', None, func.id
+        if func.id in _BUILTIN_NAMES:
+            return 'external', None, func.id
+        return 'other', None, func.id
+    if isinstance(func, ast.Attribute):
+        root = _chain_root(func)
+        if isinstance(root, ast.Name):
+            o = al.get(root.id)
+            if o and o[0] == 'from':
+                mod, _, nm = o[1].partition('.')
+                if mod in mod2file and nm in classes[mod2file[mod]]:
+                    tf = mod2file[mod]
+                    if func.attr in functions_of(classes[tf][nm]):
+                        return 'edge', (tf, func.attr), func.attr
+                    return 'other', None, func.attr
+            if o and o[0] == 'mod':
+                mod = o[1].split('.')[0]
+                if mod in mod2file and root is func.value \
+                        and func.attr in funcs[mod2file[mod]]:
+                    return 'edge', (mod2file[mod], func.attr), func.attr
+                if mod in mod2file:
+                    return 'other', None, func.attr
+                return 'external', None, t
+            if root.id in classes[f]:
+                body = functions_of(classes[f][root.id])
+                if func.attr in body:
+                    return 'edge', (f, func.attr), func.attr
+                return 'other', None, func.attr
+            if root.id == 'cls' and cls is not None and func.attr in functions_of(cls):
+                return 'edge', (f, func.attr), func.attr
+            if root.id == 'self' and cls is not None and func.attr in functions_of(cls):
+                return 'edge', (f, func.attr), func.attr
+            if isinstance(func.value, ast.Attribute) and isinstance(func.value.value, ast.Name) \
+                    and func.value.value.id == 'self' and cls is not None:
+                if func.value.attr in (attr_ext or {}).get(cls.name, ()):
+                    return 'external', None, func.attr
+                at = (attr_ty or {}).get(cls.name, {}).get(func.value.attr)
+                if at and func.attr in functions_of(classes[at[0]][at[1]]):
+                    return 'edge', (at[0], func.attr), func.attr
+            if root.id in (local_ty or {}):
+                tf, cn = local_ty[root.id]
+                if func.attr in functions_of(classes[tf][cn]):
+                    return 'edge', (tf, func.attr), func.attr
+            if root.id in ('lr', '_lr'):
+                return 'safe-chain', None, func.attr
+            if root.id in local_ext:
+                return 'external', None, func.attr
+            if root.id in pure:
+                return 'external', None, func.attr
+            if _receiver_pure(func.value, al, None, pure):
+                return 'external', None, func.attr
+            return 'instance-method', None, func.attr
+        if isinstance(func.value, ast.Call):
+            inner = _resolve_callee(func.value.func, al)
+            if inner.split('.')[-1] in ('open', 'fdopen', 'read_text', 'read_bytes', 'super'):
+                return 'external', None, func.attr
+        if _receiver_pure(func.value, al, None, pure):
+            return 'external', None, func.attr
+        return 'instance-method', None, func.attr
+    if isinstance(func, ast.Subscript):
+        return 'dispatch', None, ''
+    if isinstance(func, ast.Call):
+        inner = _resolve_callee(func.func, al)
+        if inner.split('.')[-1] in ('getattr', '__import__'):
+            return 'getattr', None, ''
+        if inner.split('.')[-1] in ('open', 'fdopen', 'read_text', 'read_bytes'):
+            return 'external', None, inner.split('.')[-1]
+        return 'instance-method', None, (func.func.attr
+                                         if isinstance(func.func, ast.Attribute) else '')
+    return 'other', None, ''
+
+
+def functions_of(cls):
+    return {n.name for n in cls.body
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def _closure_graph(trees):
+    """第一方调用图：已解析边 + 未解析边（逐条带 file:line 与类型）。
+    First-party call graph: resolved edges plus every unresolved edge with file:line and type.
+    遍历以函数子树为单位（嵌套闭包算外层函数的调用），与 `_scan_write_sites` 的能力口径一致。
+    Traversal is per function subtree (nested closures count as the enclosing function's calls),
+    matching `_scan_write_sites`' capability convention."""
+    files = list(trees)
+    mod2file = {os.path.splitext(f)[0]: f for f in files}
+    funcs = {f: _func_index(t) for f, t in trees.items()}
+    classes = {f: _class_index(t) for f, t in trees.items()}
+    edges, unresolved = {}, []
+    for f, tree in trees.items():
+        al = _write_aliases(tree)
+        parent = {}
+        for n in ast.walk(tree):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            tgt = edges.setdefault((f, node.name), set())
+            cls = _enclosing_class(node, parent)
+            pure = _pure_names(node)
+            local_ext = _external_locals(node, al, mod2file)
+            local_ty = _local_types(node, f, al, mod2file, classes)
+            attr_ty = _class_attr_types(tree, f, al, mod2file, classes)
+            attr_ext = _class_attr_external(tree, f, al, mod2file)
+            for call in [x for x in ast.walk(node) if isinstance(x, ast.Call)]:
+                kind, target, callee = _resolve_edge(
+                    call, al, f, mod2file, funcs, classes, cls, pure, local_ext,
+                    local_ty, attr_ty, attr_ext)
+                if kind == 'edge':
+                    tgt.add(target)
+                    continue
+                if kind in ('external', 'safe-chain'):
+                    continue
+                unresolved.append({'file': f, 'line': call.lineno, 'fn': node.name,
+                                   'callee': callee, 'reason': kind,
+                                   'expr': ast.unparse(call.func)[:60]})
+    return edges, unresolved
+
+
+def _closure_capability(trees, sites):
+    """账本写能力函数的传递闭包：种子＝实际写类别 ∩ 账本类别；沿已解析第一方边传播。
+    temp 与派发不进闭包（不改根内状态，各有各的闸：temp 在 other 桶、派发逐个登记）。
+    Transitive closure of ledger-write-capable functions: seeds are direct write kinds that
+    are ledger kinds; propagation follows resolved first-party edges only. temp and dispatch
+    are excluded (they do not change in-root state and have their own gates)."""
+    cap = {k for k, v in sites.items() if v & _LEDGER_KINDS}
+    edges, unresolved = _closure_graph(trees)
+    changed = True
+    while changed:
+        changed = False
+        for key, targets in edges.items():
+            if key not in cap and targets & cap:
+                cap.add(key)
+                changed = True
+    return cap, edges, unresolved
+
+
+def _closure_missing(trees, sites, reg, product):
+    """产品内部件里必须登记、但还没登记的写能力函数；入口与随包测试不签。
+    Write-capable product functions that are not registered; entry names and bundled tests
+    are exempt from signing (tests are reported only)."""
+    cap, edges, unresolved = _closure_capability(trees, sites)
+    missing = sorted(k for k in cap
+                     if k[0] in product and k[1] not in _ENTRY_NAMES and k not in reg)
+    return missing, cap, edges, unresolved
 
 
 def _module_alias_binds(node, al):
@@ -1603,7 +2050,12 @@ def _case_write_paths(tmp):
         want = {f for f, _fn, _b, _r in WRITE_PATHS}
         _ok('AH 源树：登记表涉及的件全部在场', want <= set(files),
             '缺=%s' % sorted(want - set(files)))
-    absent = sorted(k for k in present if k not in sites)
+    # 闭包面素材先算：登记表里有、但自身没有直接写调用点的写能力函数不算「找不到」。
+    # 它们的能力来自传递调用（闭包面），由下面的闭包判据逐条兜住。
+    # Closure parts are computed first: a registered write-capable function with no direct
+    # write call site is not "absent" — its capability comes transitively (closure surface).
+    _cap, _cedges, _cunres, _cmiss, _chits = _closure_parts(trees, sites, product, reg)
+    absent = sorted(k for k in present if k not in sites and k not in _cap)
     # 只靠 subproc 才被看见的函数不参与「未登记写」判据：它在产品件里由下面的
     # _SUBPROC_SITES 逐个判；随包测试里的派发不属于写路径。
     # Functions seen only through subproc are not "unregistered writes": product sites are
@@ -1649,6 +2101,16 @@ def _case_write_paths(tmp):
                     bad_owner.append((f, fn, kind))
     _ok('AH 桶名只作预期：产品件写类别必须 ledger；dispatch 夹带写 ⇒ 红',
         not bad_owner, '越界=%s' % bad_owner[:6])
+    # ★ 闭包面：第一方函数若传递地调用到账本写原语，它自身即写能力函数，产品内部件必须登记。
+    #   入口（main/_main/__init__/dispatch/serve）不签；随包测试只报告不签；temp 与派发不进闭包。
+    # ★ Closure surface: a first-party function that transitively reaches a ledger write
+    #   primitive is write-capable and must be registered (product internals only). Entry
+    #   names are never signed; bundled tests are reported only; temp and dispatch excluded.
+    _cap, _cedges, _cunres, _cmiss, _chits = _closure_parts(trees, sites, product, reg)
+    _ok('闭包面：产品内部件写能力函数必须登记（入口/测试不签；temp/派发不进闭包）',
+        not _cmiss, '未登记=%s' % _cmiss[:8])
+    _ok('闭包面：未解析边的 callee 与本仓写能力函数同名 ⇒ 红（宁红勿漏）',
+        not _chits, '同名未豁免=%s' % _chits[:8])
     # 类别表不替具体调用点背书：产品件每一处 subprocess 都必须出现在登记表里。
     # The category table never vouches for a call site: every product subprocess must be listed.
     offsite = sorted((f, fn) for (f, fn), kinds in sites.items()
@@ -1774,6 +2236,10 @@ def _case_write_paths(tmp):
     bad_other = []
     for (f, fn), (b, _r) in sorted(present.items()):
         if b != 'other':
+            continue
+        if (f, fn) not in sites:
+            # 闭包面补签的只读路径：没有直接写，other 桶的 temp 目标规则不适用。
+            # Closure-only read paths: no direct write, so the temp-target rule does not apply.
             continue
         node = _find_func(trees[f], fn)
         if node is None:
@@ -1902,6 +2368,10 @@ def _case_write_paths(tmp):
     cross = []
     for (f, fn), (b, _r) in sorted(present.items()):
         if b != 'other':
+            continue
+        if (f, fn) not in sites:
+            # 闭包面补签的只读路径：跨文件调用是它的正常用法（无直接写可越界）。
+            # Closure-only read paths are meant to be called across files (no direct write).
             continue
         for c in sorted(callers.get(fn, ())):
             if c != f and fn not in defs.get(c, ()):
@@ -5946,6 +6416,59 @@ def _case_pack_verify(work):
     _ok('PK 复原后 verify 复绿', rc == 0, txt[-160:])
 
 
+def _closure_parts(trees, sites, product, reg):
+    """闭包面的两组判定素材：未登记的写能力函数；未解析且与写能力函数同名的边。
+    The two closure verdicts: unregistered write-capable functions, and unresolved edges
+    whose callee name matches a write-capable function."""
+    cap, edges, unresolved = _closure_capability(trees, sites)
+    missing = sorted(k for k in cap
+                     if k[0] in product and k[1] not in _ENTRY_NAMES and k not in reg)
+    # 「写能力函数」按登记桶判：ledger/impl 才是能写根内状态的函数；闭包面补签的只读路径
+    # （other 桶、自身无直接写类别）不算，否则 read/get/list 这类同名会把信号淹掉。
+    # "Write-capable" means ledger/impl buckets (they can change in-root state). Closure-only
+    # read paths in the other bucket do not count, or names like read/get/list drown the signal.
+    names = {fn for (f, fn) in reg if reg[(f, fn)][0] in ('ledger', 'impl')}
+    names |= {fn for (f, fn), kinds in sites.items() if kinds & _LEDGER_KINDS}
+    names -= _ENTRY_NAMES
+    hits = sorted({(u['file'], u['fn'], u['callee'], u['line']) for u in unresolved
+                   if u['file'] in product and u['callee']
+                   and u['callee'] in names
+                   and (u['file'], u['fn'], u['callee']) not in _CLOSURE_EXEMPT})
+    return cap, edges, unresolved, missing, hits
+
+
+def _audit_closure():
+    """闭包面读数（完整输出）：已解析/未解析边数、未解析按类型逐条 file:line、
+    未登记写能力函数、同名未解析边、已签豁免。只报告细节；红判据在 `_case_write_paths`。
+    Closure reading (full output): resolved/unresolved edges, every unresolved edge by type
+    with file:line, unregistered write-capable functions, same-name unresolved edges, and
+    signed exemptions. Red verdicts live in `_case_write_paths`."""
+    d = os.path.dirname(os.path.abspath(SRC_BIN))
+    _files, sites, trees, product = _scan_write_sites(d)
+    reg = {(f, fn): (b, r) for f, fn, b, r in WRITE_PATHS}
+    cap, edges, unresolved, missing, hits = _closure_parts(trees, sites, product, reg)
+    nedges = sum(len(v) for v in edges.values())
+    print('[audit-closure] 已解析边=%d 未解析边=%d 写能力函数=%d 未登记=%d'
+          % (nedges, len(unresolved), len(cap), len(missing)))
+    by = {}
+    for u in unresolved:
+        by.setdefault(u['reason'], []).append(u)
+    for reason in ('from-import', 'instance-method', 'getattr', 'dispatch', 'other'):
+        rows = by.get(reason, [])
+        print('  未解析[%s] 共 %d 条' % (reason, len(rows)))
+        for u in rows:
+            print('    %s:%d %s()  callee=%s  expr=%s'
+                  % (u['file'], u['line'], u['fn'], u['callee'] or '-', u['expr']))
+    print('  未登记写能力函数（产品内部件·须逐条签）共 %d 条' % len(missing))
+    for f, fn in missing:
+        print('    %s::%s' % (f, fn))
+    print('  未解析边同名写能力函数（红，除非已豁免）共 %d 条' % len(hits))
+    for f, fn, callee, line in hits:
+        print('    %s:%d %s() callee=%s' % (f, line, fn, callee))
+    print('  已签豁免 %d 条' % len(_CLOSURE_EXEMPT))
+    return 0
+
+
 def _audit_calls():
     """兜底读数（只报告，不当绿证）：写面调用点 / 判为纯计算的调用点 / 纯计算 callee 去重列表。
     Fallback reading (report only, never a green proof): write-surface call sites, call sites
@@ -5975,6 +6498,8 @@ def _audit_calls():
 
 
 def main():
+    if '--audit-closure' in sys.argv[1:]:
+        return _audit_closure()
     if '--audit-calls' in sys.argv[1:]:
         return _audit_calls()
     if not os.path.exists(SRC_BIN):
