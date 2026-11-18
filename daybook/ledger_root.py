@@ -19,6 +19,11 @@ LedgerRoot · the single ledger-root resolver (shared by daybook / MCP / append 
      relative → join(conf dir).
   3) 全部 realpath 归一（锁的身份是目录 inode）。
      Everything is realpath-normalised (the lock identity is the directory inode).
+  4) 例外（明写的独立根）：`daybook_session_hook.py` 的根固定为脚本所在目录，不读本
+     文件的解析结果——它随工作区安装，归档物必须与工作区同目录（见该件 docstring）。
+     Exception (documented independent root): `daybook_session_hook.py` uses its own script
+     directory and does not use this resolver — it is installed inside the workspace and its
+     archive must land there (see that module's docstring).
 """
 import os
 

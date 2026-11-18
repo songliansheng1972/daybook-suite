@@ -311,6 +311,12 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     收件人寻址（F1·跨 AI 消息平台）：to 字段·逗号分隔多收件人。
     Recipient addressing (F1 · cross-AI messaging platform): `to` field · comma-separated multiple recipients.
     """
+    if os.path.isdir(path):
+        # 卷配置指向目录 ⇒ 配置错（2），与 daybook.py index/baseline 同码（errors.py 唯一裁决）；
+        # 运行期才有「不可写/权限/根被换」的 6，两者不许混为一谈。
+        # A volume path that is a directory is a config error (2), the same code as
+        # daybook.py index/baseline (the errors.py ruling); runtime refusals stay 6.
+        raise errors.ConfigError('卷配置指向目录（%s）·不是卷文件' % path)
     limit = get_pipe_buf(path)
     now = now or time.strftime('%Y-%m-%d %H:%M:%S')  # W-75 修⑥：分钟⇒秒（心跳 alive 判定需秒级）· W-75 fix ⑥: minutes ⇒ seconds (heartbeat alive check needs second resolution)
     head = '[%s] [%s] [%s] [%s] ' % (now, kind, title, author)

@@ -33,6 +33,38 @@ import mutate
 
 _PROP_RE = re.compile(r'^PROP (P\d+) (PASS|FAIL)$', re.M)
 
+# 变异集是自选题：记分板必须自报「覆盖了哪些写入口」，不许让「14 条全杀死」被读成
+# 「所有写入口都被变异验证过」。
+# The mutation set is a choice, so the board declares which write entries it covers; "14/14
+# killed" must never read as "every write entry is mutation-verified".
+_WRITE_ENTRIES = {
+    'safeio.py': 'safeio 根句柄/唯一写链（所有入口共用）',
+    'daybook.py': 'daybook.py index/baseline/backup/build',
+    'daybook_append.py': 'daybook_append.append_one',
+    'daybook_record.py': 'daybook_record.record（归档+登记+索引）',
+    'daybook_hook.py': 'daybook_hook 关键词落卷',
+    'daybook_session_hook.py': 'daybook_session_hook 会话归档',
+    'orchestrator.py': 'orchestrator join/claim/log/alarm',
+    'agent_registry.py': 'Registry 注册卷',
+    'task_volume.py': 'TaskVolume 任务卷',
+    'mcp_server.py': 'mcp_server（协议型，写走 append_one）',
+    'cross_ref.py': 'cross_ref（只读，无写原语）',
+}
+
+
+def _coverage_lines():
+    """显式覆盖声明：触及 / 未触及的写入口。
+    Explicit coverage declaration: touched vs untouched write entries."""
+    hit = sorted({m['file'] for m in mutate.MUTATIONS})
+    miss = sorted(set(_WRITE_ENTRIES) - set(hit))
+    lines = ['== 变异集覆盖声明（自选题，不声称全覆盖）==',
+             '  触及写入口：' + '；'.join(
+                 '%s ← %s' % (f, '、'.join(m['id'] for m in mutate.MUTATIONS
+                                          if m['file'] == f)) for f in hit),
+             '  未触及写入口：' + ('；'.join(
+                 '%s（%s）' % (f, _WRITE_ENTRIES[f]) for f in miss) or '（无）')]
+    return lines
+
 
 def _run_props(tree, only=''):
     """在临时 src 树里跑属性；返回 (rc, {P#: 'PASS'|'FAIL'}, stdout)。"""
@@ -146,6 +178,8 @@ def main(argv):
         return 2
 
     print('== 变异记分板（属性层 seed=7 mode=const）==')
+    for line in _coverage_lines():
+        print(line)
     killed = survivors = dead = 0
     rows = []
     for mid in ids:

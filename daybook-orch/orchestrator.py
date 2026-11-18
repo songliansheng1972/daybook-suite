@@ -867,6 +867,40 @@ class Hub:
             print('  推送 → %s：%s %s' % (t, 'OK' if ok else 'FAIL', info if not ok else ''))
         return summary, src
 
+    def _ledger_alarms(self):
+        """账本完整性体检：append-only 违例 / 卷配置错 / 未认基线（dry build，零落盘）。
+        Ledger-integrity check via a dry build (writes nothing): append-only rewrites, volume
+        config errors and un-baselined volumes. Before this, `alarm` reported an equal-length
+        rewrite of the ledger as "clean" because it only inspected orchestration structure."""
+        if not self.conf_path:
+            return []
+        try:
+            import daybook
+        except ImportError:
+            # orchestrator 可独立成包（不随 daybook）：这不是「干净」，是「未检查」。
+            # orchestrator can be installed without daybook: this is "not checked", not "clean".
+            return [Alarm('ledger_unavailable', False,
+                          '本包未随 daybook：账本 append-only/基线未检查')]
+        try:
+            conf = daybook.load_conf(self.conf_path)
+            daybook.build(conf, self.root_handle, dry=True)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return [Alarm('ledger_unreadable', True, '账本体检无法完成：%s' % exc)]
+        out = []
+        for vol, msg in daybook.VIOLATIONS:
+            out.append(Alarm('ledger_rewrite', True,
+                             '账本被改写（append-only 违例·%s）：%s' % (vol, msg)))
+        for vol, msg in daybook.CONFIG_ERRORS:
+            out.append(Alarm('ledger_config', True, '卷配置错（%s）：%s' % (vol, msg)))
+        for vol, msg in daybook.EVIDENCE_MISSING:
+            # 未认基线不是「账本被改」，但必须出现在体检里：否则「干净」会被读成
+            # 「append-only 已验证」。软警（不升格硬警），提示先跑 daybook.py baseline。
+            # Missing baseline is not a rewrite, but it must appear: otherwise "clean" reads
+            # as "append-only verified". Soft alarm; run daybook.py baseline first.
+            out.append(Alarm('ledger_baseline', False,
+                             '未认基线（%s）：%s' % (vol, msg)))
+        return out
+
     # —— 体检 ——
     # —— Health check ——
     def alarm(self):
@@ -874,7 +908,10 @@ class Hub:
         不比对任何自产的中文字串——修前 `'失联' in msg` 这类判据会让幽灵负责人也判「干净」。
         Health check: returns [Alarm(code, hard, msg)]. Criteria use structural fields only
         (heartbeat timestamp + threshold, registry membership, state-machine position), never
-        self-produced Chinese substrings — before, `'失联' in msg` let ghost owners pass as "clean"."""
+        self-produced Chinese substrings — before, `'失联' in msg` let ghost owners pass as "clean".
+        账本 append-only/基线也在这里体检（`_ledger_alarms`），所以「干净」不会再掩盖等长改写。
+        Ledger append-only/baseline is checked here too (`_ledger_alarms`), so "clean" can no
+        longer hide an equal-length rewrite."""
         out = []
         dead = self.hb.dead_agents()
         dead_set = set(dead)
@@ -894,6 +931,7 @@ class Hub:
             if ag and ag not in reg_ids:
                 out.append(Alarm('ghost_owner', True,
                                  '幽灵负责人：%s 的 %s 未在注册卷' % (tid, ag)))
+        out.extend(self._ledger_alarms())
         return out
 
 
@@ -1055,10 +1093,18 @@ def _main(argv=None):
             raise errors.RuntimeFailure('体检执行失败：%s: %s'
                                         % (type(exc).__name__, exc))
         print('== 编排体检 ==')
+        print('  （体检面：编排结构 + 账本 append-only/基线；dry build，零落盘）')
         for it in issues:
             print('  · [%s]%s %s' % (it.code, '★' if it.hard else '·', it.msg))
         hard = any(it.hard for it in issues)
-        print('判：%s' % ('★ 有硬警' if hard else '干净'))
+        unchecked = any(it.code == 'ledger_unavailable' for it in issues)
+        if hard:
+            verdict = '★ 有硬警'
+        elif unchecked:
+            verdict = '干净（编排结构；账本 append-only/基线未检查：本包未随 daybook）'
+        else:
+            verdict = '干净（含账本 append-only/基线）'
+        print('判：%s' % verdict)
         if hard:
             raise errors.LedgerViolation('编排体检有硬警')
         return 0

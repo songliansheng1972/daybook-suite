@@ -3,7 +3,20 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
 """归档本工作区的 Copilot 会话事件与发生变更的源码文件。
-Archive Copilot session events and changed source files for this workspace."""
+Archive Copilot session events and changed source files for this workspace.
+
+根的口径（明写·独立根）：本件的账本根**就是脚本所在目录**（ROOT），不读 conf 的
+`[index] root`，也不接受 `--home`。原因：它随 VS Code 任务安装在工作区里，必须把
+「工作区源码快照」和「会话原件」落到同一目录；conf 的账本根可能指向别处，跟着走会
+把工作区源码归档到另一个账本。`--state` / `--events-root` 可以指向别处，但 `--state`
+仍受 ROOT 的写能力约束（越界由 safeio 拒绝，rc=6）。
+Root rule (explicit independent root): this entry's ledger root **is the script's own
+directory** (ROOT). It does not read conf's `[index] root` and accepts no `--home`: the VS
+Code task installs it inside the workspace, and the workspace code snapshot plus session
+originals must land in that same directory; following conf's root could archive workspace
+sources into a different ledger. `--state` / `--events-root` may point elsewhere, but
+`--state` is still constrained by ROOT's write capability (safeio refuses out-of-root).
+"""
 import argparse
 
 import errors
@@ -17,6 +30,8 @@ import time
 
 import daybook_record
 
+# ★ 独立根（明写，见模块 docstring）：不随 conf 的 [index] root 走，也不接受 --home。
+# ★ Independent root (documented above): it does not follow conf's [index] root and has no --home.
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_EVENTS = os.path.expanduser('~/.copilot/session-state')
 DEFAULT_STATE = os.path.join(ROOT, '开发卷', '.会话归档游标.json')

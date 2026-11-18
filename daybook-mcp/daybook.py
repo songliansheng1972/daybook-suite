@@ -60,7 +60,7 @@ Customers may edit daybook.conf to define fields and volumes.
   Runtime failure and configuration error use distinct codes (6 vs 2, so scripts can tell them
   apart); when both occur the runtime failure wins.
 """
-import io, os, re, sys, time, hashlib, json, shutil, fnmatch
+import io, os, re, sys, time, hashlib, json, shutil, fnmatch, contextlib
 
 ENC_REPORT = []
 VIOLATIONS = []      # 本轮 build 的 append-only 违例（卷, 说明）；CLI index 据此非零退出
@@ -256,20 +256,24 @@ def read_text(path):
 
 
 
-def load_conf(path=None):
-    """Load the DAYBOOK configuration into section and key dictionaries.
-    载入配置为「节 → 键」两参字典；此处即中→英别名归一的唯一入口。
-    Canonicalisation of Chinese legacy names happens here and nowhere else."""
-    path = path or os.path.join(HERE, 'daybook.conf')
-    base = os.path.dirname(os.path.abspath(path))
+def parse_conf(text, base, label='daybook.conf'):
+    """把 conf 文本解析成「节 → 键」；整份不可解析 ⇒ ConfigError。
+    Parse conf text into sections; a wholly unparseable conf raises ConfigError.
+    「坏 conf」必须与「空账本」可区分：文件里有内容、却没有任何可识别的 `[节]` 或
+    `键=值`，一律 rc=2，绝不 rc=0 写空索引。A conf with content but not a single
+    recognisable section/key is a config error (rc=2); it must never look like an empty
+    ledger that indexes 0 entries and exits 0."""
     conf = {'volumes': {}, 'entries': {}, 'index': {}, 'trigger': {},
             'volumes_skipped': {}, '_files': {}}
     sec = None
-    for line in io.open(path, encoding='utf-8'):
-        line = line.rstrip('\n')
+    content = 0
+    parsed = 0
+    for line in text.splitlines():
         if not line.strip() or line.lstrip().startswith('#'): continue
+        content += 1
         m = re.match(r'^\[(.+)\]$', line.strip())
-        if m: sec = canon_sec(m.group(1)); conf.setdefault(sec, {}); continue
+        if m:
+            sec = canon_sec(m.group(1)); conf.setdefault(sec, {}); parsed += 1; continue
         if sec and '=' in line:
             k, v = line.split('=', 1)
             k = canon_key(k.strip())
@@ -292,7 +296,22 @@ def load_conf(path=None):
                 # 字段表里每个名字也归一。Field list members are canonicalised too.
                 v = ','.join(canon_field(x) for x in v.split(','))
             conf.setdefault(sec, {})[k] = v
+            parsed += 1
+    if content and not parsed:
+        raise errors.ConfigError(
+            'daybook.conf 整份无法解析（%s）：没有可识别的 [节] 或 键=值；'
+            '坏 conf 不等于空账本' % label)
     return conf
+
+
+def load_conf(path=None):
+    """Load the DAYBOOK configuration into section and key dictionaries.
+    载入配置为「节 → 键」两参字典；此处即中→英别名归一的唯一入口。
+    Canonicalisation of Chinese legacy names happens here and nowhere else."""
+    path = path or os.path.join(HERE, 'daybook.conf')
+    base = os.path.dirname(os.path.abspath(path))
+    with io.open(path, encoding='utf-8') as f:
+        return parse_conf(f.read(), base, path)
 
 
 # ── 字段抽取（客户可自定字段：字段名 = 规则）──
@@ -525,7 +544,7 @@ def _run_ops(ops, report=None, lr=None):
                      head + ''.join(_txt_lines(rows)), mode=WriteMode.REPLACE)
 
 
-def build(conf, root='.', baseline=False, dry=False):
+def build(conf, root='.', baseline=False, dry=False, authors=None):
     """扫描各卷，生成索引。append-only ⇒ 增量：未变跳过、只追加读尾部、旧部分被改报违例。
     Scan volumes and build indexes. Append-only ⇒ incremental: skip unchanged,
     tail-read on pure append, flag violations when the old part was rewritten.
@@ -534,7 +553,13 @@ def build(conf, root='.', baseline=False, dry=False):
     普通 index 遇到证据缺失只报 5，不写回任何派生证据——状态保持 5，直到认基线。
     baseline=True: explicitly accept a baseline after evidence was lost (rebuild the index and
     write the cursor/seal back). A plain index only reports 5 and writes nothing back, so the
-    state stays 5 until a baseline is accepted."""
+    state stays 5 until a baseline is accepted.
+
+    dry=True：只算不写。`authors=True` 让干跑也判作者口径（record 的前置校验要一次判全
+    2/3/4/5）；默认 dry 不跑作者机检（省一次全卷扫）。
+    dry=True: compute only, write nothing. `authors=True` also runs the author gate during a
+    dry run (record's precheck needs all of 2/3/4/5 at once); by default a dry run skips the
+    author scan to avoid a second full-volume pass."""
     ENC_REPORT.clear()  # ★ 每轮 build 清空编码报告，防 watch 多轮累积
                         # ★ Clear the encoding report each build so watch does not accumulate
     VIOLATIONS.clear()
@@ -576,8 +601,20 @@ def build(conf, root='.', baseline=False, dry=False):
     # ★ The sealed snapshot is read inside the lock and only once: a read outside the lock
     #   makes concurrent index runs judge each other from stale bytes.
     from safeio import locked as _safe_locked
+    from safeio import Root as _Root, LockedRoot as _LockedRoot
+    from safeio import exclusive_held as _exclusive_held, held as _held
+
+    def _build_lock():
+        """已在同一根的临界区内（如 record 的单凭证流程）⇒ 复用已持凭证，不重入取锁；
+        否则正常取锁。同线程重入必自死锁，`held` 不等待。
+        Inside the same root's critical section (e.g. record's single-credential flow) ⇒ reuse
+        the held token; never re-acquire (same-thread re-entry deadlocks by design)."""
+        if isinstance(root, (_Root, _LockedRoot)) and _exclusive_held(root):
+            return contextlib.nullcontext(_held(root, 'daybook.build'))
+        return _safe_locked(root)
+
     global AUTHOR_RED
-    with _safe_locked(root) as lr:
+    with _build_lock() as lr:
         old_stamp = _read_json(stamp_path)
         seals = old_stamp.get('vol_seals') if isinstance(old_stamp, dict) else None
         seals = seals if isinstance(seals, dict) else {}
@@ -967,8 +1004,9 @@ def build(conf, root='.', baseline=False, dry=False):
         if CONFIG_ERRORS: errs.append(errors.ConfigError('配置错'))
         if VIOLATIONS: errs.append(errors.LedgerViolation('违例'))
         if EVIDENCE_MISSING: errs.append(errors.EvidenceMissing('证据缺失'))
-        AUTHOR_RED = (not dry) and _report_authors(conf, root, quiet_green=True,
-                                                   cache=author_cache, verified=author_verified)
+        AUTHOR_RED = _report_authors(conf, root, quiet_green=True,
+                                     cache=author_cache, verified=author_verified) \
+            if (authors if authors is not None else not dry) else False
         if AUTHOR_RED and not baseline:
             errs.append(errors.AuthorConvention('作者口径红'))
         rc = errors.exit_code(errors.worst(errs)) if errs else 0
@@ -1453,6 +1491,34 @@ def _report_authors(conf, root, quiet_green=False, cache=None, verified=None):
     return red
 
 
+def _run_hook(conf):
+    """执行用户配置的变动令（索引/备份之后）。它**不在账本写链上**：
+    任意外部命令无法预解析子进程账本根，也就无法校验子进程 dev_ino 与父句柄一致，
+    因此它是本仓唯一登记在 AH `_SUBPROC_SITES` 的派发点，且不承担任何账本写入保证。
+    Run the user's on_change hook after index/backup. It is **not on the ledger write
+    chain**: an arbitrary external command cannot be root-verified (no child dev_ino to
+    compare), so it is the only dispatch site registered in AH `_SUBPROC_SITES`, and it
+    carries no ledger-write guarantee.
+    写路径禁止 subprocess 派发；要新增派发点，必须逐个登记并证明子进程根与父句柄一致。
+    Subprocess dispatch is banned on write paths; a new dispatch site must be registered
+    individually and must prove the child's root matches the parent handle."""
+    hook = conf.get('hooks', {}).get('on_change', '').strip()
+    if not hook:
+        return
+    import shlex as _shlex, subprocess as _sp
+    try:
+        # 显式重定向：钩子输出仍可见，但不再继承父进程的任意 fd。
+        # Explicit redirection: hook output stays visible without inheriting
+        # arbitrary parent file descriptors.
+        hr = _sp.run(_shlex.split(hook), timeout=120, stdout=_sp.PIPE,
+                     stderr=_sp.STDOUT, universal_newlines=True)
+        if hr.stdout:
+            print(hr.stdout, end='' if hr.stdout.endswith('\n') else '\n',
+                  flush=True)
+    except Exception as he:
+        print('  变动令失败：%s' % he, flush=True)
+
+
 def ledger_home(override=None):
     """账本根：conf 由 ledger_root 两级定位（显式 > 当前目录，找不到即报错），根只看 [index] root。
     Ledger root: ledger_root locates the conf in two levels (explicit > cwd, failing when
@@ -1651,20 +1717,7 @@ def _main():
                         time.strftime('%H:%M:%S'), cur, e), flush=True)
                 # [钩子] 变动令：索引/备份后执行（确定性自动化·人可读可改·失败不挡游标）
                 # [hooks] on_change command: runs after index/backup (never blocks the cursor)
-                hook = conf.get('hooks', {}).get('on_change', '').strip()
-                if hook:
-                    import shlex as _shlex, subprocess as _sp
-                    try:
-                        # 显式重定向：钩子输出仍可见，但不再继承父进程的任意 fd。
-                        # Explicit redirection: hook output stays visible without inheriting
-                        # arbitrary parent file descriptors.
-                        hr = _sp.run(_shlex.split(hook), timeout=120, stdout=_sp.PIPE,
-                                     stderr=_sp.STDOUT, universal_newlines=True)
-                        if hr.stdout:
-                            print(hr.stdout, end='' if hr.stdout.endswith('\n') else '\n',
-                                  flush=True)
-                    except Exception as he:
-                        print('  变动令失败：%s' % he, flush=True)
+                _run_hook(conf)
                 last = cur
             time.sleep(gap)
     elif cmd == 'mcp':

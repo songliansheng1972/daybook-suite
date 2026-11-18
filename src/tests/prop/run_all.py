@@ -9,6 +9,16 @@ Property-layer entry: P1–P10 (step 5)
   python3 tests/prop/run_all.py --only P1 --seed 7 # 只跑一件（score.py 用）
   python3 tests/prop/run_all.py --mode random --seed 42
 退出码：0=全绿 1=有红。机器可读行：`PROP P# PASS|FAIL`。
+
+P3 的口径（明写·采样）：P3 只对**三个采样点**（build / backup / append 的写链）做
+能力/根身份断言，不是全写表面。写表面的闭合以 `tests/scenarios/guard.py` 的 AH
+（写点扫描 + 写原语归属 + 派发点登记）为准；P6/P7 再按入口逐格实跑。别把 P3 的
+「三条绿」读成「所有写入口都绿」。
+P3 scope (explicit sampling): P3 asserts capability/root identity on **three sample points**
+(build / backup / append), not the whole write surface. Closure of the write surface is
+`tests/scenarios/guard.py` AH (write-site scan + primitive ownership + dispatch registry),
+with P6/P7 exercising each entry. Never read P3's three green samples as "every writer is
+green".
 """
 import argparse
 import ast

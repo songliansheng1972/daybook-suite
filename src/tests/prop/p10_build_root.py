@@ -9,10 +9,10 @@ P10 · build keeps the original root inode after a rename
 任何目录。变异 M13（退回 os.makedirs(outdir)）必须让 build 那条变红。
 """
 import glob
-import importlib.util
 import os
-import shutil
-import types
+import subprocess
+import sys
+import time
 
 import common
 from common import check
@@ -74,40 +74,80 @@ def run(seed=7, mode='const'):
         finally:
             rt.close()
 
-    # record：模块副本的 HERE 就是临时根；换根后归档目录仍须落旧 inode
+    # record：**真实子进程** + 换根。子进程先打开 Root（拿到旧 inode），父进程再把根
+    # rename 走并就地建同名空目录；归档与登记必须仍落旧 inode，且原件与登记同一 dev_ino。
+    # 禁止 stub subprocess：stub 会让「子进程按路径重解析根」这个缺陷完全隐形。
+    # record: a **real child process** plus a root rename. The child opens Root (old inode)
+    # first; the parent then renames the root away and recreates an empty same-named dir. The
+    # archive and the registration must still land on the old inode, with the same dev_ino.
+    # Never stub subprocess: a stub hides the "child re-resolves the root by path" defect.
     with common.tmpdir('p10rec_') as base:
         rec_dir = os.path.join(base, 'root')
         os.makedirs(rec_dir)
-        shutil.copy2(os.path.join(common.SRC, 'daybook_record.py'), rec_dir)
-        spec = importlib.util.spec_from_file_location(
-            'p10_record', os.path.join(rec_dir, 'daybook_record.py'))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        common.stage(rec_dir)
+        with open(os.path.join(rec_dir, 'daybook.conf'), 'w', encoding='utf-8') as f:
+            f.write(common.CONF)
+        common.make_volume(os.path.join(rec_dir, '账卷.txt'), n=5)
+        b0 = subprocess.run([sys.executable, '-B', 'daybook.py', 'baseline'],
+                            cwd=rec_dir, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True)
+        check('P10 record 前置：基线 rc=0', b0.returncode == 0,
+              'rc=%d out=%s' % (b0.returncode, (b0.stdout + b0.stderr)[-160:]))
 
-        class _Done(object):
-            returncode = 0
-            stdout = ''
-            stderr = ''
-
-        real_sub = mod.subprocess
-        mod.subprocess = types.SimpleNamespace(
-            run=lambda *a, **k: _Done(), PIPE=-1, DEVNULL=-3, STDOUT=-2)
-        rt2 = Root._from_dir_path(rec_dir)
-        try:
-            moved2 = os.path.join(base, 'root_moved')
-            os.rename(rec_dir, moved2)
-            os.makedirs(rec_dir)
-            mod.record('用户', 'P10', '换根归档正文'.encode('utf-8'),
-                       stamp='20260101_000000', update_index=False, root=rt2)
-            arc = os.path.join(moved2, '对话原件')
-            files = sorted(os.listdir(arc)) if os.path.isdir(arc) else []
-            check('P10 换根后 record 归档写旧 inode',
-                  bool(files) and files[0].endswith('.txt')
-                  and sorted(os.listdir(rec_dir)) == [],
-                  'files=%r new_entries=%r' % (files[:1], sorted(os.listdir(rec_dir))))
-        finally:
-            mod.subprocess = real_sub
-            rt2.close()
+        child = os.path.join(base, 'child.py')
+        ready = os.path.join(base, 'ready')
+        go = os.path.join(base, 'go')
+        with open(child, 'w', encoding='utf-8') as f:
+            f.write("""import os, sys, time
+root, ready, go = sys.argv[1:4]
+sys.path.insert(0, root)
+from safeio import Root
+import daybook_record
+rt = Root._from_dir_path(root)
+open(ready, 'w').close()
+while not os.path.exists(go):
+    time.sleep(0.01)
+try:
+    daybook_record.record('用户', 'P10', '换根归档正文'.encode('utf-8'),
+                          stamp='20260101_000000', update_index=False, root=rt)
+    print('DEVINO %d %d' % rt.dev_ino)
+finally:
+    rt.close()
+""")
+        p = subprocess.Popen([sys.executable, '-B', child, rec_dir, ready, go],
+                             cwd=base, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, universal_newlines=True)
+        deadline = time.time() + 20
+        while not os.path.exists(ready) and time.time() < deadline:
+            time.sleep(0.02)
+        moved2 = os.path.join(base, 'root_moved')
+        os.rename(rec_dir, moved2)
+        os.makedirs(rec_dir)
+        open(go, 'w').close()
+        out2, err2 = p.communicate(timeout=90)
+        arc = os.path.join(moved2, '对话原件')
+        files = sorted(os.listdir(arc)) if os.path.isdir(arc) else []
+        vol = os.path.join(moved2, '对话卷.txt')
+        devino = ''
+        for line in out2.splitlines():
+            if line.startswith('DEVINO '):
+                devino = line.split()[1:3]
+        moved_st = os.stat(moved2)
+        check('P10 换根后 record 归档写旧 inode（真实子进程 rc=0）',
+              p.returncode == 0 and bool(files) and files[0].endswith('.txt')
+              and sorted(os.listdir(rec_dir)) == [],
+              'rc=%d files=%r new_entries=%r err=%s'
+              % (p.returncode, files[:1], sorted(os.listdir(rec_dir)), err2[-160:]))
+        check('P10 换根后 record 登记写旧 inode 且原件/登记同一 dev_ino',
+              os.path.exists(vol) and devino == [str(moved_st.st_dev),
+                                                 str(moved_st.st_ino)]
+              and os.stat(os.path.dirname(vol)).st_ino == moved_st.st_ino
+              and os.stat(os.path.dirname(os.path.dirname(
+                  os.path.join(arc, files[0])))).st_ino == moved_st.st_ino
+              if files else False,
+              'devino=%r moved=%r vol_parent=%r' % (
+                  devino, (moved_st.st_dev, moved_st.st_ino),
+                  os.stat(os.path.dirname(vol)).st_ino if os.path.exists(vol) else None))
     return common.summary()
 
 

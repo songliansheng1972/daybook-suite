@@ -71,7 +71,59 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
    mcp 23/23、orch 全绿。
 
-### 复签补轮四：审计改为「发现先于归类」，记分板精确断言（2026-11-18）
+### 终裁轮：写路径禁派发、record 单根单凭证、P6 适用性派生（2026-11-18）
+
+**口径（先立后用）**
+
+1. **`subproc` 不再整类放行**：AH 每个 `subprocess.*` 都是派发点（含 `stdout=PIPE`），
+   产品件里必须在 `_SUBPROC_SITES` 逐个登记；账本桶出现派发一律红。全仓只剩一个登记点
+   `daybook.py::_run_hook`（变动令在索引/备份之后执行，不在写链上；外部 shell 无法预校验
+   子进程根）。写路径（append/index/record）不再有任何 subprocess。
+2. **P6「不适用」改为推导**：`settle()` 用「入口源码 + 第一方 import 闭包」按实际被调用的
+   成员推导它能触达的判据（build → VIOLATION；非 dry build → EVIDENCE；`authors=True` 或
+   非 dry → AUTHOR；RUNTIME 看写原语；协议型长驻入口按源码结构判「响应≠退出码」）。
+   可触达却缺探针 ⇒ 本格判红，不再能手写一句「不适用」蒙混。
+3. **记分板自报覆盖**：`tools/score.py` 输出「变异集覆盖声明」，显式列出触及/未触及的写入口；
+   `P3` 在 `run_all.py` 明写为采样（写表面闭合以 guard AH 为准）。
+
+**产品行为**
+
+4. **`daybook_record` 单根单凭证**：归档、登记、索引全在同一 `locked(rt)` 内完成；
+   `append_one(..., root=rt)` 与 `build(conf, rt)` 复用 `held(rt)`（`build` 在已持锁时用
+   `nullcontext(held)`，不重入取锁）。`daybook.py`/`daybook_append` 顶层导入，根被 rename
+   后不再按路径重新找模块。
+5. **先判后写**：写任何字节前跑 `build(..., dry=True, authors=True)`，2/3/4/5 一次判完；
+   非零退出零落盘（登记失败还会撤回原件）。等长改写旧行为「rc=3 但原件与登记已落」已消除。
+6. **卷配成目录统一 rc=2**：`errors.py` 裁决写死，`append_one` 写前显式拒绝；index/baseline
+   与 append 同码（此前 2/6 并存）。
+7. **坏 conf 不再 rc=0**：`parse_conf` 检测「有内容但零个可识别节/键」⇒ ConfigError 2；
+   「空账本」仍是 0，两者可区分。
+8. **session hook 明写独立根**：模块 docstring、`ROOT` 常量与 `ledger_root.py` 均注明它固定取
+   脚本目录、不读 conf `[index] root`、无 `--home`（工作区归档必须与工作区同目录）。
+9. **`orchestrator.py alarm` 纳入账本体检**：`_ledger_alarms` 用 dry build 报 append-only
+   违例（硬）/卷配置错（硬）/未认基线（软）；独立安装无 daybook 时报「未检查」软警，
+   不再把「没查」印成「干净」。
+
+**判据**
+
+10. **P10 record 去 stub**：真实子进程 + 换根；子进程先开 Root 再让父进程 rename，断言
+    归档与登记都落旧 inode，且 `rt.dev_ino == moved 的 (st_dev, st_ino)`、登记与原件同根。
+11. **P7 扩到每个可写入口**：index（2/3）、record（3/5）、append（2）、session hook（3）、
+    daybook_hook（6）、orchestrator alarm（3），逐条比 snapshot（内容/inode/mtime）。
+12. **P6 探针补齐**：record/session hook 的 VIOLATION、AUTHOR、EVIDENCE，orchestrator 的
+    VIOLATION（账本改写），daybook/hook 的 RUNTIME 反例全部实跑；`record × VIOLATION`
+    不再是不适用（反例已推翻旧表）。
+13. **AH 自证补一条**：有重定向的 `subprocess` 未登记 ⇒ 红（旧实现因「重定向即安全」直接
+    不看，正是 record 旧写法的漏洞）。
+14. **盒内悬空自指删除**：`ledger_guard_test.py` 末行不再声明「健康度以属性层 P1–P10 +
+    tools/score.py 为准」，改为只对场景层结论负责。
+
+**本轮读数**：源树 `0 红 / 546 项（跳过 16）`；`daybook/` 盒 `0 红 / 425 项（跳过 39）`；
+属性 P1–P10 全绿（P6 56/56：动态 25 / 派生 15 / 表级 16；P7 8/8；P10 7/7）；
+`变异 14 / 杀死 14 / 存活 0 / 死变异 0`（覆盖声明已随输出）；三包 `--verify` rc=0；
+mcp 23/23 + 13/13；orch 回归全绿、箱内自检全绿（账本项显示「本包未随 daybook」）。
+
+
 
 1. **审计发现口径反转**：此前 `_scan_write_sites` 只把「算得出写类别」的函数放进 `sites`，
    `os.mknod` 这类没登记类别的函数根本不进待检集合，四道闸都看不见。现在扫描返回**全部

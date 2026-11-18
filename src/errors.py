@@ -16,6 +16,12 @@ severity; no entry ever prints a traceback.
   · 账本被改写（append-only 违例）= 3（LedgerViolation）
   · 作者口径红（只报不拦之外的结果）= 4（AuthorConvention）
   · 证据缺失/基准缺失 = 5（EvidenceMissing）
+  · 卷配置指向目录（conf 把卷写成目录）= 2（ConfigError）：这是配置错，不是运行期
+    写拒绝；`daybook.py index/baseline` 与 `daybook_append.py` 必须同码，不许一个 2
+    一个 6。运行期才出现的「目标不可写/权限/根被换」仍是 6。
+  · A volume path that is a directory is a CONFIG error (2): both `daybook.py` and
+    `daybook_append.py` must return 2 for the same conf. Only runtime refusals
+    (unwritable target/permission/root swapped) stay 6.
 """
 import sys
 

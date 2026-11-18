@@ -36,8 +36,11 @@ Cases
   AB conf 根 ≠ 脚本目录·账本外调用 CLI           ⇒ 锁落账本根；8 并发长条目全存活
   AC 作者缓存绑定内容哈希                        ⇒ 等长改写后喂旧缓存必须红（不许按 size 复用）
 
-变异验证 / mutation check（legacy：字符串锚点。权威记分见 tools/score.py 的 AST 变异 M1–M8）
-  本节保留为场景层回归；判据健康度以「属性层 P1–P10 全绿 + tools/score.py 存活 0 / 死变异 0」为准。
+变异验证 / mutation check（legacy：字符串锚点。随包场景层的变异见本文件 MUT）
+  本节保留为场景层回归；本节只对场景层结论负责（属性层/记分板如未随包，不在本件声明范围内）。
+  Mutation check (legacy string anchors; the bundled scenario-layer mutations live in this
+  file's MUT). This section is responsible for the scenario layer only — a property layer or
+  scoreboard that is not bundled is outside this file's claim.
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
   D、E 必须红；恢复原码后必须全绿。用法：
     DAYBOOK_SRC=/tmp/mutant/daybook.py python3 ledger_guard_test.py
@@ -82,6 +85,8 @@ SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(BASE, 'daybook.py')
 #   ledger   = 写账本/账本根内的件（租约卷、keys/、backup/ 都算）⇒ 只许 safeio，扫到直接写即红；
 #   lockfile = 锁件本身（目标固定为 <锁目录>/<资源>.lock，不写数据）⇒ 允许 os.open，形态机器校验；
 #   other    = 只允许「目标由 tempfile 生成、位于系统临时目录」一类 ⇒ 目标表达式机器校验；
+#   dispatch = 逐个登记的 subprocess 派发点（不在写链上）；必须同时出现在 _SUBPROC_SITES，
+#              账本桶里的派发永远红；类别表不替调用点背书；
 #   impl     = safeio 自身实现。
 # Buckets (machine-checked; the prose reason does not count):
 #   ledger   = writes the ledger or anything inside the ledger root (lease volume, keys/,
@@ -90,6 +95,9 @@ SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(BASE, 'daybook.py')
 #              written) ⇒ os.open allowed, shape machine-checked;
 #   other    = only "target produced by tempfile, inside the system temp dir" ⇒ target
 #              expression machine-checked;
+#   dispatch = an individually registered subprocess dispatch site (outside the write chain);
+#              must also be in _SUBPROC_SITES, and dispatch inside the ledger bucket is always
+#              red — the category table never vouches for a call site;
 #   impl     = safeio's own implementation.
 WRITE_PATHS = (
     ('agent_heartbeat.py', '__init__', 'ledger', '账本内容/派生件'),
@@ -105,6 +113,8 @@ WRITE_PATHS = (
     ('daybook.py', 'build', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_backup_locked', 'ledger', 'backup/ 在账本根内（目录走 LockedRoot.mkdirs_path）'),
     ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（REPLACE）'),
+    ('daybook.py', '_run_hook', 'dispatch',
+     '变动令在索引/备份之后执行，不在写链上；本仓唯一登记的 subprocess 派发点'),
     ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
     ('daybook_append.py', '_emit', 'ledger', '账本内容/派生件（临界区内复用已持凭证）'),
     ('daybook_hook.py', 'mark_processed', 'ledger', '账本内容/派生件'),
@@ -242,7 +252,23 @@ _MUTATOR_OWNER = {
     'xattr': 'impossible',
     'fsync': 'impl-only',
     'temp': 'other-only',
-    'subproc': 'other-only',
+    # subprocess 不再是整类放行：写路径（账本桶）禁止派发；产品件里每一处派发都必须
+    # 在 _SUBPROC_SITES 里逐个登记，否则判红。类别表不再替具体调用点背书。
+    # subprocess is no longer a blanket category: dispatch is banned on the ledger bucket;
+    # every product dispatch site must be registered individually in _SUBPROC_SITES.
+    'subproc': 'site-allowlist',
+}
+
+# 逐个登记的派发点（唯一口子）：(文件, 函数) → 理由。只登记「不在写链上」的调用。
+# 写路径（ledger 桶）永远不许出现 subproc；确需在写路径派发时，必须校验子进程解析出的
+# dev_ino 与父句柄一致（不一致 fail-closed），当前仓内没有这样的合法点。
+# Individually registered dispatch sites (the only opening): (file, function) → reason.
+# Only sites outside the write chain are registered. A ledger-bucket dispatch is always red;
+# if one were ever needed it must verify the child's resolved dev_ino against the parent
+# handle and fail closed — no such legal site exists in this repository today.
+_SUBPROC_SITES = {
+    ('daybook.py', '_run_hook'):
+        '用户配置的变动令：在索引/备份之后执行，不在写链上；外部 shell 命令无法预解析子进程根',
 }
 # 账本桶函数里允许出现的只读/纯进程 os.* 调用；不在表里且不是写原语 ⇒ 红。
 # Read-only / process-only os.* calls allowed inside ledger-bucket functions; anything else
@@ -938,7 +964,13 @@ def _path_call_kind(sub, al, bound):
 
 
 def _subproc_kind(sub, t):
-    """只认 subprocess.*（含别名），且只在没有重定向时判 raw。"""
+    """只认 subprocess.*（含别名）。无显式重定向 ⇒ raw（产品件直接红）；
+    有重定向 ⇒ 仍是 **派发点**（子进程按路径重解析账本根，可能改道新 inode），
+    必须逐个登记，不能因为「输出去向是 PIPE」就整类放行。
+    Only subprocess.* (aliases included). No explicit redirection ⇒ raw (red in product code);
+    with redirection it is still a **dispatch site** (a child re-resolves the ledger root by
+    path and may follow a renamed directory), so it must be registered individually — "output
+    goes to a pipe" never makes the category safe."""
     if t.split('.')[0] != 'subprocess':
         return None
     last = t.split('.')[-1]
@@ -946,18 +978,7 @@ def _subproc_kind(sub, t):
         return None
     red = [kw for kw in sub.keywords
            if kw.arg in ('stdout', 'stderr', 'capture_output')]
-    if not red:
-        return 'subproc_raw'
-    for kw in red:
-        if kw.arg == 'capture_output':
-            continue
-        v = kw.value
-        if isinstance(v, ast.Constant):
-            continue
-        if isinstance(v, ast.Attribute) and v.attr in ('PIPE', 'DEVNULL', 'STDOUT'):
-            continue
-        return 'subproc'
-    return None
+    return 'subproc' if red else 'subproc_raw'
 
 
 def _kinds_in_func(node, al):
@@ -1104,6 +1125,10 @@ def f_ctypes(p):
 
 def f_subproc(p):
     subprocess.run(["rm", p])
+
+
+def f_subproc_pipe(p):
+    subprocess.run(["cat", p], stdout=subprocess.PIPE)
 '''
 
 
@@ -1227,7 +1252,11 @@ def _case_write_paths(tmp):
         _ok('AH 源树：登记表涉及的件全部在场', want <= set(files),
             '缺=%s' % sorted(want - set(files)))
     absent = sorted(k for k in present if k not in sites)
-    unreg = sorted(k for k in sites if k not in reg)
+    # 只靠 subproc 才被看见的函数不参与「未登记写」判据：它在产品件里由下面的
+    # _SUBPROC_SITES 逐个判；随包测试里的派发不属于写路径。
+    # Functions seen only through subproc are not "unregistered writes": product sites are
+    # judged one by one through _SUBPROC_SITES, and bundled-test dispatch is not a write path.
+    unreg = sorted(k for k in sites if k not in reg and (sites[k] - {'subproc'}))
     direct = sorted((k, sorted(v - {'safe'})) for k, v in sites.items()
                     if reg.get(k, ('', ''))[0] == 'ledger' and (v - {'safe'}))
     _ok('AH 登记了但代码里找不到 ⇒ 红', not absent, '找不到=%s' % absent)
@@ -1256,8 +1285,21 @@ def _case_write_paths(tmp):
                 bad_owner.append((f, fn, kind))
             elif owner == 'LockedRoot|temp' and b == 'ledger':
                 bad_owner.append((f, fn, kind))
-    _ok('AH 写原语归属：impossible/impl-only/other-only/账本内删除 不得越界 ⇒ 红',
+            elif owner == 'site-allowlist' and f in product:
+                # 派发点：必须逐个登记，且不得落在写路径（账本桶）。
+                # Dispatch sites: registered individually and never inside the ledger bucket.
+                if (f, fn) not in _SUBPROC_SITES or b == 'ledger':
+                    bad_owner.append((f, fn, kind))
+    _ok('AH 写原语归属：impossible/impl-only/other-only/账本内删除/派发点 不得越界 ⇒ 红',
         not bad_owner, '越界=%s' % bad_owner[:6])
+    # 类别表不替具体调用点背书：产品件每一处 subprocess 都必须出现在登记表里。
+    # The category table never vouches for a call site: every product subprocess must be listed.
+    offsite = sorted((f, fn) for (f, fn), kinds in sites.items()
+                     if f in product and 'subproc' in kinds
+                     and ((f, fn) not in _SUBPROC_SITES
+                          or reg.get((f, fn), ('', ''))[0] == 'ledger'))
+    _ok('AH 产品件 subprocess 逐个登记（未登记/账本桶 ⇒ 红；不出整类放行）',
+        not offsite, '越界=%s' % offsite[:6])
     # 发现先于归类：os.* 全集检查对**每个被扫文件的每个函数**生效，不经过 sites/present。
     # Discovery before classification: the full os.* check covers every function of every
     # scanned file, without going through sites/present.
@@ -1321,6 +1363,15 @@ def _case_write_paths(tmp):
     for label, rule, fname, needle in cases:
         _ok('P0 自证：%s ⇒ 红' % label, _hit(rule, fname, needle),
             'rule=%s fn=%s' % (rule, fname))
+    # 重定向不等于安全：未登记的派发点必须在产品件判红（这条正是 record 的旧写法）。
+    # Redirection is not safety: an unregistered dispatch site is red in product code
+    # (this is exactly record's old shape).
+    p_offsite = sorted((f, fn) for (f, fn), kinds in p_sites.items()
+                       if f in p_prod and 'subproc' in kinds
+                       and (f, fn) not in _SUBPROC_SITES)
+    _ok('P0 自证：有重定向的 subprocess 未登记 ⇒ 红（不按类别整类放行）',
+        ('p0_probe.py', 'f_subproc_pipe') in p_offsite,
+        'offsite=%s' % p_offsite[:6])
     _ok('P0 自证：第三方库 import ⇒ 红',
         any(x[0] == 'p0_foreign.py' and 'requests' in str(x)
             for x in pv['foreign']), 'foreign=%s' % pv['foreign'][:2])
@@ -1506,9 +1557,10 @@ def _case_write_paths(tmp):
     test_other = sum(1 for (f, _fn), (b, _r) in present.items()
                      if b == 'other' and f.endswith(_TESTISH))
     print('    [数据] AH 在场分桶：账本 %d 条／锁件 %d 条／非账本 %d 条（产品 %d·随包测试 %d）'
-          '／safeio 实现 %d 条（扫过 %d 件）'
+          '／派发点 %d 条／safeio 实现 %d 条（扫过 %d 件）'
           % (buckets.get('ledger', 0), buckets.get('lockfile', 0), buckets.get('other', 0),
-             prod_other, test_other, buckets.get('impl', 0), len(files)))
+             prod_other, test_other, buckets.get('dispatch', 0),
+             buckets.get('impl', 0), len(files)))
 
 
 CONF = """[volumes]
@@ -4654,6 +4706,124 @@ def _literal_codes(path):
     return bad
 
 
+def _protocol_entry(entry):
+    """源码结构推导：stdin 逐行协议型长驻入口（单次故障映射为响应，不是进程退出码）。
+    Structural derivation: a long-running line-delimited protocol entry (a per-request fault
+    becomes a response, not a process exit code)."""
+    p = os.path.join(os.path.dirname(SRC_BIN), entry)
+    if not os.path.exists(p):
+        return False
+    text = io.open(p, encoding='utf-8').read()
+    return 'mcp_transport' in text and re.search(r'for line in (infile|sys\.stdin)', text) is not None
+
+
+def _entry_writes_something(entry):
+    """源码推导：入口自己有写原语调用（运行期写拒绝才可能被它映射成 6）。
+    Derive from source: the entry itself calls a write primitive (only then can a runtime
+    write refusal become its exit code 6)."""
+    p = os.path.join(os.path.dirname(SRC_BIN), entry)
+    if not os.path.exists(p):
+        return False
+    text = io.open(p, encoding='utf-8').read()
+    return re.search(r'\.(write|update|mkdirs|mkdir|unlink|chmod|utime)\s*\(', text) \
+        is not None or re.search(r'\bappend_one\s*\(', text) is not None
+
+
+def _entry_build_caps(entry):
+    """从入口 + 第一方 import 闭包推导它能触达哪些故障判据（机器推导，不写「不适用」表）。
+    Derive which fault detectors an entry can reach from its own source plus the first-party
+    import closure (machine-derived — no hand-written "not applicable" table).
+      · 任意 `build(...)` ⇒ 可判 VIOLATION（dry 也算）
+      · `build(..., dry=True)` 之外的 build ⇒ 可判 EVIDENCE（dry 不落盘、不报证据缺失）
+      · `build(..., authors=True)` 或非 dry（默认跑作者机检）⇒ 可判 AUTHOR
+    只沿**实际被调用的成员**走：`daybook.build(...)` 只扫 `build`，不会把 daybook 里
+    其它函数（例如 index 的非 dry build）算到调用方头上。
+    · any build call ⇒ VIOLATION; a non-dry build ⇒ EVIDENCE; authors=True or a non-dry
+      build (author gate on by default) ⇒ AUTHOR. Traversal follows **called members only**:
+      `daybook.build(...)` scans only `build`, so a caller is not credited with a non-dry
+      build that lives in another function of the same module."""
+    here = os.path.dirname(SRC_BIN)
+
+    def caps_of(node, fname, allowed):
+        if allowed is not None and (fname is None or fname not in allowed):
+            return set()
+        caps = set()
+        for n in ast.walk(node):
+            if not isinstance(n, ast.Call):
+                continue
+            fn = n.func
+            nm = (fn.id if isinstance(fn, ast.Name)
+                  else (fn.attr if isinstance(fn, ast.Attribute) else ''))
+            if nm != 'build':
+                continue
+            kw = {k.arg: k.value for k in n.keywords if k.arg}
+            dry = isinstance(kw.get('dry'), ast.Constant) and kw['dry'].value is True
+            auth = kw.get('authors')
+            auth_on = (isinstance(auth, ast.Constant) and auth.value is True) \
+                or (auth is None and not dry)
+            caps.add('VIOLATION')
+            if not dry:
+                caps.add('EVIDENCE')
+            if auth_on:
+                caps.add('AUTHOR')
+        return caps
+
+    caps, todo, seen = set(), [(entry, None)], set()
+    while todo:
+        name, allowed = todo.pop()
+        if name in seen and allowed is not None:
+            continue
+        seen.add(name)
+        p = os.path.join(here, name)
+        if not os.path.exists(p):
+            continue
+        try:
+            tree = ast.parse(io.open(p, encoding='utf-8').read())
+        except (OSError, SyntaxError):
+            continue
+        scopes = []
+        for n in tree.body:
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if allowed is None or n.name in allowed:
+                    scopes.append(n)
+            elif not isinstance(n, (ast.Import, ast.ImportFrom)):
+                scopes.append(n)
+        for sc in scopes:
+            caps |= caps_of(sc, None, None)
+        # 调用边只从**被允许的作用域**里取：`_main` 没被调用时，它内部的 import 不扩散。
+        # Call edges come only from allowed scopes: an import inside an uncalled `_main`
+        # does not spread to the caller.
+        alias = {}
+        used = {}
+        import_nodes = [n for n in tree.body
+                        if isinstance(n, (ast.Import, ast.ImportFrom))]
+        for sc in scopes:
+            import_nodes += [n for n in ast.walk(sc)
+                             if isinstance(n, (ast.Import, ast.ImportFrom))]
+        for n in import_nodes:
+            if isinstance(n, ast.Import):
+                for a in n.names:
+                    root = a.name.split('.')[0]
+                    if root in _FIRST_PARTY_MODULES:
+                        alias[a.asname or root] = root
+                        used.setdefault(root, set())
+            elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module:
+                root = n.module.split('.')[0]
+                if root in _FIRST_PARTY_MODULES:
+                    used.setdefault(root, set()).update(a.name for a in n.names)
+        # 第二轮再取成员：`import daybook` 与 `daybook.build` 的 AST 顺序不保证。
+        # Second pass for members: import and attribute order is not guaranteed by ast.walk.
+        for sc in scopes:
+            for n in ast.walk(sc):
+                if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name):
+                    mod = alias.get(n.value.id)
+                    if mod:
+                        used.setdefault(mod, set()).add(n.attr)
+        for mod, members in used.items():
+            todo.append((mod + '.py', members))
+    return caps
+
+
 def _case_error_table(tmp):
     """P6：错误表唯一映射——8 入口 × 7 故障类；同故障同码、多故障取最高严重度、无 traceback。
     P6: the single error table — 6 entries × 7 fault classes; the same fault maps to the same
@@ -4713,26 +4883,58 @@ def _case_error_table(tmp):
         full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
         if os.path.basename(ap) in _ENTRIES and not os.path.exists(full):
             na(entry, kind, '当前盒无 %s' % os.path.basename(ap))
+            probed.add((entry, kind))
             return
         e = dict(os.environ)
         if env:
             e.update(env)
-        stats['dyn'] += 1
         r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, universal_newlines=True, env=e,
                            input=input)
         out = r.stdout + r.stderr
         outs[entry].append(out)
-        cells[0] += 1
+        if (entry, kind) not in probed:
+            cells[0] += 1
+            stats['dyn'] += 1
+        probed.add((entry, kind))
         _ok('P6 %s × %s ⇒ rc=%d（表 %d）' % (entry, kind, E.TABLE[
             getattr(E, kind)], E.TABLE[getattr(E, kind)]),
             r.returncode == E.TABLE[getattr(E, kind)] and 'Traceback' not in out,
             'rc=%d out=%s' % (r.returncode, out[-160:].replace('\n', ' ')))
 
     def na(entry, kind, why):
+        # 同一格可能有两支探针（例如盒内缺件时两条 orchestrator 探针都跳过）：只记一次。
+        # One cell may have two probes (e.g. a missing box entry makes both orchestrator
+        # probes skip): count it once.
+        if (entry, kind) in probed:
+            return
+        probed.add((entry, kind))
         cells[0] += 1
         stats['na'] += 1
         _skip('P6 %s × %s 不适用：%s' % (entry, kind, why))
+
+    # 适用性由代码路径推导（不手写）：入口能触达某判据 ⇒ 必须有探针，否则本格判红。
+    # Applicability is derived from code paths (never hand-written): if an entry can reach a
+    # detector, it must have a probe here; a reachable cell without a probe is red.
+    caps = {e: _entry_build_caps(e) for e in _ENTRIES}
+    probed = set()
+
+    def settle(kind, why_for):
+        """没探针的入口：可触达 ⇒ 红（缺探针）；不可触达/协议型 ⇒ 派生不适用。
+        Entries without a probe: reachable ⇒ red (missing probe); unreachable/protocol ⇒
+        derived not-applicable."""
+        for e in _ENTRIES:
+            if (e, kind) in probed:
+                continue
+            reachable = kind in caps[e]
+            if _protocol_entry(e):
+                na(e, kind, '源码结构推导：协议型长驻入口（mcp_transport + stdin 逐行），'
+                            '单次故障映射为响应而不是进程退出码')
+            elif reachable:
+                _ok('P6 %s × %s 具备判据路径但缺探针 ⇒ 红' % (e, kind), False,
+                    '推导：入口可触达 %s 判据' % kind)
+            else:
+                na(e, kind, '代码路径推导：入口及其第一方 import 闭包内没有 %s' % why_for)
 
     missing = os.path.join(tmp, 'no_such_home_%d' % os.getpid())
     d = tempfile.mkdtemp(prefix='p6_', dir=tmp)
@@ -4777,20 +4979,33 @@ def _case_error_table(tmp):
             probe('daybook_session_hook.py', 'EVIDENCE',
                   [hook_ev, 'watch', '--once',
                    '--events-root', ev, '--state', bad_state, '--workspace', d_ev], d_ev)
-            # record 从账本外 cwd 调：append 子进程必须 cwd=HERE，随后 index 缺证据 ⇒ 5
-            # record invoked from an outside cwd: the append child must run with cwd=HERE,
-            # then the index hits missing evidence ⇒ 5.
+            # record 从账本外 cwd 调：conf 取脚本目录，附录与索引都在同一根内 ⇒ 5
+            # record invoked from an outside cwd: conf comes from the script dir and both the
+            # append and the index stay on one root ⇒ 5
             probe('daybook_record.py', 'EVIDENCE',
                   [os.path.join(d_ev, 'daybook_record.py'), '--role', '用户'],
                   tmp, input='x\n')
+            # session hook 走 record：同一条证据缺失路径，必须同码 5（不是 0/6）
+            # The session hook goes through record: the same evidence path must exit 5.
+            sess = os.path.join(ev, 'sess5')
+            os.makedirs(sess)
+            with io.open(os.path.join(sess, 'events.jsonl'), 'w', encoding='utf-8') as f:
+                f.write(json.dumps({'type': 'session.start',
+                                    'data': {'context': {'cwd': d_ev}}}) + '\n')
+                f.write(json.dumps({'type': 'user.message', 'id': 'm5',
+                                    'timestamp': '2026-11-13T10:00:00Z',
+                                    'data': {'content': '证据缺失探针'}}) + '\n')
+            probe('daybook_session_hook.py', 'EVIDENCE',
+                  [hook_ev, 'watch', '--once', '--initialize',
+                   '--events-root', ev, '--state', os.path.join(d_ev, 'state5.json'),
+                   '--workspace', d_ev], d_ev)
         finally:
             shutil.rmtree(d_ev, ignore_errors=True)
-        for e in ('daybook_append.py', 'orchestrator.py', 'mcp_server.py',
-                  'cross_ref.py'):
-            na(e, 'EVIDENCE', '该入口不读取派生证据，缺件在它这里表现为配置错或运行失败')
+        settle('EVIDENCE', ' build(dry=False)/EVIDENCE_MISSING 判据')
 
         # VIOLATION：daybook 等长改写 / 司南 幽灵负责人硬警 → 同为 3
         d_v = tempfile.mkdtemp(prefix='p6v_', dir=tmp)
+        ev_v = None
         try:
             _prepare(d_v)
             _base(d_v)
@@ -4800,8 +5015,36 @@ def _case_error_table(tmp):
             lines[mid] = lines[mid].replace('[皮特]', '[皮大]', 1)
             io.open(volp, 'w', encoding='utf-8').write(''.join(lines))
             probe('daybook.py', 'VIOLATION', ['daybook.py'], d_v)
+            # record 现在进程内索引：同一条等长改写必须在**写任何字节前**判 3（旧实现先落
+            # 原件与登记，再让 index 子进程报 3）。
+            # record now indexes in-process: the same rewrite must exit 3 before any byte lands
+            # (the old code wrote the original and the entry first, then the index child said 3).
+            probe('daybook_record.py', 'VIOLATION',
+                  [os.path.join(d_v, 'daybook_record.py'), '--role', '用户'],
+                  d_v, input='violation probe\n')
+            hook_v = os.path.join(d_v, 'daybook_session_hook.py')
+            shutil.copy2(os.path.join(here, 'daybook_session_hook.py'), hook_v)
+            ev_v = tempfile.mkdtemp(prefix='p6vev_', dir=tmp)
+            sess_v = os.path.join(ev_v, 'sessv')
+            os.makedirs(sess_v)
+            with io.open(os.path.join(sess_v, 'events.jsonl'), 'w', encoding='utf-8') as f:
+                f.write(json.dumps({'type': 'session.start',
+                                    'data': {'context': {'cwd': d_v}}}) + '\n')
+                f.write(json.dumps({'type': 'user.message', 'id': 'mv',
+                                    'timestamp': '2026-11-13T10:00:00Z',
+                                    'data': {'content': '违例探针'}}) + '\n')
+            probe('daybook_session_hook.py', 'VIOLATION',
+                  [hook_v, 'watch', '--once', '--initialize', '--events-root', ev_v,
+                   '--state', os.path.join(d_v, 'statev.json'), '--workspace', d_v],
+                  d_v)
+            # 司南 alarm 把 append-only 纳入体检后，同一违例也必须 3（修前报「干净」）。
+            # Sinan's alarm now checks append-only, so the same rewrite must exit 3.
+            probe('orchestrator.py', 'VIOLATION',
+                  [os.path.join(here, 'orchestrator.py'), '--home', d_v, 'alarm'], d_v)
         finally:
             shutil.rmtree(d_v, ignore_errors=True)
+            if ev_v:
+                shutil.rmtree(ev_v, ignore_errors=True)
         d_o = tempfile.mkdtemp(prefix='p6ov_', dir=tmp)
         try:
             with io.open(os.path.join(d_o, 'daybook.conf'), 'w', encoding='utf-8') as f:
@@ -4817,10 +5060,7 @@ def _case_error_table(tmp):
                   [orch, '--home', d_o, 'alarm'], d_o)
         finally:
             shutil.rmtree(d_o, ignore_errors=True)
-        for e in ('daybook_append.py', 'daybook_hook.py',
-                  'daybook_session_hook.py', 'mcp_server.py',
-                  'daybook_record.py', 'cross_ref.py'):
-            na(e, 'VIOLATION', '该入口不做 append-only 判定，违例在 CLI 与 MCP 的 index 处判')
+        settle('VIOLATION', ' build (append-only 判据)')
 
         # AUTHOR：只有 daybook 有作者口径机检 → 4
         d_a = tempfile.mkdtemp(prefix='p6a_', dir=tmp)
@@ -4831,21 +5071,80 @@ def _case_error_table(tmp):
                 f.write('[2026-11-13 16:00:00] [测试] [机器id作者]'
                         ' [ag-0123456789abcdef] 正文\n')
             probe('daybook.py', 'AUTHOR', ['daybook.py'], d_a)
+            # record 的前置 dry build 连作者口径一起判（authors=True）：作者红 ⇒ 4 零落盘。
+            # record's dry precheck runs the author gate too (authors=True): red ⇒ 4, zero writes.
+            probe('daybook_record.py', 'AUTHOR',
+                  [os.path.join(d_a, 'daybook_record.py'), '--role', '用户'],
+                  d_a, input='author probe\n')
+            hook_a = os.path.join(d_a, 'daybook_session_hook.py')
+            shutil.copy2(os.path.join(here, 'daybook_session_hook.py'), hook_a)
+            ev_a = os.path.join(d_a, 'events_a')
+            os.makedirs(os.path.join(ev_a, 'sessa'))
+            with io.open(os.path.join(ev_a, 'sessa', 'events.jsonl'), 'w',
+                         encoding='utf-8') as f:
+                f.write(json.dumps({'type': 'session.start',
+                                    'data': {'context': {'cwd': d_a}}}) + '\n')
+                f.write(json.dumps({'type': 'user.message', 'id': 'ma',
+                                    'timestamp': '2026-11-13T10:00:00Z',
+                                    'data': {'content': '作者口径探针'}}) + '\n')
+            probe('daybook_session_hook.py', 'AUTHOR',
+                  [hook_a, 'watch', '--once', '--initialize', '--events-root', ev_a,
+                   '--state', os.path.join(d_a, 'statea.json'), '--workspace', d_a],
+                  d_a)
         finally:
             shutil.rmtree(d_a, ignore_errors=True)
-        for e in _ENTRIES[1:]:
-            na(e, 'AUTHOR', '该入口不跑作者口径机检（作者位只经 daybook index 判）')
+        settle('AUTHOR', ' _report_authors（作者口径机检）')
 
         # RUNTIME：append 目标不可写 / session 状态越界 / 司南 体检读失败 → 同为 6
         d_r = tempfile.mkdtemp(prefix='p6r_', dir=tmp)
+        ro = os.path.join(d_r, '只读卷.txt')
         try:
             _prepare(d_r)
-            os.makedirs(os.path.join(d_r, '目录卷.txt'))
+            io.open(ro, 'w', encoding='utf-8').close()
+            os.chmod(ro, 0o444)
+            # 卷是目录 ⇒ 现在归配置错 2（errors.py 裁决）；运行期拒绝用「目标不可写」实测。
+            # A directory volume is now a config error (2); runtime refusal is measured with
+            # an unwritable target instead.
             probe('daybook_append.py', 'RUNTIME',
                   [os.path.join(here, 'daybook_append.py'), '--home', d_r,
-                   '目录卷.txt', '测试', '标题', '皮特', '正文'], d_r)
+                   '只读卷.txt', '测试', '标题', '皮特', '正文'], d_r)
         finally:
+            try:
+                os.chmod(ro, 0o644)
+            except OSError:
+                pass
             shutil.rmtree(d_r, ignore_errors=True)
+        # daybook：基线后把根置为只读，backup 建 backup/ 被拒 ⇒ 6（运行期写拒绝）
+        # daybook: after a baseline, a read-only root makes backup's mkdir fail ⇒ 6.
+        d_b = tempfile.mkdtemp(prefix='p6bk_', dir=tmp)
+        try:
+            _prepare(d_b)
+            _base(d_b)
+            os.chmod(d_b, 0o555)
+            try:
+                probe('daybook.py', 'RUNTIME', ['daybook.py', 'backup'], d_b)
+            finally:
+                os.chmod(d_b, 0o755)
+        finally:
+            shutil.rmtree(d_b, ignore_errors=True)
+        # daybook_hook：根只读 ⇒ mark_processed 建已处理卷被拒 ⇒ 6
+        # daybook_hook: a read-only root refuses mark_processed's create ⇒ 6.
+        d_h = tempfile.mkdtemp(prefix='p6hookr_', dir=tmp)
+        try:
+            _prepare(d_h)
+            with io.open(os.path.join(d_h, '对话卷.txt'), 'w', encoding='utf-8') as f:
+                f.write('[2026-11-13 10:00:00] [对话] [t] [皮特] 正文\n')
+            with io.open(os.path.join(d_h, 'hook_a_关键词.txt'), 'w',
+                         encoding='utf-8') as f:
+                f.write('[账] [测试] 正文\n')
+            os.chmod(d_h, 0o555)
+            try:
+                probe('daybook_hook.py', 'RUNTIME',
+                      [os.path.join(here, 'daybook_hook.py'), '--home', d_h], d_h)
+            finally:
+                os.chmod(d_h, 0o755)
+        finally:
+            shutil.rmtree(d_h, ignore_errors=True)
         hook_run = [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
                     '--events-root', os.path.join(tmp, 'p6_events_%d' % os.getpid()),
                     '--workspace', here]
@@ -4867,23 +5166,33 @@ def _case_error_table(tmp):
                   [os.path.join(here, 'orchestrator.py'), '--home', d_or, 'alarm'], d_or)
         finally:
             shutil.rmtree(d_or, ignore_errors=True)
-        # record 的运行期失败：对话卷位置被目录占住，append 子进程 rc=6 ⇒ record 必须还原 6
-        # record runtime failure: the dialogue volume is occupied by a directory, the append
-        # child exits 6 and record must surface 6 (not swallow it into 2 or 1).
+        # record 的运行期失败：原件目录被普通文件占住（基线之后），mkdirs 被拒 ⇒ 6
+        # record runtime failure: the archive path is occupied by a regular file (after a
+        # baseline), so mkdirs is refused ⇒ 6.
         d_rt = tempfile.mkdtemp(prefix='p6_rt_')
         try:
             _prepare(d_rt)
-            os.makedirs(os.path.join(d_rt, '对话卷.txt'))
+            _base(d_rt)
+            io.open(os.path.join(d_rt, '对话原件'), 'w', encoding='utf-8').write('occupied')
             probe('daybook_record.py', 'RUNTIME',
                   [os.path.join(d_rt, 'daybook_record.py'), '--role', '用户'],
-                  tmp, input='x\n')
+                  d_rt, input='x\n')
         finally:
             shutil.rmtree(d_rt, ignore_errors=True)
-        for e, why in (('daybook.py', '运行期写拒绝由 R9-2/R10-2 专项覆盖'),
-                       ('daybook_hook.py', '运行期写拒绝由 R10-3 专项覆盖'),
-                       ('mcp_server.py', 'stdio 运行期拒绝需注入签名会话，由 R10-3 覆盖'),
-                       ('cross_ref.py', '只读引用解析，无运行期写路径')):
-            na(e, 'RUNTIME', why)
+        # RUNTIME 适用性同样由代码路径推导：协议型入口 ⇒ 响应不是退出码；
+        # 无写原语的入口 ⇒ 无运行期写拒绝可测；有写路径却缺探针 ⇒ 红。
+        # RUNTIME applicability is derived too: protocol ⇒ response not exit code; no write
+        # primitive ⇒ no runtime write refusal to test; a write path without a probe ⇒ red.
+        for e in _ENTRIES:
+            if (e, 'RUNTIME') in probed:
+                continue
+            if _protocol_entry(e):
+                na(e, 'RUNTIME', '源码结构推导：协议型长驻入口，单次故障映射为响应')
+            elif _entry_writes_something(e):
+                _ok('P6 %s × RUNTIME 具备写路径但缺探针 ⇒ 红' % e, False,
+                    '推导：入口源码含写原语调用')
+            else:
+                na(e, 'RUNTIME', '代码路径推导：入口源码里没有写原语调用（只读入口）')
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -4909,7 +5218,7 @@ def _case_error_table(tmp):
 
     _ok('P6 矩阵格数对账（8 入口 × 7 故障类 = 56）',
         cells[0] == 56 and stats['dyn'] + stats['na'] + stats['table'] == 56,
-        '动态实跑 %d 格 / 显式不适用 %d 格 / 表级合成与无栈 %d 格'
+        '动态实跑 %d 格 / 派生不适用 %d 格 / 表级合成与无栈 %d 格'
         % (stats['dyn'], stats['na'], stats['table']))
 
     # 收口回归：司南自检全绿——「持租约锁后再记日志」不得同线程重入根锁（会自死锁）
@@ -5688,8 +5997,7 @@ def main():
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: 回归层 0 红；legacy 锚点变异 0 存活 / 0 死变异'
-          '（健康度以属性层 P1–P10 + tools/score.py 为准）')
+    print('PASS: 回归层 0 红；legacy 锚点变异 0 存活 / 0 死变异')
     return 0
 
 
