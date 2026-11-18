@@ -103,14 +103,13 @@ def read_conf_sections(root=None):
 
 
 def _volume_table(root=None, conf_path=None):
-    """合并 [volumes] 与旧段名 [卷]；给了 conf_path 就直接读那一份。
-    Merge [volumes] with the legacy section [卷]; an explicit conf_path is read as-is."""
+    """合并卷表；给了 conf_path 就直接读那一份。归一后旧段名 `[卷]` 已是 `volumes`，
+    这里不再保留第二处 `'卷'` 字面量。Merge volume tables; with an explicit conf_path read
+    that one. After normalisation the legacy `[卷]` section is already `volumes`, so no second
+    `'卷'` literal is kept here."""
     sections = (read_conf_sections_from(conf_path) if conf_path
                 else read_conf_sections(root))
-    table = {}
-    for name in ('volumes', '卷'):
-        table.update(sections.get(name, {}))
-    return table
+    return dict(sections.get('volumes', {}))
 
 
 def content_volumes(root=None):

@@ -5519,29 +5519,114 @@ def _case_conf_dual_e2e(tmp):
 _ALIAS_TABLES = ('SEC_ALIAS', 'KEY_ALIAS', 'FIELD_ALIAS')
 
 
+def _alias_pairs(here):
+    """从 conf_norm.py 读出「中文别名 → 英文正名」的字面对集合，供结构扫描比对。
+    Read the literal (Chinese alias → canonical) pair set from conf_norm.py for the scan.
+    用集合而非映射：同一中文键在不同表里可对应不同正名（`卷`→`volumes` 与 `卷`→`volume`）。
+    A set, not a map: one Chinese key can map to different canonicals per table
+    (`卷`→`volumes` and `卷`→`volume`)."""
+    tree = ast.parse(io.open(os.path.join(here, 'conf_norm.py'), encoding='utf-8').read())
+    pairs = set()
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in _ALIAS_TABLES and isinstance(node.value, ast.Dict)):
+            continue
+        for k, v in zip(node.value.keys, node.value.values):
+            if (isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
+                    and isinstance(k.value, str) and isinstance(v.value, str)
+                    and any('\u4e00' <= c <= '\u9fff' for c in k.value)):
+                pairs.add((k.value, v.value))
+    return pairs
+
+
+def _alias_table_hits(here, skip=()):
+    """扫全部 .py（含子目录/缩进/类体/dict()），抓「中文别名 → 英文正名」的映射字面量。
+    Scan every .py (subdirs, indentation, class bodies, dict()) for alias-mapping literals.
+    不数变量名：改名、换容器、搬进类里都躲不掉；只有字面量的位置是结构。
+    No name counting: renaming or moving into a class cannot hide a literal mapping."""
+    pairs = _alias_pairs(here)
+    skip = {os.path.realpath(p) for p in skip}
+    hits = []
+    for root, dirs, files in os.walk(here):
+        dirs[:] = sorted(d for d in dirs if d not in ('__pycache__', 'tests'))
+        for fn in sorted(files):
+            if not fn.endswith('.py') or fn == 'conf_norm.py':
+                continue
+            path = os.path.join(root, fn)
+            if os.path.realpath(path) in skip:
+                continue
+            try:
+                tree = ast.parse(io.open(path, encoding='utf-8').read())
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Dict):
+                    for k, v in zip(node.keys, node.values):
+                        if (isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
+                                and isinstance(k.value, str)
+                                and (k.value, v.value) in pairs):
+                            hits.append((path, node.lineno, k.value, v.value, 'dict'))
+                elif isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2:
+                    a, b = node.elts
+                    if (isinstance(a, ast.Constant) and isinstance(b, ast.Constant)
+                            and isinstance(a.value, str)
+                            and (a.value, b.value) in pairs):
+                        hits.append((path, node.lineno, a.value, b.value, 'pair'))
+                elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                      and node.func.id == 'dict'):
+                    for kw in node.keywords:
+                        if (isinstance(kw.value, ast.Constant)
+                                and (kw.arg, kw.value.value) in pairs):
+                            hits.append((path, node.lineno, kw.arg, kw.value.value, 'dict()'))
+    return hits
+
+
 def _case_conf_alias_single(here):
-    """P1 归一表只许一张：定义计数 > 1（或不在 conf_norm.py）即红。
-    P1 one normalisation table only: more than one definition (or one outside conf_norm.py) is red.
-    「我是唯一实现」被同一类证据打穿两次 ⇒ 声明不设防，计数才设防。
-    A declaration is not a guard; a count is."""
-    print('  -- P1 归一表只许一张（定义计数） --')
-    pat = re.compile(r'^(' + '|'.join(_ALIAS_TABLES) + r')\s*=')
-    found = {n: [] for n in _ALIAS_TABLES}
-    for fn in sorted(f for f in os.listdir(here) if f.endswith('.py')):
-        with io.open(os.path.join(here, fn), encoding='utf-8') as f:
-            for line in f:
-                m = pat.match(line)
-                if m:
-                    found[m.group(1)].append(fn)
-    bad = {n: files for n, files in found.items() if files != ['conf_norm.py']}
-    _ok('P1 归一表全仓各只定义一次（conf_norm.py）', not bad,
-        '；'.join('%s=%d 处 %s' % (n, len(found[n]), found[n]) for n in _ALIAS_TABLES))
+    """P0 归一表只许一张：按字面量位置判，不按变量名。
+    P0 exactly one alias table: judged by literal positions, not by variable names.
+    按名字计数仍靠声明（「你说它叫 FIELD_ALIAS 我才数」）；按字面量位置才是结构：
+    `_LEGACY_FIELD = {'二级': 'level2'}`、类体里缩进一张、`dict(卷='volumes')`、
+    子目录里再放一张，都躲不掉。改变量名也躲不掉。
+    Counting names still relies on a declaration; literal positions are structural:
+    a renamed dict, an indented class-body copy, a dict() call, or a copy in a subdirectory
+    cannot hide — neither can renaming the variable."""
+    print('  -- P0 归一表只许一张（字面量位置） --')
+    hits = _alias_table_hits(here, skip=(os.path.abspath(__file__),))
+    detail = '；'.join('%s:%d %r→%r(%s)'
+                      % (os.path.relpath(p, here), ln, k, v, how)
+                      for p, ln, k, v, how in hits)
+    _ok('P0 中文别名映射字面量只出现在 conf_norm.py', not hits, detail or '命中 0')
     users = [f for f in ('daybook.py', 'daybook_multidx.py', 'volume_paths.py',
-                         'orchestrator.py') if os.path.exists(os.path.join(here, f))]
+                         'orchestrator.py', 'mcp_tools.py')
+             if os.path.exists(os.path.join(here, f))]
     lack = [f for f in users
             if 'from conf_norm import' not in io.open(
                 os.path.join(here, f), encoding='utf-8').read()]
-    _ok('P1 归一表的消费者都 import 自 conf_norm', not lack, '缺少=%s' % lack)
+    _ok('P0 归一表的消费者都 import 自 conf_norm', not lack, '缺少=%s' % lack)
+    # 反向自证：注入四种写法必红；只有 conf_norm.py 必绿。
+    # Reverse proofs: four injected spellings must be red; conf_norm.py alone must be green.
+    stage = tempfile.mkdtemp()
+    clean = tempfile.mkdtemp()
+    try:
+        shutil.copy2(os.path.join(here, 'conf_norm.py'), os.path.join(stage, 'conf_norm.py'))
+        shutil.copy2(os.path.join(here, 'conf_norm.py'), os.path.join(clean, 'conf_norm.py'))
+        victim = next(f for f in ('orchestrator.py', 'daybook.py', 'ledger_root.py')
+                      if os.path.exists(os.path.join(here, f)))
+        text = io.open(os.path.join(here, victim), encoding='utf-8').read()
+        io.open(os.path.join(stage, victim), 'w', encoding='utf-8').write(
+            text + '\n_LEGACY_FIELD = {"二级": "level2"}\n'
+            'class _Old:\n    _F = {"卷": "volumes"}\n'
+            'dict(行号="line")\n'
+            '_PAIR = ("标题", "title")\n')
+        found = _alias_table_hits(stage)
+        _ok('P0 反向自证：四种写法（顶层/类体/dict()/元组对）各 1 处必红',
+            len(found) == 4, '命中=%d %s' % (len(found), [(os.path.basename(p), ln, k)
+                                                       for p, ln, k, _v, _how in found]))
+        alone = _alias_table_hits(clean)
+        _ok('P0 反向自证：只有 conf_norm.py 时必绿', not alone, '命中=%d' % len(alone))
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+        shutil.rmtree(clean, ignore_errors=True)
 
 
 _HOME_STATIC = (('daybook.py', 'take_home('), ('daybook_append.py', 'take_home('),

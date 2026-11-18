@@ -58,6 +58,22 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签不签（五续）：打包产物追平、归一表改字面量位置判据（2026-11-18）
+
+- **打包产物追平**：上一提交在改动 `src/CHANGELOG.md` 读数后未重打包，三盒仍是旧读数
+  （673/932/316），`pack.py --verify` 与 `packaging/pack_pypi.py --pkg all --verify` 双双击
+  `产物≠源`、EXIT=3。按源重打三包后两套 verify 均 EXIT=0、逐件全同。
+- **归一表判据重写**：`_case_conf_alias_single` 不再按变量名计数（`^(SEC|KEY|FIELD)_ALIAS =`），
+  改为「中文别名 → 英文正名」的**映射字面量位置**：AST 扫全部 `.py`（含子目录、缩进、类体、
+  `dict()`、元组对），凡出现即红，`conf_norm.py` 除外。按名字计数仍靠声明，改个变量名就穿；
+  按字面量位置才是结构。反向自证：顶层/类体/`dict()`/元组对四种写法各 1 处必红，
+  只有 `conf_norm.py` 时必绿。
+- **顺带并表**：`mcp_tools` 的旧层级名表把 `类→category` 改为 `canon_field('类')`，
+  不再自持该项；`部→volume`、`属→entry` 为层级专名，保留。`volume_paths._volume_table`
+  删掉对旧段名 `'卷'` 的二次合并（归一后已不可能出现）。
+- 读数：源树 677 PASS／0 FAIL；反向自证 4 处红／0 处绿；两套 verify EXIT=0；
+  闭包 936/2160=43%（可能写缺口 318）。
+
 ### 复签不签（四续）：conf 归一单源、alarm 只读开卷、自检补可读性（2026-11-18）
 
 - **P0 conf 解析只留一套**：新增零依赖 `conf_norm.py`（别名表 + `strip/lower` 归一 + 行解析），

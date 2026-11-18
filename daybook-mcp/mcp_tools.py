@@ -36,6 +36,7 @@ import errors as _errors
 import daybook_append as _dba
 import mcp_resources as _mr
 import mcp_transport as _tr
+from conf_norm import canon_field
 from agent_registry import Registry as _AgentRegistry
 
 AUDIT_VOL_NAME = 'MCP审计卷.txt'
@@ -498,7 +499,9 @@ def _multi_query(args):
     timepfx = (args.get('time') or '').strip()
     l2 = (args.get('l2') or '').strip()
     level = (args.get('level') or 'entry').strip()
-    level = {'部': 'volume', '类': 'category', '属': 'entry'}.get(level, level)   # 旧中文层级名兼容 / legacy level names
+    # 旧中文层级名兼容；其中「类」属字段别名，统一走 conf_norm.canon_field。
+    # Legacy Chinese level names; 「类」is a field alias, so normalise it via conf_norm.
+    level = {'部': 'volume', '属': 'entry'}.get(level, canon_field(level))
     try:
         limit = int(args.get('limit', 50))
     except (TypeError, ValueError):
