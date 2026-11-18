@@ -25,6 +25,7 @@ LedgerRoot · the single ledger-root resolver (shared by daybook / MCP / append 
      directory and does not use this resolver — it is installed inside the workspace and its
      archive must land there (see that module's docstring).
 """
+import io
 import os
 
 CONF_NAME = 'daybook.conf'
@@ -93,21 +94,35 @@ def read_conf_value(conf_path, section, key):
     """只读 conf 的某一段某一键（供不带 daybook.py 完整解析器的包使用）。
     Read one section/key from a conf (for packages that ship no full daybook parser).
     根规则不在这里：返回值一律交给 resolve_root。
-    The root rule is not here: the raw value goes straight to resolve_root."""
-    sec, val = None, ''
-    with open(conf_path, encoding='utf-8') as f:
-        for line in f:
-            s = line.strip()
-            if not s or s.startswith('#'):
-                continue
-            if s.startswith('[') and s.endswith(']'):
-                sec = s[1:-1].strip()
-                continue
-            if sec is not None and sec.lower() == section.lower() and '=' in s:
-                k, v = s.split('=', 1)
-                if k.strip().lower() == key.lower():
-                    val = v.strip()
-    return val
+    The root rule is not here: the raw value goes straight to resolve_root.
+
+    **唯一 conf 语义**：直接复用 `daybook.load_conf`（严格解析），不再自带第二套轻量解析。
+    同一份文件只许一个结论：有非注释内容却零可识别节/键 ⇒ ConfigError（2），绝不 fail-open。
+    **One conf semantics**: delegate to `daybook.load_conf`; never parse a second way. Content
+    with no recognisable section/key raises ConfigError (2), never fails open.
+
+    orchestrator 独立包不带 `daybook.py`：此时退回同包的 section 读取器（`volume_paths`），
+    严格性判据与 `parse_conf` 逐字对齐（只认非注释内容）。这是发行边界，不是第二套语义。
+    The standalone orchestrator box ships no `daybook.py`: it falls back to the same-package
+    section reader (`volume_paths`) with parse_conf's exact strictness rule — a packaging
+    boundary, not a second semantics."""
+    try:
+        import daybook as _db
+    except ImportError:
+        from volume_paths import read_conf_sections_from
+        sections = read_conf_sections_from(conf_path)
+        if not sections:
+            ink = [ln for ln in io.open(conf_path, encoding='utf-8')
+                   if ln.strip() and not ln.lstrip().startswith('#')] if os.path.exists(
+                       conf_path) else []
+            if ink:
+                from errors import ConfigError
+                raise ConfigError(
+                    'daybook.conf 整份无法解析（%s）：没有可识别的 [节] 或 键=值；'
+                    '坏 conf 不等于空账本' % conf_path)
+        return str((sections.get(section) or {}).get(key, '') or '')
+    conf = _db.load_conf(conf_path)
+    return str((conf.get(section) or {}).get(key, '') or '')
 
 
 def resolve_root(conf_dir_path, conf):

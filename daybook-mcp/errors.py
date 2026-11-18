@@ -22,8 +22,13 @@ severity; no entry ever prints a traceback.
   · `orchestrator.py alarm` 的码轴是**体检结论**：0 干净 / 3 有硬警；只有体检无法执行时
     才退故障码（坏 conf 2 / 运行期 6）。所以「卷配成目录」时 index/append 给 2、alarm 给 3
     不是同故障异码，而是两种码轴：一个是「这次操作失败」，一个是「体检发现硬警」。
-  · `daybook_append.py` 不读 conf、按显式路径写：坏 conf 下它 rc=0 是设计，**不与 conf 绑定**；
-    P6 的 CONFIG 坏 conf 格对 append 断言的也是 0。
+  · `daybook_append.py` 的根解析与其余入口**同源**（`_cli_root → Root.open → ledger_root →
+    read_conf_value`）：坏 conf 下严格解析先抛 ConfigError，rc=2 且零落盘。它「按显式路径写
+    目标卷」不改变这一点——目标卷由参数给，根/conf 仍先过同一套语义。P6 的 CONFIG 坏 conf 格
+    对 append 断言的也是 2。
+  · `daybook_session_hook.py` 的根固定为脚本目录、`cross_ref.py` 按卷名解析：**conf 不参与
+    根解析**，坏 conf 下 rc=0 是设计（P6 坏 conf 格断言 0）。这不代表「坏 conf 能写账本」——
+    它们的写面不经过 conf 定位。
   · `daybook_multidx` 对已改写卷 rc=0 重建派生视图：**明示豁免**。`append-only` 是账本卷级
     不变量，只覆盖账本卷，不覆盖派生视图；别把这句套到 multidx 上。
   · A volume path that is a directory is a CONFIG error (2): both `daybook.py` and
@@ -32,9 +37,13 @@ severity; no entry ever prints a traceback.
   · `orchestrator.py alarm` has a **health-verdict axis**: 0 clean / 3 hard alarm; fault codes
     (bad conf 2 / runtime 6) only when the check cannot run. A volume-as-directory giving
     index/append 2 and alarm 3 is two axes, not one fault with two codes.
-  · `daybook_append.py` does not read conf (writes explicit paths): rc=0 under a bad conf is by
-    design; it is not conf-bound. `daybook_multidx` rebuilding derived views (rc=0) is an
-    explicit exemption: append-only covers ledger volumes, not derived views.
+  · `daybook_append.py` resolves its root through the **same** `ledger_root` conf semantics as
+    every other entry: a wholly unparsable conf raises ConfigError (2) before any write. Writing
+    an explicit target volume does not change that; P6 asserts 2 for append under a bad conf.
+  · `daybook_session_hook.py` (root fixed to the script directory) and `cross_ref.py` (by volume
+    name) do not use conf for root resolution: rc=0 under a bad conf is by design (P6 asserts 0).
+    Their write surface never depends on conf location. `daybook_multidx` rebuilding derived
+    views (rc=0) is an explicit exemption: append-only covers ledger volumes, not derived views.
 """
 import sys
 

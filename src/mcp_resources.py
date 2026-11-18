@@ -28,6 +28,7 @@ import os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import errors
 import mcp_transport as _tr
 
 AUDIT_VOL_NAME = 'MCP审计卷.txt'
@@ -281,23 +282,30 @@ def _dir_meta(name, path):
 
 
 def self_check():
-    """启动自检：根可解析、conf 可读、卷非空（空/全不可读 → stderr 告警）。
-    Startup self-check: root resolvable, conf readable, volumes non-empty (empty/all-missing → stderr warning).
+    """启动自检：根/conf 可解析、登记卷齐全（配置错 2、证据缺失 5，绝不带着病常驻）。
+    Startup self-check: root/conf parse, every registered volume present. A config error is 2,
+    missing evidence is 5 — the server must not start "up but unable to do anything" with rc=0.
     返回 (root, 登记卷数)。根无效抛 RootError。
     Returns (root, registered volume count). An invalid root raises RootError."""
     root = _root()
     vols = _load_volumes()
     if not vols:
-        _warn('自检：volumes 为空 —— %s 的 [volumes] 未登记任何卷，'
-              'resources/list 将返回 0 个资源；请在该 conf 登记卷。' % _conf_path(),
-              'empty-volumes')
-    else:
-        missing = [n for n, rel in vols.items()
-                   if not os.path.exists(rel if os.path.isabs(rel) else os.path.join(root, rel))]
-        if missing:
-            _warn('自检：volumes 登记 %d 卷，其中 %d 卷文件不存在（root=%s）：%s'
-                  % (len(vols), len(missing), root, ', '.join(missing)),
-                  'missing-volumes:' + ','.join(missing))
+        raise errors.ConfigError(
+            '自检失败：volumes 为空 —— %s 的 [volumes] 未登记任何卷；'
+            '服务不带病常驻（配置错 2）' % _conf_path())
+    dirs = [n for n, rel in vols.items()
+            if os.path.isdir(rel if os.path.isabs(rel) else os.path.join(root, rel))]
+    if dirs:
+        raise errors.ConfigError(
+            '自检失败：卷配置指向目录（%s）：%s；这是配置错（2），服务不带病常驻'
+            % (_conf_path(), ', '.join(dirs)))
+    missing = [n for n, rel in vols.items()
+               if not os.path.exists(rel if os.path.isabs(rel) else os.path.join(root, rel))]
+    if missing:
+        raise errors.EvidenceMissing(
+            '自检失败：volumes 登记 %d 卷，其中 %d 卷文件不存在（root=%s）：%s；'
+            '证据缺失（5），服务不带病常驻'
+            % (len(vols), len(missing), root, ', '.join(missing)))
     return root, len(vols)
 
 

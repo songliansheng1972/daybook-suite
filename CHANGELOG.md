@@ -46,6 +46,19 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 **诚实边界**：仅在「只删索引、游标与封存未动」时能判 3；同时改写两份派生件、或卷+游标+封存
 三者自洽改写，本实现不承诺识别（缺外部锚：封存仍在账本目录内、无签名）。外部锚另开一单。
 
+### 复签不签（三续）：conf 语义唯一、三形态矩阵、session 拆格（2026-11-18）
+
+1. **P0**：`read_conf_value` 直接复用 `daybook.load_conf`（orchestrator 独立包退回同包
+   section 读取器，严格性逐字对齐）；坏 conf 下 append/hook rc=2、零落盘。`Hub` 在落盘前
+   严格校验 conf，alarm 坏 conf rc=2 零新增文件。`mcp_server` 启动自检：配置错 2
+   （空卷/卷成目录）、证据 5（缺卷），不再 rc=0 带病常驻。
+2. **P1**：能力当值传按接收者判定，`os.path.join` 绿、`lr.write` 红；P6 CONFIG 固定三形态
+   × 8 入口（session 拆两格），所有码按各自码轴断言。
+3. **P2**：P6 措辞改「conf 不参与根解析」；session_hook/cross_ref 0 与 multidx 豁免入同一裁决表；
+   两份 README 按实测改写；新增工作规矩「先读数再判断」。
+4. **读数**：闭包覆盖 929/2167 = 42%（缺口 311）；源树 0 红 / 620；`daybook/` 盒 0 红 / 489；
+   P1–P10 全绿；变异 15/15；三包 verify 全同。
+
 ### 复签不签（终）：坏 conf 同码 2、P6 坏 conf 八格、裁决表落字（2026-11-18）
 
 1. **P0（唯一产品改动）**：`orchestrator.py` 的 `_ledger_alarms` 与 `alarm` 命令两处都让

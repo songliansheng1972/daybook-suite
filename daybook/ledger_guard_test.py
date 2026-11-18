@@ -1838,6 +1838,28 @@ def _capability_names(reg, sites):
 _CAP_VALUE_SKIP_CALLS = frozenset({'errors.run_entry', 'run_entry'})
 
 
+# 接收者可证明为内建类型/os/sys/纯函数模块：属性名撞上第一方写能力名时不算「能力当值传」。
+# A receiver provably builtin/os/sys/pure-module is exempt from the name-collision check.
+_CAP_BUILTIN_RECEIVERS = frozenset({
+    'str', 'bytes', 'dict', 'list', 'set', 'tuple', 'int', 'float', 'bool', 'frozenset'})
+
+
+def _cap_receiver_external(recv, al):
+    """接收者可证明为内建类型 / os / sys / 纯函数模块 ⇒ 属性名不构成第一方写能力引用。
+    A receiver provably a builtin type / os / sys / pure module is not a first-party capability.
+    `os.path.join`（orchestrator 有个登记为 ledger 的 `join`）是 stdlib，不是能力当值传。"""
+    root = _chain_root(recv)
+    if not isinstance(root, ast.Name):
+        return False
+    if root.id in _CAP_BUILTIN_RECEIVERS or root.id in ('os', 'sys'):
+        return True
+    o = al.get(root.id)
+    if o and o[0] == 'mod':
+        base = o[1].split('.')[0]
+        return base in _PURE_MODULES or base in ('os', 'sys')
+    return False
+
+
 def _capability_value_refs(trees, product, reg, sites):
     """写能力/写原语出现在非直接调用位置 ⇒ (file, fn, line, expr, target)。
     Write-capable/primitives referenced outside a direct call or the registry."""
@@ -1880,7 +1902,15 @@ def _capability_value_refs(trees, product, reg, sites):
                         tgt = mod2file.get(o[1].split('.')[0])
                         if tgt and node.attr in cap.get(tgt, ()):
                             return '%s.%s' % (tgt, node.attr)
-                if node.attr in names or node.attr in prim:
+                if node.attr in prim:
+                    return ast.unparse(node)
+                if node.attr in names:
+                    # 名字撞上第一方写能力名还不够：接收者能证明是 stdlib/内建/纯函数模块
+                    # （os.path.join、str.join…）⇒ 绿；接收者解析不出 ⇒ 红（宁红勿漏）。
+                    # A name collision is not evidence: a receiver provably stdlib/builtin/pure
+                    # is green; an unresolvable receiver stays red.
+                    if _cap_receiver_external(node.value, al):
+                        return None
                     return ast.unparse(node)
             return None
 
@@ -2287,6 +2317,21 @@ def _case_write_paths(tmp):
         'fns=%s' % sorted(_vr_fns))
     _ok('P0 自证：写能力直接调用（X()）不红', 'direct' not in _vr_fns,
         'fns=%s' % sorted(_vr_fns))
+    # 接收者判定：名字撞车不等于能力当值传（os.path.join vs 第一方 join）。
+    _v2_src = ('import os\n'
+               'def _write_cursor(*a, **k):\n    return _raw(*a, **k)\n'
+               'def stdlib_value(*a, **k):\n    return Thread(target=os.path.join, args=a)\n'
+               'def cap_value(lr, *a, **k):\n    return Thread(target=lr.write, args=a)\n')
+    _v2_trees = {'a.py': ast.parse(_v2_src)}
+    _v2_reg = {('a.py', 'join'): ('ledger', '签名与 os.path.join 撞名'),
+               ('a.py', '_write_cursor'): ('ledger', '签过')}
+    _v2_sites = {('a.py', '_write_cursor'): {'safe'}}
+    _vr2_fns = {r['fn'] for r in _capability_value_refs(
+        _v2_trees, {'a.py'}, _v2_reg, _v2_sites)}
+    _ok('P1 自证：Thread(target=os.path.join) ⇒ 不红（接收者 os ⇒ stdlib）',
+        'stdlib_value' not in _vr2_fns, 'fns=%s' % sorted(_vr2_fns))
+    _ok('P1 自证：Thread(target=lr.write) ⇒ 红（写原语，接收者解析不出）',
+        'cap_value' in _vr2_fns, 'fns=%s' % sorted(_vr2_fns))
     # 类别表不替具体调用点背书：产品件每一处 subprocess 都必须出现在登记表里。
     # The category table never vouches for a call site: every product subprocess must be listed.
     offsite = sorted((f, fn) for (f, fn), kinds in sites.items()
@@ -5970,98 +6015,108 @@ def _case_error_table(tmp):
             else:
                 na(e, kind, '代码路径推导：入口及其第一方 import 闭包内没有 %s' % why_for)
 
-    missing = os.path.join(tmp, 'no_such_home_%d' % os.getpid())
-    d = tempfile.mkdtemp(prefix='p6_', dir=tmp)
-    try:
-        _prepare(d)
-        # CONFIG：六个入口对「无 conf/无根」同码 2
-        probe('daybook.py', 'CONFIG', ['daybook.py', '--home', missing], d)
-        probe('daybook_append.py', 'CONFIG',
-              [os.path.join(here, 'daybook_append.py'), '--home', missing,
-               '账卷.txt', '测试', '标题', '皮特', '正文'], d)
-        probe('daybook_hook.py', 'CONFIG',
-              [os.path.join(here, 'daybook_hook.py'), '--home', missing], d)
-        probe('daybook_session_hook.py', 'CONFIG',
-              [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
-               '--events-root', missing, '--state', os.path.join(d, 'st.json'),
-               '--workspace', d], d)
-        probe('orchestrator.py', 'CONFIG',
-              [os.path.join(here, 'orchestrator.py'), '--home', missing, 'who'], d)
-        probe('mcp_server.py', 'CONFIG',
-              [os.path.join(here, 'mcp_server.py'), '--home', missing], d)
-        probe('daybook_record.py', 'CONFIG',
-              [os.path.join(here, 'daybook_record.py'), '--no-index'], d)
-        probe('cross_ref.py', 'CONFIG',
-              [os.path.join(here, 'cross_ref.py')], d)
+    # CONFIG 固定三种形态 × 8 入口（session 拆无事件/有事件）：缺失 / 整份不可解析 /
+    # [index] root=sub。形态穷举优先于格数；每格实跑并断言各自码轴。
+    # P6 CONFIG: three fixed shapes × 8 entries (session split into no-event/with-event):
+    # missing / wholly unparsable / [index] root=sub. Shapes first, then counts.
+    def _conf_cell(rows, entry, shape, argv, cwd, want, why, input=None):
+        ap = argv[0]
+        full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
+        if os.path.basename(ap) in _ENTRIES and not os.path.exists(full):
+            na(entry, 'CONFIG', '当前盒无 %s' % os.path.basename(ap))
+            return
+        base = entry.split('[')[0]
+        if base in _ENTRIES and (base, 'CONFIG') not in probed:
+            probed.add((base, 'CONFIG'))
+            cells[0] += 1
+            stats['dyn'] += 1
+        r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, input=input)
+        out = r.stdout + r.stderr
+        rows.append((entry, r.returncode))
+        _ok('P6 CONFIG/%s %s ⇒ rc=%d（%s）' % (shape, entry, want, why),
+            r.returncode == want and 'Traceback' not in out,
+            'rc=%d out=%s' % (r.returncode, out[-160:].replace('\n', ' ')))
 
-        # CONFIG 第二支：conf 存在但整份不可解析。8 个入口各实跑一格（只报告读数；
-        # 断言各自码轴的预期：conf 绑定 ⇒ 2，未绑定 ⇒ 各自设计码 + 理由）。
-        # Second CONFIG shape: conf exists but is wholly unparsable. One real run per entry;
-        # each asserts its own axis (conf-bound ⇒ 2; not bound ⇒ its designed code + reason).
-        d_bc = tempfile.mkdtemp(prefix='p6bc_', dir=tmp)
+    for shape in ('缺失', '不可解析', 'root=sub'):
+        d_c = tempfile.mkdtemp(prefix='p6c_', dir=tmp)
         try:
-            _prepare(d_bc)
-            io.open(os.path.join(d_bc, 'daybook.conf'), 'w', encoding='utf-8').write('garbage\n')
-            os.makedirs(os.path.join(d_bc, '对话原件'))
-            io.open(os.path.join(d_bc, '对话原件', 'a.txt'), 'w',
-                    encoding='utf-8').write('关键词 命中\n')
-            io.open(os.path.join(d_bc, '对话卷.txt'), 'w', encoding='utf-8').write(
-                '[2026-11-13 10:00:00] [测试] [第001条] [皮特] 对话原件/a.txt\nSHA256: x\n')
-            io.open(os.path.join(d_bc, 'hook_a_关键词.txt'), 'w',
-                    encoding='utf-8').write('[协作卷] [记录] 关键词\n')
-            sess_bc = os.path.join(d_bc, 'sess')
-            os.makedirs(os.path.join(sess_bc, 'events'))
+            # 会话根=脚本目录：整包拷进来，避免依赖外部目录。
             for nm in sorted(os.listdir(here)):
                 if nm.endswith('.py'):
-                    shutil.copy2(os.path.join(here, nm), os.path.join(sess_bc, nm))
-            io.open(os.path.join(sess_bc, 'daybook.conf'), 'w',
-                    encoding='utf-8').write('garbage\n')
-            bc_rows = []
-
-            def badconf(entry, argv, cwd, want, why, input=None):
-                ap = argv[0]
-                full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
-                if os.path.basename(ap) in _ENTRIES and not os.path.exists(full):
-                    na(entry, 'CONFIG', '当前盒无 %s' % os.path.basename(ap))
-                    return
-                r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, universal_newlines=True,
-                                   input=input)
-                out = r.stdout + r.stderr
-                bc_rows.append((entry, r.returncode))
-                _ok('P6 %s × CONFIG(坏 conf 实跑) ⇒ rc=%d（%s）' % (entry, want, why),
-                    r.returncode == want and 'Traceback' not in out,
-                    'rc=%d out=%s' % (r.returncode, out[-160:].replace('\n', ' ')))
-
-            badconf('daybook.py', ['daybook.py', 'index'], d_bc, 2, 'conf 绑定：整份不可解析')
-            badconf('daybook_append.py',
-                    [os.path.join(here, 'daybook_append.py'),
-                     '账卷.txt', '测试', '标题', '皮特', '正文'],
-                    d_bc, 0, '不与 conf 绑定：按显式路径写')
-            badconf('daybook_hook.py',
-                    [os.path.join(here, 'daybook_hook.py'), '--home', d_bc],
-                    d_bc, 0, '不读 conf：卷由 --home 显式定位')
-            badconf('daybook_session_hook.py',
-                    [os.path.join(sess_bc, 'daybook_session_hook.py'), 'watch', '--once',
-                     '--events-root', os.path.join(sess_bc, 'events'),
-                     '--state', os.path.join(sess_bc, 'st.json'), '--workspace', sess_bc],
-                    sess_bc, 0, '不读 conf：根固定为脚本目录')
-            badconf('daybook_record.py',
-                    [os.path.join(here, 'daybook_record.py'), '--home', d_bc,
-                     '--role', '用户', '--no-index'],
-                    d_bc, 2, 'conf 绑定：整份不可解析', input='正文一行\n')
-            badconf('orchestrator.py',
-                    [os.path.join(here, 'orchestrator.py'), 'alarm'],
-                    d_bc, 2, 'conf 绑定：体检遇到坏 conf 归 2，不是 6')
-            badconf('mcp_server.py', [os.path.join(here, 'mcp_server.py')], d_bc, 2,
-                    'conf 绑定：整份不可解析')
-            badconf('cross_ref.py',
-                    [os.path.join(here, 'cross_ref.py'), 'resolve', '协作卷', '1'],
-                    d_bc, 0, '不读 conf：按卷名解析')
-            print('    [读数] CONFIG 坏 conf 八格：' + '；'.join(
-                '%s=%d' % (e, rc) for e, rc in bc_rows))
+                    shutil.copy2(os.path.join(here, nm), os.path.join(d_c, nm))
+            if shape == '不可解析':
+                io.open(os.path.join(d_c, 'daybook.conf'), 'w',
+                        encoding='utf-8').write('garbage\n')
+            elif shape == 'root=sub':
+                os.makedirs(os.path.join(d_c, 'sub'))
+                io.open(os.path.join(d_c, 'daybook.conf'), 'w',
+                        encoding='utf-8').write('[index]\nroot=sub\n')
+            ev = os.path.join(d_c, 'events')
+            os.makedirs(ev)
+            # cross_ref 按卷名解析：给一份卷文件，探的是「conf 不参与根解析」而不是「卷不存在」。
+            io.open(os.path.join(d_c, '协作卷.txt'), 'w', encoding='utf-8').write(
+                '[2026-11-13 10:00:00] [测试] [第001条] [皮特] 正文\n')
+            rows = []
+            conf_bound = 2 if shape != 'root=sub' else None
+            _conf_cell(rows, 'daybook.py', shape,
+                       [os.path.join(d_c, 'daybook.py'), 'index'], d_c,
+                       conf_bound if conf_bound is not None else 0,
+                       'conf 绑定：空账本可解析' if shape == 'root=sub' else 'conf 绑定：%s ⇒ 2' % shape)
+            _conf_cell(rows, 'daybook_append.py', shape,
+                       [os.path.join(d_c, 'daybook_append.py'),
+                        '账卷.txt', '测试', '标题', '皮特', '正文'], d_c,
+                       conf_bound if conf_bound is not None else 6,
+                       ('conf 参与根解析：%s ⇒ 2、零落盘' % shape) if conf_bound is not None
+                       else '根跟随 conf=sub：目标不在根内 ⇒ 运行期拒绝 6')
+            _conf_cell(rows, 'daybook_hook.py', shape,
+                       [os.path.join(d_c, 'daybook_hook.py')], d_c,
+                       conf_bound if conf_bound is not None else 5,
+                       ('conf 参与根解析：%s ⇒ 2、零落盘' % shape) if conf_bound is not None
+                       else '根跟随 conf=sub：对话卷不在根内 ⇒ 证据缺失 5')
+            _conf_cell(rows, 'daybook_session_hook.py', shape,
+                       [os.path.join(d_c, 'daybook_session_hook.py'), 'watch', '--once',
+                        '--events-root', ev, '--state', os.path.join(d_c, 'st.json'),
+                        '--workspace', d_c], d_c, 0,
+                       '无事件：根固定为脚本目录，不读 conf ⇒ 0')
+            evs = os.path.join(ev, 's')
+            os.makedirs(evs)
+            io.open(os.path.join(evs, 'events.jsonl'), 'w', encoding='utf-8').write(
+                '\n'.join([json.dumps({'type': 'session.start',
+                                       'data': {'context': {'cwd': d_c}}}),
+                           json.dumps({'type': 'user.message', 'id': 'm1',
+                                       'timestamp': '2026-11-13T10:00:00Z',
+                                       'data': {'content': '探针'}})]) + '\n')
+            _conf_cell(rows, 'daybook_session_hook.py[有事件]', shape,
+                       [os.path.join(d_c, 'daybook_session_hook.py'), 'watch', '--once',
+                        '--initialize', '--events-root', ev,
+                        '--state', os.path.join(d_c, 'st.json'), '--workspace', d_c], d_c,
+                       conf_bound if conf_bound is not None else 0,
+                       ('有事件：经 record 读 conf ⇒ %d' % conf_bound) if conf_bound is not None
+                       else '有事件：root=sub 可写 ⇒ 0')
+            _conf_cell(rows, 'daybook_record.py', shape,
+                       [os.path.join(d_c, 'daybook_record.py'), '--home', d_c,
+                        '--role', '用户', '--no-index'], d_c,
+                       conf_bound if conf_bound is not None else 0,
+                       'conf 绑定：%s' % ('整份不可解析/缺失 ⇒ 2' if conf_bound is not None
+                                        else 'root=sub 可写 ⇒ 0'), input='正文一行\n')
+            _conf_cell(rows, 'orchestrator.py', shape,
+                       [os.path.join(d_c, 'orchestrator.py'), 'alarm'], d_c,
+                       conf_bound if conf_bound is not None else 0,
+                       '初始化前严格校验：%s' % ('坏 conf ⇒ 2、零落盘' if conf_bound is not None
+                                              else 'root=sub 干净 ⇒ 0'))
+            _conf_cell(rows, 'mcp_server.py', shape,
+                       [os.path.join(d_c, 'mcp_server.py')], d_c,
+                       conf_bound if conf_bound is not None else 2,
+                       '启动自检：%s' % ('坏 conf ⇒ 2' if conf_bound is not None
+                                       else 'volumes 为空 ⇒ 配置错 2'))
+            _conf_cell(rows, 'cross_ref.py', shape,
+                       [os.path.join(d_c, 'cross_ref.py'), 'resolve', '协作卷', '1'], d_c, 0,
+                       'conf 不参与根解析：按卷名解析 ⇒ 0')
+            print('    [读数] CONFIG/%s：' % shape + '；'.join(
+                '%s=%d' % (e, rc) for e, rc in rows))
         finally:
-            shutil.rmtree(d_bc, ignore_errors=True)
+            shutil.rmtree(d_c, ignore_errors=True)
 
         # EVIDENCE：daybook（无封存）/ hook（缺对话卷）/ session（坏游标）同为 5
         d_ev = tempfile.mkdtemp(prefix='p6ev_', dir=tmp)
@@ -6296,8 +6351,6 @@ def _case_error_table(tmp):
                     '推导：入口源码含写原语调用')
             else:
                 na(e, 'RUNTIME', '代码路径推导：入口源码里没有写原语调用（只读入口）')
-    finally:
-        shutil.rmtree(d, ignore_errors=True)
 
     # COMPOSE：合成只在 errors.worst 一处，八个入口共用同一份（逐入口记一格）
     comp_ok = E.worst([E.LedgerViolation('v'), E.AuthorConvention('a'),

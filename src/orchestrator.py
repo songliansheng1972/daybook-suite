@@ -540,6 +540,28 @@ class Hub:
         from ledger_root import locate as _locate_conf
         from safeio import Root
         self.conf_dir, self.conf_path = _locate_conf(override=root)
+        # 先判「整份不可解析」，再建根/卷/状态：坏 conf 必须在任何落盘之前归 2。
+        # 读取器与卷表解析同源（volume_paths），不引入第三套 conf 语义。
+        # Reject a wholly unparsable conf before creating root/volumes/state, using the same
+        # reader as volume resolution (no third conf semantics). The old order wrote task and
+        # heartbeat volumes before load_conf, so rc=2 left files behind.
+        if self.conf_path:
+            if not os.path.exists(self.conf_path):
+                raise errors.ConfigError(
+                    '未找到 daybook.conf：%s（请用 --home 或 DAYBOOK_HOME 指定 conf 所在目录）'
+                    % self.conf_dir)
+            if not _vp.read_conf_sections_from(self.conf_path):
+                # 与 daybook.parse_conf 的 content/parsed 判据逐字对齐：只有「有非注释内容、
+                # 却零可识别节/键」才归 2；纯注释 conf 视为空配置（root 回落 conf 目录）。
+                # orchestrator 盒不带 daybook 解析器，这里只做这一条空判据。
+                # Mirrors parse_conf's content/parsed rule exactly: only non-comment content with
+                # zero recognisable section/key is a config error; a comment-only conf is empty.
+                ink = [ln for ln in io.open(self.conf_path, encoding='utf-8')
+                       if ln.strip() and not ln.lstrip().startswith('#')]
+                if ink:
+                    raise errors.ConfigError(
+                        'daybook.conf 整份无法解析（%s）：没有可识别的 [节] 或 键=值；'
+                        '坏 conf 不等于空账本' % self.conf_path)
         self.root = _vp.resolve_root(root)
         # 入口只开一次 Root：后续 TaskVolume/Heartbeat/AgentLock/编排卷追加都复用同一 dev_ino。
         # 根被 rename 后仍写旧 inode，不会因「同名目录已就位」静默改道。
@@ -1040,6 +1062,11 @@ def _main(argv=None):
 
     try:
         hub = Hub(root=args.root, rule=args.rule, roles=args.roles)
+    except errors.ConfigError:
+        # Hub 在落盘前严格校验 conf：坏 conf 原样穿透归 2，不包成「初始化失败 6」。
+        # Hub strictly validates conf before any write: a bad conf passes through as 2, never
+        # gets wrapped into "init failure 6".
+        raise
     except ValueError as exc:
         # 根/conf 定位失败就是配置错（rc=2），文案与其余入口逐字一致。
         # A missing root/conf is a config error (rc=2) with the same wording as the other entries.

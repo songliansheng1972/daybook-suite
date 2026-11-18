@@ -42,6 +42,34 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签不签（三续）：conf 语义唯一、三形态矩阵、session 拆格（2026-11-18）
+
+- **P0 单一 conf 语义**：`ledger_root.read_conf_value` 不再自带轻量解析，直接复用
+  `daybook.load_conf`（严格解析）；orchestrator 独立包不带 `daybook.py`，退回同包 section
+  读取器，严格性判据与 `parse_conf` 逐字对齐（发行边界，不是第二套语义）。同一份文件只许
+  一个结论：有非注释内容却零可识别节/键 ⇒ `ConfigError`（2），不再 fail-open 成空值再回落
+  conf 目录写。实测坏 conf 下 append/hook 均 rc=2、新增文件为空；探针确认 append/hook 各有
+  `read_conf_value` 调用点，session_hook 无。
+- **P0 非零退出零落盘**：`orchestrator.Hub.__init__` 在 `locate` 之后、建根/卷/状态之前严格
+  `load_conf`；`Hub` 创建处的 `except` 放行 `ConfigError`。坏 conf 下 `alarm` rc=2 且
+  任务卷/心跳卷零新增。
+- **P0 服务不带病常驻**：`mcp_resources.self_check` 由「只告警」改为启动失败：volumes 为空 /
+  卷指向目录 ⇒ 2；登记卷文件缺失 ⇒ 5。实测坏 conf 2、缺卷 5、卷配成目录 2。
+- **P1 别名看接收者**：`Thread(target=os.path.join)` 不再被 orchestrator 的 `join` 误伤
+  （接收者 `os`/`sys`/内建类型/纯函数模块 ⇒ 绿）；`Thread(target=lr.write)` 仍红。
+  两条自证入 AH。
+- **P1 P6 固定三形态**：CONFIG 固定「缺失 / 整份不可解析 / `[index] root=sub`」× 8 入口，
+  session 拆无事件/有事件两格（27 格实跑）。读数：
+  缺失 2/2/2/0/2/2/2/2/0；不可解析 同；root=sub 0/6/5/0/0/0/0/2/0
+  （顺序：daybook / append / hook / session 无事件 / session 有事件 / record / orchestrator /
+  mcp_server / cross_ref）。矩阵对账 25 动态 + 17 派生不适用 + 14 表级 = 56。
+- **P2 措辞与裁决表**：P6 理由「不读 conf」→「conf 不参与根解析」；session_hook/cross_ref 的 0
+  与 multidx 派生视图豁免写进 `errors.py` 同一张裁决表；`src/README.md` 第 79 行「8 入口同码」
+  与根 `README.md` 第 297 行「不解析 conf」按实测改写。
+- **工作规矩**：凡涉及「读不读 / 写没写」的判断，先给读数（实跑前后快照或进程内探针）再给判断。
+- **读数**：闭包覆盖 929/2167 = 42%（可能写缺口 311）；源树 0 红 / 620 项；`daybook/` 盒
+  0 红 / 489 项；P1–P10 全绿；变异 15/15；三包 `--verify` 全同。
+
 ### 复签不签（终）：坏 conf 同码 2、P6 坏 conf 八格、裁决表落字（2026-11-18）
 
 - **P0（本轮唯一产品改动）`orchestrator.py` 体检吞 `ConfigError`**：`_ledger_alarms` 的

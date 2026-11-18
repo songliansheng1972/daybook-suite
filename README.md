@@ -179,6 +179,9 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 - **只增不改** —— append-only，写不坏历史；索引是目录，可随时从原文重算。**派生视图不在此列**：
   `daybook_multidx` 对已改写卷会以 rc=0 重建派生视图，这是**明示豁免**——append-only 是账本卷级
   不变量，只覆盖账本卷，不覆盖派生视图。
+- **工作规矩（判据与评审都适用）**：凡涉及「读不读 conf / 写没写盘」的判断，**先给读数再给判断**。
+  要么实跑一次并附前后快照，要么在进程内探针确认调用点；只读代码下结论，这轮已经两次翻车
+  （一次说「不读 conf」实际读了，一次说「读了但被吞」实际是 fail-open 写成功）。
 - **三件同底座** —— 同一批卷、同一份真相；**别人可自造合规之账，我们不必在场**。
 
 > **完整特点见旗舰包 README** —— [`daybook/README.md`](daybook/README.md)（「## 特点」段·十三条）。本仓根 README 只作**指路**，不复制正文 —— 两处不各自漂移。
@@ -228,7 +231,7 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   读成三包都成立。
 - **判据健康度**不看条数：属性层 P1–P10 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
   变异记分 `python3 src/tools/score.py` 打印 `变异 14 / 杀死 14 / 存活 0 / 死变异 0`，同一汇总行
-  紧跟 `闭包覆盖 927/2154 = 43%｜可能写缺口 305｜未登记 0｜同名红 0`，读「未登记 0」时必须
+  紧跟 `闭包覆盖 929/2167 = 42%｜可能写缺口 311｜未登记 0｜同名红 0`，读「未登记 0」时必须
   同时读覆盖率。杀死的判据不是「有 FAIL 就算」，而是**命中该变异声明的预期断言名**；
   死在别的断言、或只有运行异常，都记死变异，不算杀死。
   健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
@@ -245,8 +248,8 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 - **闭包面与覆盖率的诚实边界**：写能力函数＝传递地调用到账本写类别的第一方函数；源头是
   **所有已登记 `ledger`/`impl` 的函数本身**（签了这次写就等于承认有写能力），再加原语类别
   命中，不按结果 kind（`safe`）分层。`--audit-closure` 与本句同框打印
-  `闭包覆盖 927/2154 = 43%｜可能写缺口 305`；`tools/score.py` 的汇总行也带同一口径。
-  **43% 是解析率，不是写表面闭合率**，残余三类必须在读数字时一起看：
+  `闭包覆盖 929/2167 = 42%｜可能写缺口 311`；`tools/score.py` 的汇总行也带同一口径。
+  **42% 是解析率，不是写表面闭合率**，残余三类必须在读数字时一起看：
   1. **属性/实例方法派发**：`obj.method()` 的接收者类型解析不到（属性类型、跨文件实例、
      容器里的实例），这些边进「未解析」，靠同名红兜底；
   2. **第一方函数别名**：`f = _write_cursor`、`Thread(target=lr.write)`、`map(fn, xs)`、
@@ -294,12 +297,16 @@ MCP 请求期的 `RuntimeError` 走 RPC 的 `ERR_INTERNAL_ERROR`，不映射为�
   一律按「可能不在系统临时目录内」拒绝，宁可判红；②`fork` 出的子进程**继承**父进程已持有的
   锁（内核 fd 语义），子进程不得再取同一把锁；③`exec` 后锁随 fd 关闭自动清零，新程序必须
   重新取锁。三者都是安全侧行为，不提供开关改变。
-- **`daybook_append.py` 不解析 conf（设计边界）**：它只认账本根与目标卷文件，因此 `daybook.conf`
-  写坏时它仍可能 rc=0 并追加成功。这不代表「conf 坏了也能写」——`daybook.py index` 与
-  `daybook_record.py` 都会按配置错（2）拒绝并零落盘；append 是单条落盘的唯一入口，不承担配置体检。
-  `daybook_append.py` does not parse conf (by design): it only knows the ledger root and the target
-  volume, so a broken conf does not stop it. That never means "broken conf is writable": `index` and
-  `record` refuse with code 2 and land nothing; append is the single-entry writer, not a conf checker.
+- **`daybook_append.py` 的根解析与其余入口同源**：它按显式参数写目标卷，但根仍走
+  `_cli_root → Root.open → ledger_root → read_conf_value`。`daybook.conf` 整份不可解析时
+  `read_conf_value` 与 `daybook.parse_conf` 同一套语义，先抛 `ConfigError`（2）且零落盘，
+  不会把 `root=''` 回落成 conf 目录再继续写。`daybook_session_hook.py`（根固定为脚本目录）与
+  `cross_ref.py`（按卷名解析）才是**conf 不参与根解析**的两个入口，坏 conf 下 rc=0 是设计。
+  `daybook_append.py` resolves its root through the same `ledger_root` conf semantics as every
+  other entry (it only takes the target volume from argv). A wholly unparsable conf raises
+  `ConfigError` (2) before any write instead of falling back to `root=''` and writing beside the
+  conf. `daybook_session_hook.py` (root fixed to the script directory) and `cross_ref.py`
+  (by volume name) are the two entries where conf does not take part in root resolution.
 
 ## 许可
 
