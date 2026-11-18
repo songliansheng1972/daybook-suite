@@ -1059,8 +1059,8 @@ def _prepare(tmp):
     （index 的作者口径机检走 daybook_append.check_author_consistency，故须随拷。）
     (The index author-convention gate calls daybook_append.check_author_consistency, so it must be staged too.)"""
     here = os.path.dirname(SRC_BIN)
-    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
-                 'errors.py'):
+    for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'daybook_record.py',
+                 'ledger_root.py', 'errors.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(tmp, name))
     with io.open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -4169,9 +4169,10 @@ def _case_error_table(tmp):
             'run_entry=%d 字面码=%r 旧常量=%s' % (n_run, lits, bool(holds)))
 
     cells = [0]
+    stats = {'dyn': 0, 'na': 0, 'table': 0}
     outs = {n: [] for n in _ENTRIES}
 
-    def probe(entry, kind, argv, cwd, env=None):
+    def probe(entry, kind, argv, cwd, env=None, input=None):
         """跑一格：退出码必须等于 TABLE[kind]，且输出无 traceback。
         入口文件不在当前盒里就显式跳过——不能拿「文件不存在也 rc=2」冒充同码。
         Run one cell: the status must equal TABLE[kind] and the output must have no traceback.
@@ -4185,8 +4186,10 @@ def _case_error_table(tmp):
         e = dict(os.environ)
         if env:
             e.update(env)
+        stats['dyn'] += 1
         r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, universal_newlines=True, env=e)
+                           stderr=subprocess.PIPE, universal_newlines=True, env=e,
+                           input=input)
         out = r.stdout + r.stderr
         outs[entry].append(out)
         cells[0] += 1
@@ -4197,6 +4200,7 @@ def _case_error_table(tmp):
 
     def na(entry, kind, why):
         cells[0] += 1
+        stats['na'] += 1
         _skip('P6 %s × %s 不适用：%s' % (entry, kind, why))
 
     missing = os.path.join(tmp, 'no_such_home_%d' % os.getpid())
@@ -4237,10 +4241,16 @@ def _case_error_table(tmp):
             probe('daybook_session_hook.py', 'EVIDENCE',
                   [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
                    '--events-root', ev, '--state', bad_state, '--workspace', d_ev], d_ev)
+            # record 从账本外 cwd 调：append 子进程必须 cwd=HERE，随后 index 缺证据 ⇒ 5
+            # record invoked from an outside cwd: the append child must run with cwd=HERE,
+            # then the index hits missing evidence ⇒ 5.
+            probe('daybook_record.py', 'EVIDENCE',
+                  [os.path.join(d_ev, 'daybook_record.py'), '--role', '用户'],
+                  tmp, input='x\n')
         finally:
             shutil.rmtree(d_ev, ignore_errors=True)
         for e in ('daybook_append.py', 'orchestrator.py', 'mcp_server.py',
-                  'daybook_record.py', 'cross_ref.py'):
+                  'cross_ref.py'):
             na(e, 'EVIDENCE', '该入口不读取派生证据，缺件在它这里表现为配置错或运行失败')
 
         # VIOLATION：daybook 等长改写 / 司南 幽灵负责人硬警 → 同为 3
@@ -4321,10 +4331,21 @@ def _case_error_table(tmp):
                   [os.path.join(here, 'orchestrator.py'), '--home', d_or, 'alarm'], d_or)
         finally:
             shutil.rmtree(d_or, ignore_errors=True)
+        # record 的运行期失败：对话卷位置被目录占住，append 子进程 rc=6 ⇒ record 必须还原 6
+        # record runtime failure: the dialogue volume is occupied by a directory, the append
+        # child exits 6 and record must surface 6 (not swallow it into 2 or 1).
+        d_rt = tempfile.mkdtemp(prefix='p6_rt_')
+        try:
+            _prepare(d_rt)
+            os.makedirs(os.path.join(d_rt, '对话卷.txt'))
+            probe('daybook_record.py', 'RUNTIME',
+                  [os.path.join(d_rt, 'daybook_record.py'), '--role', '用户'],
+                  tmp, input='x\n')
+        finally:
+            shutil.rmtree(d_rt, ignore_errors=True)
         for e, why in (('daybook.py', '运行期写拒绝由 R9-2/R10-2 专项覆盖'),
                        ('daybook_hook.py', '运行期写拒绝由 R10-3 专项覆盖'),
                        ('mcp_server.py', 'stdio 运行期拒绝需注入签名会话，由 R10-3 覆盖'),
-                       ('daybook_record.py', '原件/登记/索引失败由 record 自身分步报错，此处不注入'),
                        ('cross_ref.py', '只读引用解析，无运行期写路径')):
             na(e, 'RUNTIME', why)
     finally:
@@ -4335,20 +4356,25 @@ def _case_error_table(tmp):
                        E.RuntimeFailure('r')]).kind == E.VIOLATION
     for entry in _ENTRIES:
         cells[0] += 1
+        stats['table'] += 1
         _ok('P6 %s × COMPOSE（表级 worst 合成）' % entry, comp_ok)
 
     # NO_TRACE：本入口所有动态探针的输出里都不得有 traceback
     for entry in _ENTRIES:
         if not outs[entry]:
             cells[0] += 1
+            stats['na'] += 1
             _skip('P6 %s × NO_TRACE 不适用：本层没有该入口的动态探针' % entry)
             continue
         cells[0] += 1
+        stats['table'] += 1
         _ok('P6 %s × NO_TRACE：全部探针输出无 traceback' % entry,
             all('Traceback' not in o for o in outs[entry]))
 
-    _ok('P6 矩阵格数对账（8 入口 × 7 故障类 = 56）', cells[0] == 56,
-        '已判 %d 格' % cells[0])
+    _ok('P6 矩阵格数对账（8 入口 × 7 故障类 = 56）',
+        cells[0] == 56 and stats['dyn'] + stats['na'] + stats['table'] == 56,
+        '动态实跑 %d 格 / 显式不适用 %d 格 / 表级合成与无栈 %d 格'
+        % (stats['dyn'], stats['na'], stats['table']))
 
     # 收口回归：司南自检全绿——「持租约锁后再记日志」不得同线程重入根锁（会自死锁）
     # Boundary regression: Sinan's self-test must be green — logging while holding a lease must

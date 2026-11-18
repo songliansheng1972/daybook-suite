@@ -46,6 +46,31 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 **诚实边界**：仅在「只删索引、游标与封存未动」时能判 3；同时改写两份派生件、或卷+游标+封存
 三者自洽改写，本实现不承诺识别（缺外部锚：封存仍在账本目录内、无签名）。外部锚另开一单。
 
+### 复签补轮：record 同码、Registry dir_fd、边界与句柄证据（2026-11-18）
+
+1. **record 不再压平子进程码**：append 子进程补 `cwd=HERE`；append/index 非零按 2/3/4/5/6
+   还原成对应错误类，同一账本同一故障与直接入口同码。红证：旧实现从账本外 cwd 调，
+   append 子进程 rc=2 被吞成 6；同一索引缺证据，record 6 而 `daybook.py index` 5。
+   绿证：P6 的 record × EVIDENCE 动态格 rc=5、record × RUNTIME 动态格 rc=6，均无 traceback。
+2. **Registry 密钥目录走 dir_fd**：`LockedRoot` 新增 `mkdir/mkdirs`（唯一 `_walk_parent` +
+   `os.mkdir(dir_fd)`），Registry `_write_secret`、Hub 自定义父目录、AgentMessage 父目录
+   全部改走它。红证（新增 M12）：退回 `os.makedirs(str(root))` 后换根会在新根长出
+   `.daybook_keys`；绿证：P9 新增 Registry 用例，`.daybook_keys` 与注册卷都落旧 inode。
+   P3 审计钩子识别 `os.mkdir`，Registry 建目录事件栈上有 `safeio.mkdir/mkdirs`。
+3. **边界写清**：统一出口仍是 8 个；`task_volume.py` 明确列入非统一工具清单（但仍走
+   `run_entry`，`transition` 缺任务给 ConfigError 2，不再 KeyError 裸栈）；`src/README.md`
+   与仓根 README 都写「8 个统一入口」，不再说「任何入口」。
+4. **P9 证同一句柄**：新增 `hub.tv.root is hub.root_handle`、`hb/lock/reg` 同断言；新增
+   M11（Hub 传路径而非句柄）⇒ P9 红。P9 现有 5 项。
+5. **P6 计数拆开报**：56 格不再读成 56 次实跑。源树：动态 19 格 / 显式不适用 21 格 /
+   表级合成与无栈 16 格；盒内：动态 14 / 不适用 29 / 表级 13。
+6. **P3 剩余**：orchestrator.py 英文退出码行改为 3/6；Registry/Heartbeat/TaskVolume/
+   AgentServer 从路径构造 Root 时用 `weakref.finalize` 关闭自有 fd，`_append_inbox`
+   每次自开的 Root 用 finally 关闭。
+7. **本轮读数**：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
+   属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
+   mcp 23/23、orch 全绿。
+
 ### 复签收口：三条所有权补立（2026-11-18 · P1/P2）
 
 1. **写凭证生命周期**：`LockedRoot.write/update` 写前过 `_ensure_live()`（未释放且仍在本线程
@@ -69,9 +94,9 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    `0 干净｜3 有硬警｜2 参数/文件错｜6 执行异常`，中英文一致。
 7. **删旧自证**：删除 `src/tools/write_audit.py`、`audit_fixture.py`；步骤 0 的可复现读数
    改为 P3 + M4（见下），不再保留一套没人跑的假自证。
-8. **本轮读数**：源树 `0 红 / 504 项（PASS 504；跳过 24）`；`daybook/` 盒
-   `0 红 / 384 项（PASS 384；跳过 47）`；属性 P1–P9 全绿；score
-   `变异 10 / 杀死 10 / 存活 0 / 死变异 0`；仓根与 `_build` 三包 `--verify` 均 rc=0。
+8. **本轮读数**：源树 `0 红 / 506 项（PASS 506；跳过 22）`；`daybook/` 盒
+   `0 红 / 386 项（PASS 386；跳过 45）`；属性 P1–P9 全绿；score
+   `变异 12 / 杀死 12 / 存活 0 / 死变异 0`；仓根与 `_build` 三包 `--verify` 均 rc=0。
 
 ### 单一源件与打包校验（2026-11-18 · 步骤 6）
 

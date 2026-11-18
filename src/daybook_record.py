@@ -16,6 +16,16 @@ import errors
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _child_failure(stage, rc, output):
+    """把子进程退出码还原成同类错误：同一账本同一故障，record 与直接入口同码。
+    Map a child exit code back to the same error class: record must report the same code as
+    the direct entry for the same ledger/fault (2/3/4/5/6)."""
+    cls = {2: errors.ConfigError, 3: errors.LedgerViolation,
+           4: errors.AuthorConvention, 5: errors.EvidenceMissing,
+           6: errors.RuntimeFailure}.get(rc, errors.RuntimeFailure)
+    raise cls('%s失败（子进程 rc=%d）：%s' % (stage, rc, output.strip()))
+
+
 def record(role, title, content, stamp=None, update_index=True, root=None):
     if not content:
         raise ValueError('拒绝记录空内容')
@@ -45,15 +55,14 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
     result = subprocess.run(
         [sys.executable, append_script, os.path.join(HERE, '对话卷.txt'),
          '对话', entry_title, '记录器', reference],
+        cwd=HERE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         universal_newlines=True,
     )
     if result.returncode:
-        raise RuntimeError(
-            '原件已保存，但对话卷登记失败：%s%s' %
-            (result.stdout, result.stderr)
-        )
+        _child_failure('原件已保存，但对话卷登记', result.returncode,
+                       result.stdout + result.stderr)
 
     index_output = ''
     if update_index:
@@ -66,10 +75,8 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
             universal_newlines=True,
         )
         if result.returncode:
-            raise RuntimeError(
-                '原件和对话卷已保存，但索引更新失败：%s%s' %
-                (result.stdout, result.stderr)
-            )
+            _child_failure('原件和对话卷已保存，但索引更新', result.returncode,
+                           result.stdout + result.stderr)
         index_output = result.stdout
     return relative_path, digest, index_output
 

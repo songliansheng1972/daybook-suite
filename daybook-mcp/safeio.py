@@ -729,12 +729,41 @@ class LockedRoot:
                                % (who, name, exc)) from None
         return False
 
+    def mkdir(self, rel, perm=0o755):
+        """在根内建一个目录（经 dir_fd 走查，不按 orig 路径重开）。已存在返回 False。
+        Create one directory inside the root via dir_fd walking (never reopen by orig path).
+        Returns False when it already exists."""
+        self._ensure_live()
+        if not isinstance(rel, Rel):
+            raise TypeError('safeio.mkdir: 需要 Rel（先 root.rel/rel_of）')
+        if not rel.parts:
+            raise RuntimeError('safeio.mkdir: 不能创建根目录本身')
+        dfd, name = _walk_parent(self.root._fd, rel.parts, 'safeio.mkdir')
+        try:
+            try:
+                os.mkdir(name, perm, dir_fd=dfd)
+                return True
+            except FileExistsError:
+                return False
+            except OSError as exc:
+                raise RuntimeError('safeio.mkdir(%s): %s' % ('/'.join(rel.parts), exc))
+        finally:
+            os.close(dfd)
+
+    def mkdirs(self, rel, perm=0o755):
+        """逐段建目录（父先子后），每段都走 mkdir 的唯一 dir_fd 实现。
+        Create each prefix parent-first; every prefix uses the single dir_fd mkdir above."""
+        self._ensure_live()
+        if not isinstance(rel, Rel):
+            raise TypeError('safeio.mkdirs: 需要 Rel（先 root.rel/rel_of）')
+        for i in range(1, len(rel.parts) + 1):
+            self.mkdir(Rel(rel.parts[:i]), perm)
+
     def update(self, rel, fn):
         """持锁读-改-写：读旧值（缺件按空）→ fn → 同一个 write(REPLACE)。不是第二个原语。
         Locked read-modify-write: read (missing ⇒ empty) → fn → the same write(REPLACE)."""
         self._ensure_live()
-        if not isinstance(rel, Rel):
-            raise TypeError('safeio.LockedRoot.update: 需要 Rel（由 Root.rel 构造）')
+        if not isinstance(rel, Rel):            raise TypeError('safeio.LockedRoot.update: 需要 Rel（由 Root.rel 构造）')
         try:
             old = self.root.read(rel)
         except FileNotFoundError:

@@ -229,6 +229,40 @@ def m10_task_reopen_by_path(text):
     return ast.unparse(tree)
 
 
+def m11_hub_pass_path(text):
+    """Hub 把路径字符串而不是 Root 句柄传给各件（换根后按路径重开）。"""
+    tree = _parse(text)
+    hit = 0
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            for kw in node.keywords:
+                if kw.arg == 'root' and isinstance(kw.value, ast.Attribute) \
+                        and kw.value.attr == 'root_handle':
+                    kw.value = ast.Attribute(value=ast.Name(id='self', ctx=ast.Load()),
+                                             attr='root', ctx=ast.Load())
+                    hit += 1
+    if not hit:
+        raise MutationError('M11 锚点消失：orchestrator 无 root=self.root_handle')
+    return ast.unparse(tree)
+
+
+def m12_registry_mkdir_by_path(text):
+    """Registry 密钥目录退回 os.makedirs(str(root))，换根后建到新 inode。"""
+    tree = _parse(text)
+    f = _func(tree, '_write_secret', 'Registry')
+    hit = False
+    for node in ast.walk(f):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Attribute) \
+                and node.value.func.attr == 'mkdirs':
+            node.value = _expr("os.makedirs(os.path.join(str(self.root), KEY_DIR_NAME), "
+                               "mode=0o700, exist_ok=True)")
+            hit = True
+    if not hit:
+        raise MutationError('M12 锚点消失：_write_secret 无 mkdirs')
+    return ast.unparse(tree)
+
+
 MUTATIONS = [
     {'id': 'M1', 'file': 'safeio.py', 'expect': 'P1',
      'desc': '锁键改 label（同 inode 不再同一把锁）', 'apply': m1_lock_key_to_label},
@@ -250,6 +284,10 @@ MUTATIONS = [
      'desc': '去掉写凭证的释放/线程校验', 'apply': m9_drop_liveness},
     {'id': 'M10', 'file': 'task_volume.py', 'expect': 'P9',
      'desc': 'TaskVolume 写时按路径重开 Root（换根改道）', 'apply': m10_task_reopen_by_path},
+    {'id': 'M11', 'file': 'orchestrator.py', 'expect': 'P9',
+     'desc': 'Hub 传路径而不是 Root 句柄', 'apply': m11_hub_pass_path},
+    {'id': 'M12', 'file': 'agent_registry.py', 'expect': 'P9',
+     'desc': 'Registry 密钥目录按路径 os.makedirs', 'apply': m12_registry_mkdir_by_path},
 ]
 
 BY_ID = {m['id']: m for m in MUTATIONS}

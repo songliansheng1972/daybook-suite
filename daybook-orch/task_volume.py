@@ -34,7 +34,9 @@ Usage:
   tv.transition(tid, '进行中', 'agent_id_xxx', '开始实现')
   tasks = tv.list(state='进行中')
 """
-import os, sys, time
+import os, sys, time, weakref
+
+import errors
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -64,6 +66,11 @@ class TaskVolume:
         # reopened by path, so an entry-level rename keeps writing the original inode.
         from safeio import as_root, locked, WriteMode
         self.root, _opened = as_root(root or HERE, 'task_volume')
+        # 从路径构造时本件拥有该 Root：GC 时关闭，避免按次构造漏 fd。
+        # A Root opened from a path is owned here and closed at GC, so per-call construction
+        # cannot leak file descriptors.
+        self._root_finalizer = (weakref.finalize(self, self.root.close)
+                                if _opened else None)
         if not os.path.exists(self.path):
             with locked(self.root) as lr:
                 lr.write(lr.root.rel_of(self.path, 'task_volume.init'), b'',
@@ -165,8 +172,13 @@ class TaskVolume:
 
 
 def main():
+    """统一出口：任务卷 CLI 是运维工具（不进 8 入口契约），但同样不裸 traceback。"""
+    return errors.run_entry(_main)
+
+
+def _main():
     if len(sys.argv) < 2:
-        print(__doc__); return 1
+        raise errors.ConfigError(__doc__ or '缺子命令')
     tv = TaskVolume()
     cmd = sys.argv[1]
     if cmd == 'create' and len(sys.argv) >= 4:
@@ -178,10 +190,13 @@ def main():
             print('%s [%s] %s | %s' % (tid, st, ag, ct))
     elif cmd == 'transition' and len(sys.argv) >= 5:
         note = sys.argv[5] if len(sys.argv) >= 6 else ''
-        tv.transition(sys.argv[2], sys.argv[3], sys.argv[4], note)
+        try:
+            tv.transition(sys.argv[2], sys.argv[3], sys.argv[4], note)
+        except KeyError as exc:
+            raise errors.ConfigError('任务不存在：%s' % (exc,))
         print('OK')
     else:
-        print(__doc__); return 1
+        raise errors.ConfigError(__doc__ or '未知子命令')
     return 0
 
 

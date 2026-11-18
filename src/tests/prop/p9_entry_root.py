@@ -25,6 +25,14 @@ def run(seed=7, mode='const'):
         import orchestrator
         hub = orchestrator.Hub(root=root)
         try:
+            check('P9 三类 + Registry 共用 Hub 的同一个 Root 句柄',
+                  hub.tv.root is hub.root_handle
+                  and hub.hb.root is hub.root_handle
+                  and hub.lock.root is hub.root_handle
+                  and hub.reg.root is hub.root_handle,
+                  'tv=%s hb=%s lock=%s reg=%s'
+                  % (hub.tv.root is hub.root_handle, hub.hb.root is hub.root_handle,
+                     hub.lock.root is hub.root_handle, hub.reg.root is hub.root_handle))
             hub.tv.create('agent_p9', 'before')
             moved = os.path.join(base, 'root_moved')
             os.rename(root, moved)
@@ -57,6 +65,19 @@ def run(seed=7, mode='const'):
                   lid and os.path.exists(lease_old) and not os.path.exists(lease_new),
                   'lease=%r old=%s new=%s' % (lid, os.path.exists(lease_old),
                                               os.path.exists(lease_new)))
+
+            hub.reg.register('p9_agent')
+            keys_old = os.path.join(moved, '.daybook_keys')
+            keys_new = os.path.join(root, '.daybook_keys')
+            reg_old = os.path.join(moved, '注册卷.txt')
+            reg_new = os.path.join(root, '注册卷.txt')
+            check('P9 Registry 换根后 mkdir/write 旧 inode',
+                  os.path.isdir(keys_old) and os.listdir(keys_old)
+                  and not os.path.exists(keys_new)
+                  and os.path.exists(reg_old) and not os.path.exists(reg_new),
+                  'keys old=%s new=%s reg old=%s new=%s'
+                  % (os.path.isdir(keys_old), os.path.exists(keys_new),
+                     os.path.exists(reg_old), os.path.exists(reg_new)))
         finally:
             hub.root_handle.close()
     return common.summary()

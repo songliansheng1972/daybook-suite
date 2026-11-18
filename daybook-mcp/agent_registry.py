@@ -44,7 +44,7 @@ Usage:
   ok   = reg.verify(agent_id, '某条正文', sig)  # 验签 · verify a signature
   reg.revoke(agent_id)                   # 吊销 · revoke
 """
-import os, time, hmac, hashlib, secrets
+import os, time, hmac, hashlib, secrets, weakref
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -87,6 +87,8 @@ class Registry:
         from safeio import as_root
         self.root, _opened = as_root(root or os.path.dirname(os.path.abspath(self.path)),
                                      'agent_registry')
+        self._root_finalizer = (weakref.finalize(self, self.root.close)
+                                if _opened else None)
         self._agents = {}  # agent_id -> Agent · 内存索引 · in-memory index
         self._load()
 
@@ -139,16 +141,12 @@ class Registry:
         目录仍显式 0700，不依赖 umask。
         The file goes through LockedRoot.write(REPLACE, 0600) (it lives inside the ledger root,
         so there is exactly one write path); the directory stays explicitly 0700."""
-        d = self._key_dir()
-        os.makedirs(d, mode=0o700, exist_ok=True)
-        try:
-            os.chmod(d, 0o700)
-        except OSError:
-            pass
         fn = agent_id + '.key'
-        p = os.path.join(d, fn)
+        p = os.path.join(self._key_dir(), fn)
         from safeio import locked, WriteMode
         with locked(self.root) as lr:
+            lr.mkdirs(lr.root.rel_of(self._key_dir(), 'agent_registry._write_secret'),
+                      perm=0o700)
             lr.write(lr.root.rel_of(p, 'agent_registry._write_secret'), secret + '\n',
                      mode=WriteMode.REPLACE, perm=0o600)
         return KEY_DIR_NAME + '/' + fn

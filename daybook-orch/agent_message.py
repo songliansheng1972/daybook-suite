@@ -34,7 +34,7 @@ Usage:
   # 客户端发消息 · client sends a message
   python3 agent_message.py send 汤姆 史泰龙 notify "MCP resources/list 已实现"
 """
-import os, sys, time, json, socket, socketserver, tempfile
+import os, sys, time, json, socket, socketserver, tempfile, weakref
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -120,20 +120,24 @@ def _append_inbox(msg, direction='收', root=None, path=None):
     from safeio import Root, as_root, locked, WriteMode
     from volume_paths import resolve_root
     if isinstance(root, Root):
-        rt = root
+        rt, opened = root, False
     else:
-        rt = as_root(resolve_root(root), 'agent_message._append_inbox')[0]
+        rt, opened = as_root(resolve_root(root), 'agent_message._append_inbox')
     path = path or inbox_path(root)
-    parent = os.path.dirname(path)
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent, exist_ok=True)
     rec = '[%s] [%s] [%s] [%s] [%s] %s\n' % (
         _now(), direction,
         msg.get('from', '?'), msg.get('to', '?'),
         msg.get('type', '?'), msg.get('content', '').rstrip('\n'))
-    with locked(rt) as lr:
-        lr.write(lr.root.rel_of(path, 'agent_message._append_inbox'), rec,
-                 mode=WriteMode.APPEND_CREATE)
+    try:
+        with locked(rt) as lr:
+            parent = os.path.dirname(path)
+            if parent and parent != rt.label:
+                lr.mkdirs(lr.root.rel_of(parent, 'agent_message._append_inbox.mkdir'))
+            lr.write(lr.root.rel_of(path, 'agent_message._append_inbox'), rec,
+                     mode=WriteMode.APPEND_CREATE)
+    finally:
+        if opened:
+            rt.close()
 
 
 class _Handler(socketserver.BaseRequestHandler):
@@ -172,7 +176,9 @@ class AgentServer(socketserver.UnixStreamServer):
         self.agent_name = agent_name
         from safeio import as_root
         from volume_paths import resolve_root
-        self.root = as_root(resolve_root(root), 'agent_message.AgentServer')[0]
+        self.root, _opened = as_root(resolve_root(root), 'agent_message.AgentServer')
+        self._root_finalizer = (weakref.finalize(self, self.root.close)
+                                if _opened else None)
         # inbox 路径在入口启动时固定；根 rename 后不按路径重解析
         # The inbox path is fixed at entry startup; a renamed root is not re-resolved by path.
         self.inbox = inbox_path(root)

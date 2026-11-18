@@ -34,7 +34,8 @@ def _via_safeio():
     f = sys._getframe(1)
     while f is not None:
         if (f.f_globals.get('__name__') == 'safeio'
-                and f.f_code.co_name in ('write', '_append', '_replace', 'update')):
+                and f.f_code.co_name in ('write', '_append', '_replace', 'update',
+                                         'mkdir', 'mkdirs')):
             return True
         f = f.f_back
     return False
@@ -108,6 +109,18 @@ def run(seed=7, mode='const'):
                 check('P3 append_one：无旁路写点（open 事件全在 LockedRoot 链上）',
                       not any(e[0] == 'open' and not e[2] for e in events),
                       '%r' % ([e for e in events if not e[2]][:4],))
+
+            # Registry 自己取锁，必须在上面 with 释放之后跑
+            from agent_registry import Registry
+            del _EVENTS[:]
+            reg = Registry(os.path.join(root, '注册卷.txt'), root=rt)
+            reg.register('p3_agent')
+            ev2 = list(_EVENTS)
+            mks = [e for e in ev2 if e[0] == 'os.mkdir']
+            check('P3 Registry 建密钥目录也走 safeio.mkdir（dir_fd）',
+                  bool(mks) and all(v for _e, _r, v in mks)
+                  and not any(not v for _e, _r, v in ev2),
+                  'mkdir=%r bad=%r' % (mks, [e for e in ev2 if not e[2]][:4]))
         finally:
             rt.close()
     return common.summary()

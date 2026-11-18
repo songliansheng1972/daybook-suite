@@ -74,7 +74,7 @@ Usage:
 退出码：0 正常；3 alarm 有硬警；2 参数/文件错；6 alarm 执行异常（读卷/解析失败）；6 运行失败（写原语)。
 Exit codes: 0 clean; 3 alarm hard warning; 2 argument/file error; 6 alarm execution error;
 6 runtime failure (write primitive).
-Exit codes: 0 normal; 1 alarm has a hard warning; 2 argument/file error; 3 alarm execution error (volume read/parse failure).
+Exit codes: 0 normal; 3 alarm has a hard warning; 2 argument/file error; 6 alarm execution error (volume read/parse failure).
 """
 import argparse
 import hashlib
@@ -553,15 +553,22 @@ class Hub:
         # re-parses the root as a conf directory and every command exits 2 whenever
         # [index] root is non-empty.
         self.vols = _vp.resolve_volumes(self.conf_dir, conf_path=self.conf_path)
-        # conf 指向自定义子目录时先建父目录（卷本身仍由各件按需创建）。
-        # Create parent directories first when conf points at custom subdirectories
-        # (the volume files themselves are still created on demand by each primitive).
+        # conf 指向自定义子目录时先建父目录：全部走 LockedRoot.mkdirs（dir_fd），
+        # 不再按 orig 路径 os.makedirs——根 rename 后不会把目录建到新 inode。
+        # Create parent directories for custom subdirectories through LockedRoot.mkdirs
+        # (dir_fd), never os.makedirs on the orig path: a renamed root keeps its inode.
+        from safeio import locked
+        parents = []
         for role, path in self.vols.items():
             if role == 'root':
                 continue
             parent = os.path.dirname(path)
-            if parent and not os.path.isdir(parent):
-                os.makedirs(parent, exist_ok=True)
+            if parent and parent != self.root and parent not in parents:
+                parents.append(parent)
+        if parents:
+            with locked(self.root_handle) as lr:
+                for parent in parents:
+                    lr.mkdirs(lr.root.rel_of(parent, 'orchestrator.Hub.mkdir'))
         self.reg = _reg.Registry(self.vols['registry'], root=self.root_handle)
         self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root_handle)
         self.hb = _hb.Heartbeat(self.vols['heartbeat'], root=self.root_handle)

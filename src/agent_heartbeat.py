@@ -20,7 +20,7 @@ Usage (root is mandatory; it is never guessed from the target's directory):
   alive = hb.is_alive('agent_xxx')  # 查活/死 · check alive/dead
   dead = hb.dead_agents()           # 列出所有 dead · list all dead agents
 """
-import os, sys, time
+import os, sys, time, weakref
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -41,7 +41,12 @@ class Heartbeat:
         # 不自报根失败即报错；收 Root 时复用同一 dev_ino，不按路径重开
         # No guessing the ledger root from the target directory. A Root is reused as-is.
         from safeio import as_root
-        self.root = as_root(root, 'agent_heartbeat')[0] if root else None
+        if root:
+            self.root, _opened = as_root(root, 'agent_heartbeat')
+        else:
+            self.root, _opened = None, False
+        self._root_finalizer = (weakref.finalize(self, self.root.close)
+                                if _opened else None)
         self.period = period
         self.dead_after = dead_after
         if not os.path.exists(self.path):

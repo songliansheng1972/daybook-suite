@@ -42,6 +42,23 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签补轮：record 同码、Registry dir_fd、边界与句柄证据（2026-11-18）
+
+- `daybook_record` 的 append 子进程补 `cwd=HERE`；append/index 非零按 2/3/4/5/6 还原成
+  对应错误类，不再一律压成 6。P6 的 record × EVIDENCE / RUNTIME 改为动态注入（5/6）。
+- `LockedRoot` 新增 `mkdir/mkdirs`（dir_fd 走查）；Registry 密钥目录、Hub 自定义父目录、
+  AgentMessage 父目录全部改走它。新增 M12（退回 os.makedirs 路径）⇒ P9 红；P3 审计钩子
+  识别 mkdir 并验证栈经过 safeio。
+- 边界：8 个统一入口不变；`task_volume.py` 列入非统一工具清单（走 run_entry，不再裸栈）；
+  `src/README.md` 与仓根 README 统一写「8 个统一入口」。
+- P9 增加同一句柄断言（tv/hb/lock/reg is hub.root_handle）与 Registry 换根用例；
+  新增 M11（Hub 传路径）⇒ P9 红。
+- P6 格数拆开报告：源树动态 19 / 不适用 21 / 表级 16；盒内动态 14 / 不适用 29 / 表级 13。
+- orchestrator.py 英文退出码 3/6；从路径构造的 Root 用 weakref.finalize 关闭，_append_inbox
+  自开 Root 用 finally 关闭。
+- 读数：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
+  属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 verify rc=0。
+
 ### 复签收口：三条所有权补立（P1/P2 · 2026-11-18）
 
 - **写凭证生命周期**：`LockedRoot.write/update` 写前过 `_ensure_live()`（未释放且仍在本线程
@@ -57,8 +74,8 @@
   `chatroom_server` 明确为运维/调试工具，不承诺统一码。
 - `daybook_record.py` 调 append 补作者位（`记录器`），并在对话卷可查；orch 三份文档退出码
   统一为 3/6；删除 `tools/write_audit.py`、`audit_fixture.py`，步骤 0 读数改由 P3 + M4 复现。
-- 读数：源树 `0 红 / 504 项（跳过 24）`；`daybook/` 盒 `0 红 / 384 项（跳过 47）`；
-  属性 P1–P9 全绿；`变异 10 / 杀死 10 / 存活 0 / 死变异 0`；两套 `--verify` rc=0。
+- 读数：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
+  属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0。
 
 ### 单一源件与打包校验（步骤 6 · 2026-11-18）
 

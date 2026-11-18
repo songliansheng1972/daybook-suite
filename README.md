@@ -211,20 +211,20 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   上测得 1.42s）。也就是说：**同一账本根上的取锁写只会排队，不会并行**；写入越重，后来者
   等得越久。
 - **判据计数**只引用判据打印的「项」值（=PASS+FAIL 行数），条数只作参考。本轮实测：
-  源树 `0 红 / 504 项（PASS 504；跳过 24 项）`；`daybook/` 盒 `0 红 / 384 项（PASS 384；
-  跳过 47 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包、
+  源树 `0 红 / 506 项（PASS 506；跳过 22 项）`；`daybook/` 盒 `0 红 / 386 项（PASS 386；
+  跳过 45 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包、
   `agent_lock.py`、`pack.py` 等，依赖它们的判据逐条打印 `[跳过]` 与原因、不进「项」计数；
   其余少掉的项来自按文件集扫描的判据（如 AH 登记条目）随文件数变化。所有场合只报打印值，
   不手写换算。
 - **判据健康度**不看条数：属性层 P1–P9 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
-  变异记分 `python3 src/tools/score.py` 打印 `变异 10 / 杀死 10 / 存活 0 / 死变异 0`。
+  变异记分 `python3 src/tools/score.py` 打印 `变异 12 / 杀死 12 / 存活 0 / 死变异 0`。
   健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
   `src/tests/scenarios/guard.py`（盒内仍叫 `ledger_guard_test.py`，命令不变）。
 - **统一退出码入口只有 8 个**：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、
   `daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、
-  `cross_ref.py`；P6 的 8×7 矩阵只对这张清单负责。`agent_*`、`daybook_multidx.py`、
-  `mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，不承诺统一码，也不得拿来
-  宣称「任何入口同码」。
+  `cross_ref.py`；P6 的 8×7 矩阵只对这张清单负责。`agent_*`、`task_volume.py`、
+  `daybook_multidx.py`、`mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，
+  不承诺统一码，也不得拿来宣称「任何入口同码」。
 
 ## 退出码（CLI）
 
