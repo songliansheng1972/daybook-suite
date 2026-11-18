@@ -128,9 +128,10 @@ PACKAGES = {
                      # 产物本机路径机检：出厂件不得出现作者本机绝对路径
                      # Artifact local-path check: shipped files must not carry the author's absolute paths
                      'path_leak_check.py',
-                     # append-only 判据回归（挡「未变」退回 size+mtime 的静默回退）·不计构建号
-                     # append-only criterion regression (blocks silent fallback to size+mtime) · not counted in build number
-                     'ledger_guard_test.py',
+                     # append-only 判据回归（步骤 5 起源件在 tests/scenarios/guard.py，
+                     # 由 aux_rename 复制为盒内 ledger_guard_test.py）·不计构建号
+                     # append-only criterion regression (since step 5 the source lives at
+                     # tests/scenarios/guard.py and aux_rename copies it to ledger_guard_test.py) · not counted
                      # 明文可查验判据（只用标准库）·不计构建号
                      # plain-text verification criterion (standard library only) · not counted
                      'verify_plain.py',
@@ -138,6 +139,11 @@ PACKAGES = {
                      # bare-terminal criterion (POSIX sh + tail/grep/awk/od, no Python)
                      'verify_plain.sh',
                      ],
+        'aux_rename': [
+            # 源树 tests/scenarios/guard.py → 盒内 ledger_guard_test.py（盒内命令不变）
+            # source tests/scenarios/guard.py → box ledger_guard_test.py (box command unchanged)
+            (['tests/scenarios/guard.py'], 'ledger_guard_test.py'),
+        ],
         'conf_rename': [
             # 判_478 甲/乙·旗舰包改走发行 conf（零绝对路径·卷表只挂 sample/ 三卷）
             # ruling_478 A/B · the flagship package switches to release conf (zero absolute paths · volume table mounts only the three sample/ volumes)
@@ -278,7 +284,8 @@ def plan_for(spec, src):
         else:
             plan.append((sp, f))
     for candidates, dst_name in (spec.get('conf_rename', [])
-                                 + spec.get('doc_rename', [])):
+                                 + spec.get('doc_rename', [])
+                                 + spec.get('aux_rename', [])):
         sp = resolve_src(src, candidates)
         if sp is None:
             missing.append(candidates[0])

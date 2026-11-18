@@ -42,6 +42,22 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 判据分层与变异记分（步骤 5 · 2026-11-18）
+
+- 场景层 33 组原样迁入 `tests/scenarios/guard.py`；盒内仍由 `pack.py` 复制为
+  `ledger_guard_test.py`，盒内命令与读数口径不变。
+- 新增属性层 `tests/prop/`（P1–P7）、种子化生成器 `tests/gen.py`（`const` / `random` /
+  `shuffle`）、AST 变异器 `tools/mutate.py`（M1–M8）与记分板 `tools/score.py`。
+- **健康指标改为「属性全绿 + 存活变异 0 + 死变异 0」**；判据条数只作参考打印。
+  场景层原有的字符串锚点变异标注为 legacy，仅保留为回归，不参与健康判定。
+- 本轮读数：源树 `0 红 / 490 项（PASS 490；跳过 16 项）`；`daybook/` 盒
+  `0 红 / 379 项（PASS 379；跳过 35 项）`；属性层 P1–P7 全绿；
+  `python3 tools/score.py` 打印 `变异 8 / 杀死 8 / 存活 0 / 死变异 0`。
+- 错映射自检：`python3 tools/score.py --self-check`（M2 故意声明期望 P1）会报
+  「未被对应属性杀死」并记死变异，不会静默通过。
+  Health is now "properties green + 0 survivors + 0 dead mutations"; the scoreboard,
+  not the check count, is the release gate.
+
 ### 复核 P0（海东青四项）
 
 - **索引缺失时仍验哈希（范围如实）**：当**只删索引、游标与封存未动**时，同长按全卷哈希、

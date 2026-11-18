@@ -210,11 +210,15 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   **0.63s**；P1 持 `task:A` 1.2s 期间，P2 取 `task:B` 实际等待 **1.21s**（复签阶段另一台机
   上测得 1.42s）。也就是说：**同一账本根上的取锁写只会排队，不会并行**；写入越重，后来者
   等得越久。
-- **判据计数**只引用 `ledger_guard_test.py` 打印的「项」值（=PASS+FAIL 行数）。本轮实测：
-  源树 `0 红 / 449 项（PASS 449；跳过 1 项）`；`daybook/` 盒 `0 红 / 347 项（PASS 347；
-  跳过 11 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包与
-  `agent_lock.py`，依赖它们的 9 条判据逐条打印 `[跳过]` 与原因、不进「项」计数；其余少掉的
+- **判据计数**只引用判据打印的「项」值（=PASS+FAIL 行数），条数只作参考。本轮实测：
+  源树 `0 红 / 490 项（PASS 490；跳过 16 项）`；`daybook/` 盒 `0 红 / 379 项（PASS 379；
+  跳过 35 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包与
+  `agent_lock.py`，依赖它们的判据逐条打印 `[跳过]` 与原因、不进「项」计数；其余少掉的
   项来自按文件集扫描的判据（如 AH 登记条目）随文件数变化。所有场合只报打印值，不手写换算。
+- **判据健康度**不看条数：属性层 P1–P7 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
+  变异记分 `python3 src/tools/score.py` 打印 `变异 8 / 杀死 8 / 存活 0 / 死变异 0`。
+  健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
+  `src/tests/scenarios/guard.py`（盒内仍叫 `ledger_guard_test.py`，命令不变）。
 
 ## 退出码（CLI）
 
@@ -265,7 +269,10 @@ daybook-suite/            ← 本仓
 ├── daybook-mcp/          ← 璇玑（产物 · MIT）
 ├── daybook-orch/         ← 司南（产物 · AGPL-3.0 或商业）
 └── src/                  ← 唯一源（改先落源，勿改副本）
-    └── pack.py           ← 建包器
+    ├── pack.py           ← 建包器
+    ├── tests/scenarios/  ← 33 组场景判据（盒内复制为 ledger_guard_test.py）
+    ├── tests/prop/       ← P1–P7 属性层（seed 化生成，失败可一键复现）
+    └── tools/            ← mutate.py（AST 变异 M1–M8）+ score.py（记分板）
 ```
 
 - **只想用**：直接进三个包目录跑，各包自包含、零依赖。

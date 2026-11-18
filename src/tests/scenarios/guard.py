@@ -36,7 +36,8 @@ Cases
   AB conf 根 ≠ 脚本目录·账本外调用 CLI           ⇒ 锁落账本根；8 并发长条目全存活
   AC 作者缓存绑定内容哈希                        ⇒ 等长改写后喂旧缓存必须红（不许按 size 复用）
 
-变异验证 / mutation check
+变异验证 / mutation check（legacy：字符串锚点。权威记分见 tools/score.py 的 AST 变异 M1–M8）
+  本节保留为场景层回归；判据健康度以「属性层 P1–P7 全绿 + tools/score.py 存活 0 / 死变异 0」为准。
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
   D、E 必须红；恢复原码后必须全绿。用法：
     DAYBOOK_SRC=/tmp/mutant/daybook.py python3 ledger_guard_test.py
@@ -51,7 +52,7 @@ Cases
   补换行点名变异：删掉 daybook.py 里的「卷末行不完整·已补换行」报告行，或让 pad_notice
   不写 stderr ⇒ AA 必红。
 
-跑法 / Run: python3 ledger_guard_test.py
+跑法 / Run: 源树 python3 tests/scenarios/guard.py；盒内 python3 ledger_guard_test.py
 退出码 / Exit code: 0=全绿 1=有红
 """
 import ast
@@ -67,9 +68,13 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# 被测 daybook.py：默认同目录；变异验证时用 DAYBOOK_SRC 指向临时副本
-# The daybook.py under test: same directory by default; DAYBOOK_SRC points at a mutant copy.
-SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(HERE, 'daybook.py')
+# 源树布局 tests/scenarios/guard.py；盒内布局 <box>/ledger_guard_test.py（pack.py 改名拷贝）。
+# Source layout: tests/scenarios/guard.py; box layout: <box>/ledger_guard_test.py (renamed by pack.py).
+BASE = HERE if os.path.exists(os.path.join(HERE, 'daybook.py')) \
+    else os.path.dirname(os.path.dirname(HERE))
+# 被测 daybook.py：默认在 BASE；变异验证时用 DAYBOOK_SRC 指向临时副本
+# The daybook.py under test: BASE by default; DAYBOOK_SRC points at a mutant copy.
+SRC_BIN = os.environ.get('DAYBOOK_SRC') or os.path.join(BASE, 'daybook.py')
 
 # 写路径登记表（单一常量）：(文件, 所在函数, 桶, 理由)
 # Write-path registry (single constant): (file, enclosing function, bucket, reason)
@@ -1007,8 +1012,10 @@ MUT = {'total': 0, 'killed': 0, 'dead': 0, 'survivors': []}
 
 
 def _mut_ok(name, killed, detail='', dead=False):
-    """一条变异判据：杀死=绿；存活或死变异=红，并进入记分板。
-    One mutation check: killed=green; a survivor or a dead mutation is red and scored."""
+    """legacy 字符串锚点变异：杀死=绿；存活或死变异=红，并进入记分板。
+    权威健康度在 tools/score.py（AST 变异），这里的读数只打印、不改变健康口径。
+    Legacy string-anchor mutation: killed=green; survivor/dead=red and scored.
+    The authoritative health metric is tools/score.py (AST mutations); this reading is printed only."""
     MUT['total'] += 1
     if dead:
         MUT['dead'] += 1
@@ -5031,15 +5038,15 @@ def main():
             print('  [跳过] %s' % _r)
     p1_bad = [f for f in FAILS if f.startswith('P1')]
     print('属性层：P1 根身份/换根语义 = %s' % ('红' if p1_bad else '绿'))
-    print('变异矩阵：总数 %d / 杀死 %d / 存活 %d / 死变异 %d'
+    print('变异矩阵（legacy 字符串锚点）：总数 %d / 杀死 %d / 存活 %d / 死变异 %d'
           % (MUT['total'], MUT['killed'], len(MUT['survivors']), MUT['dead']))
     if MUT['survivors']:
         print('  存活变异：' + '；'.join(MUT['survivors']))
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: 回归层 0 红；健康度=存活变异 %d / 死变异 %d（P1 绿）'
-          % (len(MUT['survivors']), MUT['dead']))
+    print('PASS: 回归层 0 红；legacy 锚点变异 0 存活 / 0 死变异'
+          '（健康度以属性层 P1–P7 + tools/score.py 为准）')
     return 0
 
 
