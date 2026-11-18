@@ -329,6 +329,11 @@ def verify_one(pkg_key, spec, src, out_root):
                 if f.endswith(('.pyc', '.pyo')):
                     bad.append((box, os.path.relpath(os.path.join(dirpath, f), dest),
                                 '字节码缓存'))
+    # 清单外文件同样算失配：否则「盒里多一份同名副本」会绕过 md5 对账。
+    # Unlisted files are mismatches too: otherwise a duplicate copy inside the box would
+    # bypass the md5 reconciliation.
+    for rel in foreign_files(dest, plan):
+        bad.append((box, rel, '清单外文件'))
     return bad
 
 

@@ -42,6 +42,20 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 单一源件与打包校验（步骤 6 · 2026-11-18）
+
+- 不变量「源件唯一，盒内副本逐字节一致」唯一归属 `pack.py` 的 `plan_for()` 清单：
+  build 与 verify 都从同一清单派生，不各写一套。
+- `--verify` 原先只比对清单内的件；现在把 build 已在用的 `foreign_files()` 接进 verify，
+  盒内多出的清单外副本也判红。没有新增第二套机制。
+- 新增判据 PK（源树）：刚打包 verify 绿；手改盒内 `safeio.py` 一字节 ⇒ 红；
+  删盒内 `daybook.py` ⇒ 红；盒内多一份清单外副本 ⇒ 红；复原后复绿。盒内无 `pack.py` 时
+  打印原因跳过。
+- 读数：源树 `0 红 / 496 项（PASS 496；跳过 16 项）`；`daybook/` 盒
+  `0 红 / 379 项（PASS 379；跳过 36 项）`；仓根与 `_build` 三包 `--verify` 均 rc=0。
+  The packaging invariant is owned by one manifest (`plan_for`); verify now also rejects
+  unlisted in-box files, so a hand edit, a deletion or a duplicate copy all fail.
+
 ### 判据分层与变异记分（步骤 5 · 2026-11-18）
 
 - 场景层 33 组原样迁入 `tests/scenarios/guard.py`；盒内仍由 `pack.py` 复制为
@@ -50,8 +64,8 @@
   `shuffle`）、AST 变异器 `tools/mutate.py`（M1–M8）与记分板 `tools/score.py`。
 - **健康指标改为「属性全绿 + 存活变异 0 + 死变异 0」**；判据条数只作参考打印。
   场景层原有的字符串锚点变异标注为 legacy，仅保留为回归，不参与健康判定。
-- 本轮读数：源树 `0 红 / 490 项（PASS 490；跳过 16 项）`；`daybook/` 盒
-  `0 红 / 379 项（PASS 379；跳过 35 项）`；属性层 P1–P7 全绿；
+- 本轮读数：源树 `0 红 / 490 项（PASS 490；跳过 16 项）`（步骤 6 加入 PK 后为 496 项）；
+  `daybook/` 盒 `0 红 / 379 项（PASS 379；跳过 35 项）`；属性层 P1–P7 全绿；
   `python3 tools/score.py` 打印 `变异 8 / 杀死 8 / 存活 0 / 死变异 0`。
 - 错映射自检：`python3 tools/score.py --self-check`（M2 故意声明期望 P1）会报
   「未被对应属性杀死」并记死变异，不会静默通过。

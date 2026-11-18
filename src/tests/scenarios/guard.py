@@ -4607,6 +4607,60 @@ def _case_shell_plain(work):
         r3.returncode == 1 and '末字节不是换行' in out3, out3[-220:])
 
 
+def _case_pack_verify(work):
+    """PK：打包一致闸（步骤 6）——不变量「源件唯一，盒内副本逐字节一致」由 pack.py 的
+    plan_for() 唯一拥有：build 与 verify 都从同一清单派生，不各写一套。
+    PK: the packaging consistency gate (step 6). The invariant "one source, every in-box copy
+    byte-identical" has a single owner — plan_for(); build and verify both derive from it."""
+    src_root = os.path.dirname(os.path.abspath(SRC_BIN))
+    pack = os.path.join(src_root, 'pack.py')
+    if not os.path.exists(pack):
+        _skip('PK 步骤 6：本盒无 pack.py（打包器只在源树跑；盒内副本已由该闸生成）')
+        return
+    out = os.path.join(work, 'pk')
+    box = os.path.join(out, 'daybook')
+
+    def run(*extra):
+        r = subprocess.run([sys.executable, '-B', pack, '--src', src_root,
+                            '--out', out, '--pkg', 'daybook'] + list(extra),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=180)
+        return r.returncode, (r.stdout + r.stderr)
+
+    rc, txt = run()
+    _ok('PK 打包（daybook）绿', rc == 0, txt[-160:])
+    rc, txt = run('--verify')
+    _ok('PK 刚打包后 verify 绿（产物 == 源）', rc == 0, txt[-160:])
+
+    # 红证 1：手改盒内 safeio.py 一个字节 ⇒ 必须红
+    p = os.path.join(box, 'safeio.py')
+    raw = bytearray(io.open(p, 'rb').read())
+    raw[0] = ord('!') if raw[0] != ord('!') else ord('#')
+    io.open(p, 'wb').write(bytes(raw))
+    rc, txt = run('--verify')
+    _ok('PK 手改盒内 safeio.py 一字节 ⇒ verify 红', rc != 0 and 'safeio.py' in txt,
+        txt[-200:])
+    shutil.copy2(os.path.join(src_root, 'safeio.py'), p)
+
+    # 红证 2：删盒内一件 ⇒ 必须红（不是「少一个也算过」）
+    os.remove(os.path.join(box, 'daybook.py'))
+    rc, txt = run('--verify')
+    _ok('PK 删盒内 daybook.py ⇒ verify 红', rc != 0 and 'daybook.py' in txt,
+        txt[-200:])
+    shutil.copy2(os.path.join(src_root, 'daybook.py'), os.path.join(box, 'daybook.py'))
+
+    # 红证 3：盒内多一份清单外副本 ⇒ 必须红（防「改一处漏三处」靠手工同步）
+    stray = os.path.join(box, 'safeio_copy.py')
+    io.open(stray, 'w', encoding='utf-8').write('# duplicate\n')
+    rc, txt = run('--verify')
+    _ok('PK 盒内多一份清单外副本 ⇒ verify 红', rc != 0 and 'safeio_copy.py' in txt,
+        txt[-200:])
+    os.remove(stray)
+
+    rc, txt = run('--verify')
+    _ok('PK 复原后 verify 复绿', rc == 0, txt[-160:])
+
+
 def main():
     if not os.path.exists(SRC_BIN):
         print('找不到被测 daybook.py：%s' % SRC_BIN, file=sys.stderr)
@@ -5028,6 +5082,7 @@ def main():
         _case_win_path(work)
         _case_plain_migrate(work)
         _case_shell_plain(work)
+        _case_pack_verify(work)
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
