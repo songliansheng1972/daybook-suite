@@ -71,6 +71,14 @@ import sys
 import tempfile
 import time
 
+# ── 判据通则 · General rule ──────────────────────────────────────────────────
+# 判据的真值来源，不许取自被测件自身。凡判据依赖某个从被测件提取出来的参照集
+# （别名表、断言名、入口清单、判据自己的文件名…），该参照集为空即判红：空表示
+# 「看不见」，不表示「没有问题」。同一病已换皮三次：score.py 按断言名子串认预期、
+# 归一表按变量名计数、盒内 guard 按文件名认自己；现在的形态是参照集按 AST 形状读
+# （`FIELD_ALIAS: dict = {...}` 一改注解，参照集就空，判据反而全绿）。
+# A judge must never take its truth source from the code under test. If a reference set
+# extracted from that code is empty, that is "cannot see" — red, never green.
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 源树布局 tests/scenarios/guard.py；盒内布局 <box>/ledger_guard_test.py（pack.py 改名拷贝）。
 # Source layout: tests/scenarios/guard.py; box layout: <box>/ledger_guard_test.py (renamed by pack.py).
@@ -5539,12 +5547,26 @@ def _alias_pairs(here):
     return pairs
 
 
-def _alias_table_hits(here, skip=()):
-    """扫全部 .py（含子目录/缩进/类体/dict()），抓「中文别名 → 英文正名」的映射字面量。
-    Scan every .py (subdirs, indentation, class bodies, dict()) for alias-mapping literals.
-    不数变量名：改名、换容器、搬进类里都躲不掉；只有字面量的位置是结构。
-    No name counting: renaming or moving into a class cannot hide a literal mapping."""
-    pairs = _alias_pairs(here)
+def _alias_ref_gate(keys):
+    """通则：参照集为空即红——空是「看不见表在哪」，不是「没有第二张表」。
+    General rule: an empty reference set is red — it means "cannot see the table",
+    not "there is no second table"."""
+    if keys:
+        return True, '参照集 %d 项' % len(keys)
+    return False, ('参照集为空：conf_norm.py 的别名表读不出来（如三张表改成注解赋值），'
+                   '无从判断，按红处理')
+
+
+def _alias_table_hits(here, skip=(), keys=None):
+    """扫全部 .py（含子目录/缩进/类体/dict()），抓「中文键 → 字符串正名」的成对字面量。
+    Scan every .py (subdirs, indentation, class bodies, dict()) for literals pairing a known
+    Chinese alias key with any string canonical.
+    只认中文键，不比对正名：`{"二级": "levelX"}` 正是最危险的第二种表（名字对、正名错），
+    也必须红。不数变量名：改名、换容器、搬进类里都躲不掉。
+    The Chinese key decides; the canonical is NOT compared, because a wrong canonical is the
+    most dangerous second table. No name counting: renaming cannot hide a literal pair."""
+    if keys is None:
+        keys = {k for k, _v in _alias_pairs(here)}
     skip = {os.path.realpath(p) for p in skip}
     hits = []
     for root, dirs, files in os.walk(here):
@@ -5563,34 +5585,72 @@ def _alias_table_hits(here, skip=()):
                 if isinstance(node, ast.Dict):
                     for k, v in zip(node.keys, node.values):
                         if (isinstance(k, ast.Constant) and isinstance(v, ast.Constant)
-                                and isinstance(k.value, str)
-                                and (k.value, v.value) in pairs):
+                                and isinstance(k.value, str) and k.value in keys
+                                and isinstance(v.value, str)):
                             hits.append((path, node.lineno, k.value, v.value, 'dict'))
                 elif isinstance(node, (ast.Tuple, ast.List)) and len(node.elts) == 2:
                     a, b = node.elts
                     if (isinstance(a, ast.Constant) and isinstance(b, ast.Constant)
-                            and isinstance(a.value, str)
-                            and (a.value, b.value) in pairs):
+                            and isinstance(a.value, str) and a.value in keys
+                            and isinstance(b.value, str)):
                         hits.append((path, node.lineno, a.value, b.value, 'pair'))
                 elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                       and node.func.id == 'dict'):
                     for kw in node.keywords:
-                        if (isinstance(kw.value, ast.Constant)
-                                and (kw.arg, kw.value.value) in pairs):
+                        if (kw.arg in keys and isinstance(kw.value, ast.Constant)
+                                and isinstance(kw.value.value, str)):
                             hits.append((path, node.lineno, kw.arg, kw.value.value, 'dict()'))
     return hits
+
+
+def _alias_pair_verdict(here, skip=()):
+    """成对字面量判据的唯一出口：参照集为空也在这里红。
+    Single exit for the pair-literal judgement; an empty reference set is red here too."""
+    keys = {k for k, _v in _alias_pairs(here)}
+    ref_ok, ref_detail = _alias_ref_gate(keys)
+    hits = _alias_table_hits(here, skip=skip, keys=keys)
+    return (ref_ok and not hits), ref_ok, ref_detail, hits
+
+
+def _copy_tree(src, dst):
+    """整树拷贝（跳过 __pycache__），让副本与基线条目同域。"""
+    for root, dirs, files in os.walk(src):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        rel = os.path.relpath(root, src)
+        out = dst if rel == '.' else os.path.join(dst, rel)
+        if not os.path.isdir(out):
+            os.makedirs(out)
+        for fn in files:
+            shutil.copy2(os.path.join(root, fn), os.path.join(out, fn))
+
+
+def _drop_one_literal(root, file_rel, line, name):
+    """把某行第 1 个 `'中文名'` 字面量换成 `'_x'`，用于反证「少一处」。
+    Replace the first literal on that line with `'_x'` to prove the "one fewer" branch."""
+    path = os.path.join(root, file_rel)
+    if not os.path.isfile(path):
+        return False
+    lines = io.open(path, encoding='utf-8').read().split('\n')
+    pat = re.compile(r"(['\"])%s\1" % re.escape(name))
+    if line - 1 >= len(lines) or not pat.search(lines[line - 1]):
+        return False
+    lines[line - 1] = pat.sub(lambda m: m.group(1) + '_x' + m.group(1),
+                              lines[line - 1], count=1)
+    io.open(path, 'w', encoding='utf-8').write('\n'.join(lines))
+    return True
 
 
 _ALIAS_NAME_BASELINE = 'alias_name_baseline.txt'
 
 
-def _alias_name_hits(here):
+def _alias_name_hits(here, keys=None):
     """单点中文名字面量：文件里出现 conf_norm 的某个中文别名键（不要求成对）。
     Single-token Chinese-name literals: a Chinese alias key appears without forming a pair.
     这些不是「第二张表」，不判红；但必须有基线计数，防止 28 处长成 80 处。
     These are not a second table and are not red by themselves; a baseline count keeps them
     from silently growing."""
-    keys = {k for k, _v in _alias_pairs(here)}
+    if keys is None:
+        keys = {k for k, _v in _alias_pairs(here)}
     hits = []
     me = os.path.abspath(__file__)
     for root, dirs, files in os.walk(here):
@@ -5616,7 +5676,8 @@ def _alias_name_hits(here):
 
 def _read_alias_baseline(path):
     """基线行：`file:line<TAB>中文名<TAB>一句用途`。注释与空行忽略。
-    Baseline lines: `file:line<TAB>name<TAB>purpose`; comments and blank lines ignored."""
+    Baseline lines: `file:line<TAB>name<TAB>purpose`; comments and blank lines ignored.
+    `file:line` 只是位置元数据，判定的键是中文名。"""
     base = []
     if not os.path.exists(path):
         return base
@@ -5627,28 +5688,41 @@ def _read_alias_baseline(path):
         parts = s.split('\t')
         if len(parts) < 2 or ':' not in parts[0]:
             continue
-        base.append((parts[0].rsplit(':', 1)[0], parts[1]))
+        f, _sep, ln = parts[0].rpartition(':')
+        base.append((f, int(ln) if ln.isdigit() else 0, parts[1]))
     return base
 
 
 def _alias_baseline_diff(hits, base):
-    """按 (文件, 中文名) 计数比对：多出即新增（红），少了只报消失（不红）。
-    Compare counts per (file, name): excess is new (red); fewer is reported as disappeared
-    (not red — a refactor and a blind judge must both be visible)."""
+    """按中文名计数（不是按「文件×名字」）：
+    Count per Chinese name (NOT per file×name):
+    - 基线外的新名、或同名计数增长 ⇒ 新增（红）/ a new name or growth ⇒ new (red);
+    - 同名计数减少 ⇒ 消失（不红，但要报）/ fewer ⇒ disappeared (reported, not red);
+    - 同名同数、只是换了文件或行号 ⇒ 位移（不红，只报）/ same count, different file or
+      line ⇒ movement (reported, not red)."""
     cur = {}
-    for f, _ln, n in hits:
-        cur[(f, n)] = cur.get((f, n), 0) + 1
+    for _f, _ln, n in hits:
+        cur[n] = cur.get(n, 0) + 1
     bas = {}
-    for key in base:
-        bas[key] = bas.get(key, 0) + 1
+    for _f, _ln, n in base:
+        bas[n] = bas.get(n, 0) + 1
     new = []
-    for key, count in cur.items():
-        extra = count - bas.get(key, 0)
+    for n, count in cur.items():
+        extra = count - bas.get(n, 0)
         if extra > 0:
-            lines = [ln for f, ln, n in hits if (f, n) == key]
-            new.extend((key[0], ln, key[1]) for ln in lines[-extra:])
-    gone = sum(max(0, c - cur.get(key, 0)) for key, c in bas.items())
-    return len(hits), len(base), new, gone
+            pos = [(f, ln) for f, ln, nn in hits if nn == n]
+            new.extend((f, ln, n) for f, ln in pos[-extra:])
+    gone = sum(max(0, c - cur.get(n, 0)) for n, c in bas.items())
+    moved = []
+    for n, c in cur.items():
+        if c != bas.get(n, 0):
+            continue
+        cur_pos = sorted((f, ln) for f, ln, nn in hits if nn == n)
+        bas_pos = sorted((f, ln) for f, ln, nn in base if nn == n)
+        if cur_pos != bas_pos:
+            moved.append((n, sorted({f for f, _ln in bas_pos}),
+                          sorted({f for f, _ln in cur_pos})))
+    return len(hits), len(base), new, gone, moved
 
 
 def _case_conf_alias_single(here):
@@ -5661,11 +5735,14 @@ def _case_conf_alias_single(here):
     a renamed dict, an indented class-body copy, a dict() call, or a copy in a subdirectory
     cannot hide — neither can renaming the variable."""
     print('  -- P0 归一表只许一张（字面量位置） --')
-    hits = _alias_table_hits(here, skip=(os.path.abspath(__file__),))
+    ok, ref_ok, ref_detail, hits = _alias_pair_verdict(
+        here, skip=(os.path.abspath(__file__),))
     detail = '；'.join('%s:%d %r→%r(%s)'
                       % (os.path.relpath(p, here), ln, k, v, how)
                       for p, ln, k, v, how in hits)
-    _ok('P0 中文别名映射字面量只出现在 conf_norm.py', not hits, detail or '命中 0')
+    _ok('P0 参照集非空：conf_norm 的别名表读得出中文键', ref_ok, ref_detail)
+    _ok('P0 中文键→正名字面量只出现在 conf_norm.py（正名不比对）', ok,
+        ref_detail if not ref_ok else (detail or '命中 0'))
     users = [f for f in ('daybook.py', 'daybook_multidx.py', 'volume_paths.py',
                          'orchestrator.py', 'mcp_tools.py')
              if os.path.exists(os.path.join(here, f))]
@@ -5697,78 +5774,124 @@ def _case_conf_alias_single(here):
     finally:
         shutil.rmtree(stage, ignore_errors=True)
         shutil.rmtree(clean, ignore_errors=True)
-    # 单点中文名：不判红，但按基线计数；超基线红，消失只报。
-    # Single-token Chinese names: not red by themselves, but counted against a baseline;
-    # over-baseline is red, disappearance is only reported.
+    # 反向自证：正名写错也必须红（名字对、正名错正是第二张表最危险的形态）。
+    # A wrong canonical must be red too: right key, wrong target is the dangerous second table.
+    wrong = tempfile.mkdtemp()
+    try:
+        shutil.copy2(os.path.join(here, 'conf_norm.py'), os.path.join(wrong, 'conf_norm.py'))
+        io.open(os.path.join(wrong, victim), 'w', encoding='utf-8').write(
+            text + '\n_LEGACY_X = {"二级": "levelX"}\n')
+        found = _alias_table_hits(wrong)
+        _ok('P0 反向自证：正名写错（"二级"→"levelX"）也判红',
+            len(found) == 1 and found[0][2] == '二级' and found[0][3] == 'levelX',
+            '命中=%d %s' % (len(found), [(os.path.basename(p), ln, k, v)
+                                         for p, ln, k, v, _how in found]))
+    finally:
+        shutil.rmtree(wrong, ignore_errors=True)
+    # 反向自证：三张表改注解赋值 ⇒ 参照集为空 ⇒ 判红，不许只报「消失 28」。
+    # AnnAssign turns the reference set empty; the judge must be red and say why.
+    stage3 = tempfile.mkdtemp()
+    try:
+        src = io.open(os.path.join(here, 'conf_norm.py'), encoding='utf-8').read()
+        for t in _ALIAS_TABLES:
+            src = re.sub(r'(?m)^%s = ' % t, '%s: dict = ' % t, src)
+        io.open(os.path.join(stage3, 'conf_norm.py'), 'w', encoding='utf-8').write(src)
+        ok3, ref3, det3, hits3 = _alias_pair_verdict(stage3)
+        _ok('P0 反向自证：三张表改注解赋值 ⇒ 判红且原因是「参照集为空」',
+            (not ok3) and (not ref3) and ('参照集为空' in det3),
+            '判红=%s；%s；命中=%d' % (not ok3, det3, len(hits3)))
+    finally:
+        shutil.rmtree(stage3, ignore_errors=True)
+    # 单点中文名：键是中文名（不是「文件×名字」）；超基线红，消失/位移只报。
+    # Single-token Chinese names: keyed by name (not file×name); over-baseline is red,
+    # disappearance and movement are reported only.
     base_path = os.path.join(here, _ALIAS_NAME_BASELINE)
-    name_hits = _alias_name_hits(here)
+    keys = {k for k, _v in _alias_pairs(here)}
+    name_ref_ok, name_ref_detail = _alias_ref_gate(keys)
+    name_hits = _alias_name_hits(here, keys=keys)
     base = _read_alias_baseline(base_path)
-    total, base_total, new_names, gone = _alias_baseline_diff(name_hits, base)
-    _ok('单点中文名 %d 处（基线 %d）｜新增 %d｜消失 %d'
-        % (total, base_total, len(new_names), gone), not new_names,
-        '新增=%s' % (['%s:%d %s' % (f, ln, n) for f, ln, n in new_names] or '[]'))
-    # 反向自证：塞一个新别名（"行号"）必红；拿掉代码里一处基线条目 ⇒ 绿但报消失 1。
-    # Reverse proofs: a new alias name ("行号") must be red; removing one baselined occurrence
-    # from the code must be green with "disappeared 1".
+    total, base_total, new_names, gone, moved = _alias_baseline_diff(name_hits, base)
+    if not name_ref_ok:
+        name_detail = name_ref_detail
+    elif new_names:
+        name_detail = '新增=%s' % (['%s:%d %s' % (f, ln, n) for f, ln, n in new_names])
+    elif moved:
+        name_detail = '位移=%s' % (['%s:%s→%s' % m for m in moved])
+    else:
+        name_detail = '新增=[]'
+    _ok('单点中文名 %d 处（基线 %d）｜新增 %d｜消失 %d｜位移 %d'
+        % (total, base_total, len(new_names), gone, len(moved)),
+        name_ref_ok and not new_names, name_detail)
+    # 反向自证三件：新名必红；纯跨文件迁移判绿只报位移；拿掉一处只报消失。
+    # Three reverse proofs: a new name is red; pure migration is green with movement only;
+    # one literal removed is green with one more disappearance.
     stage2 = tempfile.mkdtemp()
     base2 = tempfile.mkdtemp()
+    base3 = tempfile.mkdtemp()
     try:
-        # 整树拷贝，基线才和代码同域；只拷一个文件会把基线里其余 27 处算成「消失」。
-        # Copy the whole tree so the baseline and the code share one domain; copying a single
-        # file would make the other 27 baseline entries look "disappeared".
-        for dst in (stage2, base2):
-            for root, dirs, files in os.walk(here):
-                dirs[:] = [d for d in dirs if d != '__pycache__']
-                rel = os.path.relpath(root, here)
-                out = dst if rel == '.' else os.path.join(dst, rel)
-                if not os.path.isdir(out):
-                    os.makedirs(out)
-                for fn in files:
-                    shutil.copy2(os.path.join(root, fn), os.path.join(out, fn))
+        for dst in (stage2, base2, base3):
+            _copy_tree(here, dst)
         text = io.open(os.path.join(here, victim), encoding='utf-8').read()
         io.open(os.path.join(stage2, victim), 'w', encoding='utf-8').write(
-            text + '\n_LEGACY_LABEL = "行号"\n')
-        _t2, _b2, new2, _g2 = _alias_baseline_diff(
+            text + '\n_LEGACY_LABEL = "二级"\n')
+        _t2, _b2, new2, _g2, _m2 = _alias_baseline_diff(
             _alias_name_hits(stage2), _read_alias_baseline(
                 os.path.join(stage2, _ALIAS_NAME_BASELINE)))
-        _ok('P0 反向自证：塞入新别名 "行号" ⇒ 新增 1、判红',
-            len(new2) == 1 and new2[0][2] == '行号',
+        _ok('P0 反向自证：塞入基线外的新名 "二级" ⇒ 新增 1、判红',
+            len(new2) == 1 and new2[0][2] == '二级',
             '新增=%s' % (['%s:%d %s' % (f, ln, n) for f, ln, n in new2] or '[]'))
-        # 消失：同一份基线 + 代码里拿掉一处（'标题'），应比原地多报消失 1 且不红。
-        # 盒内基线本来就有一批「消失」（盒只装产品件），所以比的是相对增量，不是绝对 1。
-        # Disappearance: same baseline + one literal removed ⇒ one more "disappeared" than the
-        # untouched tree, and not red. A box already has baseline entries absent by design,
-        # so the assertion is relative, not absolute.
-        _t0, _b0, new0, gone0 = _alias_baseline_diff(
+        # 位移：同名从 A 文件挪到 B 文件，计数不变 ⇒ 不红，只报位移。
+        # Movement: one name moves from file A to file B with the same count ⇒ green, reported.
+        _t0, _b0, new0, gone0, _m0 = _alias_baseline_diff(
             _alias_name_hits(here), _read_alias_baseline(base_path))
-        pick = None
+        mig_name, mig_new, mig_gone, mig_moved = None, [], 0, []
         for f, ln, n in name_hits:
-            p = os.path.join(here, f)
-            if not os.path.isfile(p):
+            if not os.path.isfile(os.path.join(here, f)):
                 continue
-            lines = io.open(p, encoding='utf-8').read().split('\n')
-            pat = re.compile(r"(['\"])%s\1" % re.escape(n))
-            if ln - 1 < len(lines) and pat.search(lines[ln - 1]):
-                pick = (f, ln, lines, pat)
+            if not _drop_one_literal(base3, f, ln, n):
+                continue
+            dst = next((c for c in sorted(os.listdir(here))
+                        if c.endswith('.py') and c not in ('conf_norm.py', 'guard.py', f)
+                        and not c.startswith('.')), None)
+            if dst is None:
                 break
-        if pick is None:
+            io.open(os.path.join(base3, dst), 'a', encoding='utf-8').write(
+                '\n_LEGACY_LABEL = "%s"\n' % n)
+            _t4, _b4, mig_new, mig_gone, mig_moved = _alias_baseline_diff(
+                _alias_name_hits(base3), _read_alias_baseline(
+                    os.path.join(base3, _ALIAS_NAME_BASELINE)))
+            mig_name = n
+            break
+        _ok('P0 反向自证：纯跨文件迁移 ⇒ 判绿、只报位移',
+            mig_name is not None and not mig_new and mig_gone == gone0
+            and any(m[0] == mig_name for m in mig_moved),
+            '迁移=%s 新增=%d 消失=%d 位移=%s'
+            % (mig_name, len(mig_new), mig_gone,
+               [m[0] for m in mig_moved] or '[]'))
+        # 消失：同一份基线 + 代码里拿掉一处，应比原地多报消失 1 且不红。
+        # 盒内基线本来就有一批「消失」（盒只装产品件），所以比的是相对增量，不是绝对 1。
+        # Disappearance: one literal removed ⇒ one more "disappeared" than the untouched tree.
+        drop = None
+        for f, ln, n in name_hits:
+            if _drop_one_literal(base2, f, ln, n):
+                drop = (f, ln, n)
+                break
+        if drop is None:
             _ok('P0 反向自证：拿掉一处基线条目 ⇒ 无新增、消失 +1', False,
                 '找不到可改的基线条目')
         else:
-            f, ln, lines, pat = pick
-            lines[ln - 1] = pat.sub(lambda m: m.group(1) + '_x' + m.group(1),
-                                    lines[ln - 1], count=1)
-            io.open(os.path.join(base2, f), 'w', encoding='utf-8').write('\n'.join(lines))
-            _t3, _b3, new3, gone3 = _alias_baseline_diff(
+            f, ln, n = drop
+            _t3, _b3, new3, gone3, _m3 = _alias_baseline_diff(
                 _alias_name_hits(base2), _read_alias_baseline(
                     os.path.join(base2, _ALIAS_NAME_BASELINE)))
             _ok('P0 反向自证：拿掉一处基线条目 ⇒ 无新增、消失 +1',
                 not new3 and not new0 and gone3 == gone0 + 1,
-                '新增=%d 消失=%d（原地 %d→%d，改 %s:%d）'
-                % (len(new3), gone3, gone0, gone3, f, ln))
+                '新增=%d 消失=%d（原地 %d→%d，改 %s:%d %s）'
+                % (len(new3), gone3, gone0, gone3, f, ln, n))
     finally:
         shutil.rmtree(stage2, ignore_errors=True)
         shutil.rmtree(base2, ignore_errors=True)
+        shutil.rmtree(base3, ignore_errors=True)
 
 
 _HOME_STATIC = (('daybook.py', 'take_home('), ('daybook_append.py', 'take_home('),
