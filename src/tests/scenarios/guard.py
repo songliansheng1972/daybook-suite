@@ -6465,7 +6465,15 @@ def _audit_closure():
     print('  未解析边同名写能力函数（红，除非已豁免）共 %d 条' % len(hits))
     for f, fn, callee, line in hits:
         print('    %s:%d %s() callee=%s' % (f, line, fn, callee))
+    ro_all = sorted(k for k in cap if k in reg and k not in sites)
+    ro = [k for k in ro_all if reg[k][0] == 'other']
+    print('  闭包面补签（无直接写调用点）共 %d 条，其中 other 只读 %d 条'
+          % (len(ro_all), len(ro)))
+    for f, fn in ro:
+        print('    %s::%s  [%s] %s' % (f, fn, reg[(f, fn)][0], reg[(f, fn)][1]))
     print('  已签豁免 %d 条' % len(_CLOSURE_EXEMPT))
+    for (f, fn, callee), why in sorted(_CLOSURE_EXEMPT.items()):
+        print('    豁免 %s::%s.%s  %s' % (f, fn, callee, why))
     return 0
 
 
