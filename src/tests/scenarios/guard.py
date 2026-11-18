@@ -5516,6 +5516,34 @@ def _case_conf_dual_e2e(tmp):
                 os.path.isfile(os.path.join(orch, 'sub', '注册卷.txt'))))
 
 
+_ALIAS_TABLES = ('SEC_ALIAS', 'KEY_ALIAS', 'FIELD_ALIAS')
+
+
+def _case_conf_alias_single(here):
+    """P1 归一表只许一张：定义计数 > 1（或不在 conf_norm.py）即红。
+    P1 one normalisation table only: more than one definition (or one outside conf_norm.py) is red.
+    「我是唯一实现」被同一类证据打穿两次 ⇒ 声明不设防，计数才设防。
+    A declaration is not a guard; a count is."""
+    print('  -- P1 归一表只许一张（定义计数） --')
+    pat = re.compile(r'^(' + '|'.join(_ALIAS_TABLES) + r')\s*=')
+    found = {n: [] for n in _ALIAS_TABLES}
+    for fn in sorted(f for f in os.listdir(here) if f.endswith('.py')):
+        with io.open(os.path.join(here, fn), encoding='utf-8') as f:
+            for line in f:
+                m = pat.match(line)
+                if m:
+                    found[m.group(1)].append(fn)
+    bad = {n: files for n, files in found.items() if files != ['conf_norm.py']}
+    _ok('P1 归一表全仓各只定义一次（conf_norm.py）', not bad,
+        '；'.join('%s=%d 处 %s' % (n, len(found[n]), found[n]) for n in _ALIAS_TABLES))
+    users = [f for f in ('daybook.py', 'daybook_multidx.py', 'volume_paths.py',
+                         'orchestrator.py') if os.path.exists(os.path.join(here, f))]
+    lack = [f for f in users
+            if 'from conf_norm import' not in io.open(
+                os.path.join(here, f), encoding='utf-8').read()]
+    _ok('P1 归一表的消费者都 import 自 conf_norm', not lack, '缺少=%s' % lack)
+
+
 _HOME_STATIC = (('daybook.py', 'take_home('), ('daybook_append.py', 'take_home('),
                 ('daybook_hook.py', 'take_home('), ('mcp_server.py', 'take_home('),
                 ('orchestrator.py', "'--home'"))
@@ -7482,6 +7510,7 @@ def main():
         _case_root_matrix(work)
         _case_conf_dual(work)
         _case_conf_dual_e2e(work)
+        _case_conf_alias_single(os.path.dirname(SRC_BIN))
         _case_pad_notice(work)
         _case_write_paths(work)
         _case_home_flag(work)

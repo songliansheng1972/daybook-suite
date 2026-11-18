@@ -38,7 +38,7 @@ KEY_ALIAS = {
     '类': 'category', '标题': 'title', '作者': 'author',
 }
 FIELD_ALIAS = {
-    '卷': 'volume', '行号': 'line', '时间': 'time',
+    '卷': 'volume', '二级': 'level2', '行号': 'line', '时间': 'time',
     '类': 'category', '标题': 'title', '作者': 'author',
 }
 
@@ -52,6 +52,18 @@ KNOWN_SECTIONS = frozenset((
 class ConfError(Exception):
     """conf 归一/解析失败（零依赖异常；调用方转成自己的 ConfigError）。
     Conf normalisation/parse failure (zero-dependency; callers translate it to their ConfigError)."""
+
+
+def read_text(path):
+    """读 conf 文本；非 UTF-8 抛 ConfError（与解析错误同一出口，两包同一文案）。
+    Read conf text; a non-UTF-8 file raises ConfError through the same exit as parse errors, so
+    both packages print the same message instead of one wrapping a codec error."""
+    import io
+    try:
+        with io.open(path, encoding='utf-8') as f:
+            return f.read()
+    except UnicodeDecodeError as exc:
+        raise ConfError('daybook.conf 不是 UTF-8：%s' % exc)
 
 
 def canon_sec(name):

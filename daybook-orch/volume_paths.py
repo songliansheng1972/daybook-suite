@@ -82,13 +82,12 @@ def read_conf_sections_from(path):
     sections = {}
     if not path or not os.path.exists(path):
         return sections
-    from conf_norm import ConfError, parse_text
-    with io.open(path, encoding='utf-8') as f:
-        try:
-            sections, _content, _parsed = parse_text(f.read())
-        except ConfError as exc:
-            import errors
-            raise errors.ConfigError('%s（%s）' % (exc, path))
+    from conf_norm import ConfError, parse_text, read_text
+    try:
+        sections, _content, _parsed = parse_text(read_text(path))
+    except ConfError as exc:
+        import errors
+        raise errors.ConfigError('%s（%s）' % (exc, path))
     return sections
 
 

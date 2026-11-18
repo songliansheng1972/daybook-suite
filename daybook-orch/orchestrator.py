@@ -87,6 +87,9 @@ import secrets
 import sys
 import time
 from collections import namedtuple
+# 字段名归一与 conf 归一同一张表（conf_norm）：不许本件再自持第二张。
+# Field normalisation uses the one table in conf_norm: no second copy in this file.
+from conf_norm import canon_field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -129,13 +132,9 @@ def canon_rolespec(v):
 #   旧版 daybook_multidx 产出的目录表头为中文，升级后须照读 ⇒ 读表头时一律归一。
 #   Legacy multidx wrote a Chinese header; after the rename we must still read it,
 #   so every header cell is normalized on read.
-FIELD_ALIAS = {'卷': 'volume', '二级': 'level2', '行号': 'line', '时间': 'time',
-               '类': 'category', '作者': 'author', '标题': 'title'}
+#   表本身只有一张：conf_norm.FIELD_ALIAS（canon_field 自那里 import）。
+#   The table exists once: conf_norm.FIELD_ALIAS (canon_field is imported from there).
 
-
-def canon_field(name):
-    """字段名归一。Canonical field name."""
-    return FIELD_ALIAS.get(name, name)
 
 HEAD = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?)\]\s*(\[.*)$')
 BRK = re.compile(r'\[([^\]]*)\]')

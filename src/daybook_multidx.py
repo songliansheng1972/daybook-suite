@@ -48,18 +48,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ── 别名归一（唯一实现在 conf_norm·与 daybook 同一份）──
 # ── Alias normalisation (the one implementation lives in conf_norm · shared with daybook). ──
 from conf_norm import (FIELD_ALIAS, ConfError, canon_sec, canon_key, canon_field,
-                       parse_text)
+                       parse_text, read_text)
 
 
 # ── 配置读取（与 daybook.load_conf 同一份解析·不再自持第二套）──
 # ── Config reader (the same parse as daybook.load_conf; no second copy). ──
 def load_conf(path):
-    with io.open(path, encoding='utf-8') as f:
-        try:
-            sections, _content, _parsed = parse_text(f.read())
-        except ConfError as exc:
-            import errors
-            raise errors.ConfigError('%s（%s）' % (exc, path))
+    try:
+        sections, _content, _parsed = parse_text(read_text(path))
+    except ConfError as exc:
+        import errors
+        raise errors.ConfigError('%s（%s）' % (exc, path))
     return sections
 
 

@@ -231,7 +231,7 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   读成三包都成立。
 - **判据健康度**不看条数：属性层 P1–P10 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
   变异记分 `python3 src/tools/score.py` 打印 `变异 15 / 杀死 15 / 存活 0 / 死变异 0`，同一汇总行
-  紧跟 `闭包覆盖 932/2155 = 43%｜可能写缺口 316｜未登记 0｜同名红 0`，读「未登记 0」时必须
+  紧跟 `闭包覆盖 935/2159 = 43%｜可能写缺口 318｜未登记 0｜同名红 0`，读「未登记 0」时必须
   同时读覆盖率。杀死的判据不是「有 FAIL 就算」，而是**命中该变异声明的预期断言名**；
   死在别的断言、或只有运行异常，都记死变异，不算杀死。
   健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
@@ -248,7 +248,7 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 - **闭包面与覆盖率的诚实边界**：写能力函数＝传递地调用到账本写类别的第一方函数；源头是
   **所有已登记 `ledger`/`impl` 的函数本身**（签了这次写就等于承认有写能力），再加原语类别
   命中，不按结果 kind（`safe`）分层。`--audit-closure` 与本句同框打印
-  `闭包覆盖 932/2155 = 43%｜可能写缺口 316`；`tools/score.py` 的汇总行也带同一口径。
+  `闭包覆盖 935/2159 = 43%｜可能写缺口 318`；`tools/score.py` 的汇总行也带同一口径。
   **42% 是解析率，不是写表面闭合率**，残余三类必须在读数字时一起看：
   1. **属性/实例方法派发**：`obj.method()` 的接收者类型解析不到（属性类型、跨文件实例、
      容器里的实例），这些边进「未解析」，靠同名红兜底；
@@ -302,7 +302,9 @@ MCP 请求期的 `RuntimeError` 走 RPC 的 `ERR_INTERNAL_ERROR`，不映射为�
   （`conf_norm.py`；完整包 / `daybook-mcp` / `daybook-orch` 带同一份），节名键名统一
   `strip + lower + 中文别名`（`[volumes]` 的键是卷名，保留大小写，只 `strip`），因此
   `[索引]`、`[Index]`、`[ index ]`、`[INDEX]` 都解析成 `index`。归一后仍认不出的节名报
-  `ConfigError`（2），绝不静默降级成「没配置」。
+  `ConfigError`（2），绝不静默降级成「没配置」。conf **只支持整行 `#` 注释**，不支持行内注释
+  （`root=sub # 说明` 的整段都是值）；节名只认 `volumes`/`entries`/`rules`/`index`/`trigger`/
+  `multilevel`/`hooks` 及其中文别名。
   `daybook.conf` 整份不可解析时同样先抛 `ConfigError`（2）且零落盘，不会把 `root=''`
   回落成 conf 目录再继续写。`daybook_session_hook.py`（根固定为脚本目录）与
   `cross_ref.py`（按卷名解析）才是**conf 不参与根解析**的两个入口，坏 conf 下 rc=0 是设计。

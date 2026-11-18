@@ -29,6 +29,16 @@
 >    **MCP no longer starts sick**: an empty `[volumes]`, a volume pointing at a directory ⇒ exit 2
 >    at startup; a missing or unreadable volume ⇒ exit 5. Before, the server started and the first
 >    `tools/call` failed.
+> 4. **未识别节名现在报 2（相对旧解析器收紧）**。`[other]` 这类既不是认得的节、也不是注释的内容，
+>    旧解析器静默忽略，现在 `ConfigError`（2）并点名行号与节名。改法：改成 `volumes` / `entries` /
+>    `rules` / `index` / `trigger` / `multilevel` / `hooks`（或其中文别名），或直接删掉该节。
+>    **Unknown sections are now a config error (2)**: rename to a known section/alias or delete it.
+> 5. **不支持行内注释**。`root=sub  # 说明` 的整段 `sub  # 说明` 都是值，根不存在 ⇒ 2。
+>    注释必须整行以 `#` 开头。**Inline comments are not supported**: put `#` comments on their own
+>    line.
+> 6. **非 UTF-8 conf 两包同文案**：`daybook.conf 不是 UTF-8：…（路径）`，码 2。修前完整包带
+>    「配置错」前缀、orch 包直接抛 codec 错误。**A non-UTF-8 conf** now yields the same message and
+>    code in both packages instead of a codec error in one of them.
 >
 > ### ⚠ 退出码变更（对外契约，单列）· Exit-code changes (external contract)
 >
@@ -76,10 +86,18 @@
 - **P2 措辞**：`read_conf_value` 注释改为发行边界的实话（fallback 在，但归一逻辑一行都没有）。
 - **P1-3 P6 mcp 格分机制**：`root=sub` 的 mcp 格改用带 `[volumes]` 的 conf、卷不在 `sub/`
   ⇒ 5（证明根跟随 conf），空卷单列一格 ⇒ 2，两种机制不再读成同一种。
+- **P0 并表**：`orchestrator.py` 自持的 `FIELD_ALIAS` 删除，`canon_field` 改为
+  `from conf_norm import`；`'二级': 'level2'` 并入 `conf_norm.FIELD_ALIAS`（一处生效，
+  完整包 / mcp / orch 对同一列只有一种解读）。
+- **P1 判据**：guard 新增「归一表定义计数」——`SEC_ALIAS`/`KEY_ALIAS`/`FIELD_ALIAS` 在产物
+  目录各只许 1 处定义且必须在 `conf_norm.py`，消费者必须 `from conf_norm import`。
+- **P1 append 文案**：根解析（conf）提前到作者预检之前；坏 conf 下不再先预告「仍写入」再 rc=2。
+- **P2**：非 UTF-8 conf 两包统一走 `conf_norm.read_text`，同一文案、码 2；未识别节收紧与
+  「不支持行内注释」写进 ⚠ 升级前必读与 README。
 - **读数**：差分 20/20 两包同值；三类 conf 双包同根（`<conf>/sub`）同码 0；干净根
   `alarm` rc=0 且新增文件 `[]`；坏 conf `alarm` rc=2 零落盘；mcp 空卷 2 / 根跟随缺卷 5 /
-  `chmod 000` 5。源树 0 红 / 673 项；`daybook/` 盒 0 红 / 489 项；属性层全绿；变异 15/15；
-  闭包覆盖 932/2155 = 43%（可能写缺口 316）；三包 `--verify` 全同。
+  `chmod 000` 5。源树 0 红 / 675 项；`daybook/` 盒 0 红 / 489 项；属性层全绿；变异 15/15；
+  闭包覆盖 935/2159 = 43%（可能写缺口 318）；三包 `--verify` 全同。
 
 ### 复签不签（三续）：conf 语义唯一、三形态矩阵、session 拆格（2026-11-18）
 

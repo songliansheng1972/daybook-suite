@@ -156,6 +156,7 @@ DEFAULT_HEAD_REGEX = r'^(?:\[#\d+\][ ]*)?\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{
 # ★ The one implementation lives in conf_norm: the full package and the standalone
 #   daybook-orch package ship the same file; no other copy of the table exists.
 from conf_norm import (SEC_ALIAS, KEY_ALIAS, FIELD_ALIAS, ConfError, parse_text,
+                       read_text as _read_conf_text,
                        canon_sec as _canon_sec, canon_key as _canon_key,
                        canon_field as _canon_field)
 
@@ -287,8 +288,13 @@ def load_conf(path=None):
     Canonicalisation of Chinese legacy names happens here and nowhere else."""
     path = path or os.path.join(HERE, 'daybook.conf')
     base = os.path.dirname(os.path.abspath(path))
-    with io.open(path, encoding='utf-8') as f:
-        return parse_conf(f.read(), base, path)
+    try:
+        text = _read_conf_text(path)
+    except ConfError as exc:
+        # 与 volume_paths/conf_norm 同一文案：非 UTF-8 不再各包各说各话。
+        # Same message as volume_paths/conf_norm: a non-UTF-8 conf reads the same everywhere.
+        raise errors.ConfigError('%s（%s）' % (exc, path))
+    return parse_conf(text, base, path)
 
 
 # ── 字段抽取（客户可自定字段：字段名 = 规则）──

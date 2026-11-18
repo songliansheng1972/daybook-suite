@@ -30,13 +30,11 @@ Author ID iron rule: every entry must carry an author, auditable, verifiable and
 ★ 同卷口径机检：check_author_consistency() 只按 head_regex 锚定条目头，抓机器 id 与混用。
 ★ Per-volume convention check: check_author_consistency() anchors entry heads by head_regex only,
   and flags machine ids / mixed conventions.
-★ conf 边界（设计如此）：本件不解析 daybook.conf，只认账本根与目标卷文件。conf 写坏时
-  本件仍可能 rc=0 并追加成功；配置体检由 daybook.py index / daybook_record.py 负责
-  （它们对同一份坏 conf 按配置错 2 拒绝且零落盘）。
-★ conf boundary (by design): this file does not parse daybook.conf — it only knows the ledger
-  root and the target volume. A broken conf can therefore still append with rc=0; conf health is
-  owned by `daybook.py index` / `daybook_record.py` (both refuse a broken conf with code 2 and
-  land nothing).
+★ conf 边界：本件不解析整份 conf，但根仍走 ledger_root（与 daybook.py / MCP 同源）；
+  坏 conf ⇒ 配置错 2 且零落盘，不会回落 conf 目录继续写。
+★ conf boundary: this file does not parse the whole conf, but its root still comes from
+  ledger_root (shared with daybook.py / the MCP); a broken conf is a config error (2) and lands
+  nothing — it never falls back to writing beside the conf.
 """
 import io, os, re, sys, time
 
@@ -531,11 +529,13 @@ def _main():
         raise errors.ConfigError('作者必填：不许用空值/「未标」占位绕过作者口径')
     if not msg.strip():
         raise errors.ConfigError('空消息，未写')
+    # 先过 conf（根解析）：坏 conf 必须在任何「作者…仍写入」预告之前归 2。
+    # Resolve the root (conf) first: a broken conf must exit 2 before any "will write" notice.
+    root = _cli_root(_home)
     try:
         author_slot, author_id, unregistered = resolve_cli_author(author, path)
     except ValueError as exc:
         raise errors.ConfigError(str(exc))
-    root = _cli_root(_home)
     return append_one(path, kind, title, msg, author_slot,
                       author_id=author_id, unregistered=unregistered, root=root)
 
