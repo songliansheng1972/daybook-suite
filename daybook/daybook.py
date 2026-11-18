@@ -475,8 +475,8 @@ def _run_ops(ops, report=None, lr=None):
                     # Deleting a derived artifact is a ledger write too: same credential
                     # (dir_fd), so a renamed root cannot delete in the new root.
                     lr.unlink(lr.root.rel_of(p, 'daybook._run_ops.purge'))
-                except RuntimeError:
-                    pass
+                except RuntimeError as exc:
+                    errors.warn('daybook.purge 跳过 %s（%s）' % (p, exc))
         elif kind == 'cursor':
             _write_cursor(op[1], op[2], lr)
         elif kind == 'txt_from_tsv':
@@ -1143,8 +1143,8 @@ def _backup_copy(src, dst, lr):
         st = os.stat(src)
         lr.utime(lr.root.rel_of(dst, 'daybook._backup_copy.utime'),
                  (st.st_atime_ns, st.st_mtime_ns))
-    except (OSError, RuntimeError):
-        pass
+    except (OSError, RuntimeError) as exc:
+        errors.warn('daybook.backup.utime 跳过 %s（%s）' % (dst, exc))
 
 
 def _backup_locked(conf, root='.', lr=None):
@@ -1655,7 +1655,14 @@ def _main():
                 if hook:
                     import shlex as _shlex, subprocess as _sp
                     try:
-                        _sp.run(_shlex.split(hook), timeout=120)
+                        # 显式重定向：钩子输出仍可见，但不再继承父进程的任意 fd。
+                        # Explicit redirection: hook output stays visible without inheriting
+                        # arbitrary parent file descriptors.
+                        hr = _sp.run(_shlex.split(hook), timeout=120, stdout=_sp.PIPE,
+                                     stderr=_sp.STDOUT, universal_newlines=True)
+                        if hr.stdout:
+                            print(hr.stdout, end='' if hr.stdout.endswith('\n') else '\n',
+                                  flush=True)
                     except Exception as he:
                         print('  变动令失败：%s' % he, flush=True)
                 last = cur

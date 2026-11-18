@@ -71,6 +71,36 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
    mcp 23/23、orch 全绿。
 
+### 复签补轮四：审计改为「发现先于归类」，记分板精确断言（2026-11-18）
+
+1. **审计发现口径反转**：此前 `_scan_write_sites` 只把「算得出写类别」的函数放进 `sites`，
+   `os.mknod` 这类没登记类别的函数根本不进待检集合，四道闸都看不见。现在扫描返回**全部
+   函数树**，`_write_violations` 对每个被扫文件的**每个函数**先做 `os.*` 全集检查，再查
+   非 `os` 写 API；是否在 `sites` 与是否登记都不影响可见性。自证已改走真实入口
+   `_scan_write_sites → trees/sites`：`os.mknod` 不在 `sites` 里仍被判红。
+2. **非 os 写 API 补全并逐条自证**：`shutil.move/rmtree/chown`；
+   `Path.mkdir/unlink/rmdir/chmod/touch/rename/replace/open('w')`；`ctypes`；
+   无重定向 `subprocess`；`open` 模式变量；第三方库 import。每条在合成产品件里单独
+   触发一次并打印一条 `P0 自证：… ⇒ 红`；`Path.open` 的 8 个方法各自判红。
+3. **间接派发在产件内一律红**：`o = os` 模块别名、被调用的 `getattr(模块, 名)`、
+   `__import__`、含写原语的字典派发、`open` 的非常量模式；`Path(p).open('w')` 同样
+   计入。`hub.open()` 这类普通方法不再被误当成内建 `open`，`getattr(os,'O_DIRECTORY',0)`
+   这类常量读取也不再误报。
+4. **产品件第三方库**：import 只允许标准库、本地件与同仓兄弟包（`mcp_server`/
+   `orchestrator` 等），其余判红；盒内缺兄弟包也不会误报。
+5. **记分板改精确匹配**：`score.py` 只有失败断言名**完全等于**声明才记 killed；
+   `run_all.py --audit-names` 校验每个属性件内断言名唯一（P1 两处失败分支已改名），
+   `score.py` 启动先跑该审计，重名直接拒绝记分。
+6. **Windows 失败可见**：`daybook._run_ops.purge`、`_backup_copy` 的时间戳、
+   `Registry.register` 的 chmod 三处 best-effort 不再 `pass`，统一走 `errors.warn`；
+   W1 增加 `mkdir/mkdirs/mkdirs_path/chmod/unlink/utime` 六个原语在 `_WINDOWS=True`
+   下必须 `RuntimeError` 的断言；文档写明 Windows 上 `build/backup/record/register` 不可用。
+7. **盒产物边界**：只有 `daybook/` 盒自带 `ledger_guard_test.py`；`daybook-mcp/`、
+   `daybook-orch/` 盒内无判据，只由 `pack --verify` 保证同源，README 已明确。
+8. **本轮读数**：源树 `0 红 / 536 项（跳过 22）`；`daybook/` 盒 `0 红 / 416 项（跳过 45）`；
+   属性 P1–P10 全绿；`变异 14 / 杀死 14 / 存活 0 / 死变异 0`；三包 `--verify` rc=0；
+   mcp 23/23、orch 全绿。
+
 ### 复签补轮三：权限/删除/时间戳同属一个写能力，记分板校验断言名（2026-11-18）
 
 1. **`Registry.register` 的权限收紧回到凭证内**：`agent_registry.py` 原在锁外用

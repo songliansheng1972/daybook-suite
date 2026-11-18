@@ -199,7 +199,9 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 调用点用 `held(root)` 取回本线程持有的同一凭证；没有任何模块级写原语，也没有「不取锁的
 原子替换」这种旁路。追加（可创建 / 必须已存在）与原子替换是同一个 `write` 的三种
 `WriteMode`，不再各有一套实现。目录/权限/删除/时间戳只有 POSIX `dir_fd` 实现：Windows
-调用会显式 `RuntimeError`，不提供按路径回退（追加/替换在 Windows 有独立分支）。
+调用会显式 `RuntimeError`，不提供按路径回退（追加/替换在 Windows 有独立分支）。因此
+**Windows 上 `build` / `backup` / `record` / `register` 不可用**；这三处 best-effort 失败
+（`purge`/备份时间戳/注册卷 chmod）改为 `errors.warn`，不再静默吞掉。
 
 互斥范围是**整个账本根**，不是卷、不是任务、也不是 `AgentLock.acquire()` 的那个标签字符串。
 锁的身份是账本根目录的 **inode**（`st_dev, st_ino`），不是路径字符串——大小写、尾斜杠、软链、
@@ -214,22 +216,28 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   上测得 1.42s）。也就是说：**同一账本根上的取锁写只会排队，不会并行**；写入越重，后来者
   等得越久。
 - **判据计数**只引用判据打印的「项」值（=PASS+FAIL 行数），条数只作参考。本轮实测：
-  源树 `0 红 / 511 项（PASS 511；跳过 22 项）`；`daybook/` 盒 `0 红 / 391 项（PASS 391；
+  源树 `0 红 / 536 项（PASS 536；跳过 22 项）`；`daybook/` 盒 `0 红 / 416 项（PASS 416；
   跳过 45 项）`。盒内项数较少不是漏跑：盒只收起居注产品件与随包测试，缺 mcp／orch 两包、
   `agent_lock.py`、`pack.py` 等，依赖它们的判据逐条打印 `[跳过]` 与原因、不进「项」计数；
   其余少掉的项来自按文件集扫描的判据（如 AH 登记条目）随文件数变化。所有场合只报打印值，
   不手写换算。
+- **只有 `daybook/` 盒自带判据**（`ledger_guard_test.py`）。`daybook-mcp/`、`daybook-orch/`
+  盒内没有自带判据，它们与源树同源只由 `pack --verify` 逐字节保证；不要把「盒内可自证」
+  读成三包都成立。
 - **判据健康度**不看条数：属性层 P1–P10 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
   变异记分 `python3 src/tools/score.py` 打印 `变异 14 / 杀死 14 / 存活 0 / 死变异 0`。杀死的判据不是「有 FAIL 就算」，而是**命中该变异声明的预期断言名**；
   死在别的断言、或只有运行异常，都记死变异，不算杀死。
   健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
   `src/tests/scenarios/guard.py`（盒内仍叫 `ledger_guard_test.py`，命令不变）。
-- **写原语按系统调用类别穷举**（AH）：所有能改动账本根内文件系统状态的类别
-  （`open`/`os.open`/`replace`/`mkdir`/`chmod`/`utime`/`unlink`/`fsync`/`temp`/`subproc`…）
-  都在声明表 `_MUTATOR_OWNER` 里有唯一归属：`LockedRoot`、`safeio` 实现内、随包测试、
-  或 `impossible`。观测到未登记类别、账本桶裸调、产品件出现 `impossible` 类别、或账本桶里
-  出现未归类的 `os.*`，AH 一律判红；新增一种名字而不登记，下一次跑判据就会红，所以同一类
-  问题不会以「第五种名字」复活。P10 同时覆盖 `build`、`backup`、`record` 三条换根路径。
+- **写原语按系统调用类别穷举**（AH），且**发现先于归类**：先对每个被扫文件的**每个函数**
+  扫 `os.*` 全集与全部非 `os` 写 API（`shutil.move/rmtree/chown`、`Path.mkdir/unlink/rmdir/
+  chmod/touch/rename/replace/open`、`ctypes`、无重定向 `subprocess`），再判定类别。算不出
+  类别的函数不会因为「没进 sites」而消失。所有类别在 `_MUTATOR_OWNER` 里有唯一归属：
+  `LockedRoot`、`safeio` 实现内、随包测试、或 `impossible`。未登记类别、账本桶裸调、
+  产品件出现 `impossible` 类别、未知 `os.*`、产品件的间接派发（`getattr` 调用派发、
+  `__import__`、含写原语的字典派发、`o = os` 别名）与 `open` 模式变量，AH 一律判红。
+  产品件还禁止第三方库 import。新增一种名字而不登记，下一次跑判据就会红。P10 同时覆盖
+  `build`、`backup`、`record` 三条换根路径。
 - **统一退出码入口只有 8 个**：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、
   `daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、
   `cross_ref.py`；P6 的 8×7 矩阵只对这张清单负责。`agent_*`、`task_volume.py`、

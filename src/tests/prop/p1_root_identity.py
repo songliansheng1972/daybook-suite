@@ -70,7 +70,7 @@ def run(seed=7, mode='const'):
                 check('P1 同一 inode 另一写法 ⇒ 同线程立即 RuntimeError',
                       got == 'runtime', 'got=%s %.3fs' % (got, time.time() - t0))
             except Exception as exc:                       # M1：释放键与获取键不一致
-                check('P1 同一 inode 另一写法 ⇒ 同线程立即 RuntimeError', False,
+                check('P1 同一 inode 另一写法 ⇒ 锁释放/获取未抛 RuntimeError', False,
                       '锁释放/获取异常：%s' % (exc,))
 
             # 释放后可再次取得（锁状态没有泄漏）
@@ -82,7 +82,7 @@ def run(seed=7, mode='const'):
                     ok = ok and True
                 check('P1 释放后可再次取锁（无泄漏）', ok)
             except Exception as exc:
-                check('P1 释放后可再次取锁（无泄漏）', False, repr(exc))
+                check('P1 释放后再次取锁异常（无泄漏）', False, repr(exc))
 
             # 换根：先开根、后换名，写必须落旧 inode
             old = os.path.join(base, 'old')

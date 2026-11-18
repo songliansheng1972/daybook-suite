@@ -79,7 +79,7 @@ def _score_one(mut_id, expect_override=None, check_override=None):
             names = _fail_names(out)
             crash = [n for n in names if '运行异常' in n]
             normal = [n for n in names if '运行异常' not in n]
-            hit = [n for n in normal if expect_check and expect_check in n]
+            hit = [n for n in normal if expect_check and n == expect_check]
             if hit:
                 return 'killed', '期望属性 %s 红，命中预期断言「%s」（rc=%d）' % (
                     expect, hit[0][:100], rc)
@@ -130,6 +130,14 @@ def main(argv):
     args = ap.parse_args(argv)
     if args.self_check:
         return self_check()
+    run_all = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           'tests', 'prop', 'run_all.py')
+    rc = subprocess.run([sys.executable, '-B', run_all, '--audit-names'],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        universal_newlines=True)
+    if rc.returncode != 0:
+        print(rc.stdout.strip())
+        return 2
 
     ids = [args.only] if args.only else [m['id'] for m in mutate.MUTATIONS]
     bad_ids = [i for i in ids if i not in mutate.BY_ID]

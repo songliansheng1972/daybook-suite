@@ -19,6 +19,13 @@ severity; no entry ever prints a traceback.
 """
 import sys
 
+
+def warn(msg):
+    """best-effort 失败必须可见：统一告警出口（stderr，不改退出码）。
+    A best-effort failure must stay visible: the one warning exit (stderr, never changes rc)."""
+    sys.stderr.write('warning: %s\n' % msg)
+
+
 CONFIG = 2
 VIOLATION = 3
 AUTHOR = 4

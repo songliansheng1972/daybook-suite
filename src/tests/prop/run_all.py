@@ -11,6 +11,9 @@ Property-layer entry: P1–P10 (step 5)
 退出码：0=全绿 1=有红。机器可读行：`PROP P# PASS|FAIL`。
 """
 import argparse
+import ast
+import io
+import os
 import sys
 import traceback
 
@@ -30,12 +33,42 @@ MODULES = [
 ]
 
 
+def check_names_unique():
+    """每个属性件里的断言名必须唯一（score 按名字精确匹配失败原因）。
+    Assertion names must be unique per property file (score matches failure names exactly)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    bad = []
+    for tag, modname in MODULES:
+        tree = ast.parse(io.open(os.path.join(here, modname + '.py'),
+                                 encoding='utf-8').read())
+        names = []
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) \
+                    and n.func.id == 'check' and n.args:
+                a = n.args[0]
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    names.append(a.value)
+        dup = sorted({x for x in names if names.count(x) > 1})
+        if dup:
+            bad.append((tag, dup))
+    return bad
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('--seed', type=int, default=7)
     ap.add_argument('--mode', default='const', choices=('const', 'random', 'shuffle'))
     ap.add_argument('--only', default='', help='只跑指定属性，如 P1 或 P1,P2')
+    ap.add_argument('--audit-names', action='store_true',
+                    help='只校验断言名唯一性')
     args = ap.parse_args(argv)
+    dup = check_names_unique()
+    if dup:
+        print('断言名重复（要求唯一）：%s' % dup)
+        return 1
+    if args.audit_names:
+        print('断言名唯一 ✓')
+        return 0
     want = {s.strip().upper() for s in args.only.split(',') if s.strip()}
     print('=== 属性层 · seed=%d mode=%s 只跑=%s ==='
           % (args.seed, args.mode, ','.join(sorted(want)) or '全部'))

@@ -123,10 +123,12 @@ WRITE_PATHS = (
     ('mcp_p0_regression.py', 'test_zero_bytecode', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_p0_regression.py', 'test_empty_volumes_warns', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_p0_regression.py', 'mk', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_p0_regression.py', 'main', 'other', '随包测试：rmtree 只清 tempfile 目录'),
     ('mcp_resources.py', '_audit', 'ledger', '账本内容/派生件'),
     ('mcp_test.py', '_setup_tmp_root', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_test.py', 'test_daybook_index', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_test.py', 'test_subscribe_push', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_test.py', 'main', 'other', '随包测试：rmtree 只清 tempfile 目录'),
     ('mcp_tools.py', '_wal', 'ledger', '账本内容/派生件（临界区内复用 held）'),
     ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', '_write_fixture', 'ledger', '随包测试夹具卷（REPLACE）'),
@@ -140,7 +142,11 @@ WRITE_PATHS = (
     ('orch_fixes_test.py', 'test_identity_signature', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_root_resolution', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_single_pass_reads', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_read_locking', 'other', '随包测试：rmtree 只清 tempfile 目录'),
+    ('orch_fixes_test.py', 'test_verify_requires_baseline', 'other',
+     '随包测试：rmtree 只清 tempfile 目录'),
     ('orch_mutation_check.py', 'make_mutant', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_mutation_check.py', 'main', 'other', '随包测试：rmtree 只清 tempfile 目录'),
     ('orch_perf_bench.py', 'build_dataset', 'ledger', '随包压测夹具卷（REPLACE）'),
     ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包压测：目标由 tempfile 生成'),
     ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
@@ -188,8 +194,33 @@ _MUTATOR_CALLS = {
     'os.truncate': 'truncate', 'os.ftruncate': 'truncate',
     'os.fsync': 'fsync', 'os.fdatasync': 'fsync',
     'os.utime': 'utime',
+    'os.write': 'osopen', 'os.pwrite': 'osopen', 'os.writev': 'osopen',
     'os.setxattr': 'xattr', 'os.removexattr': 'xattr',
 }
+# 非 os 的写 API：逐条映射到已有类别（Path 方法按语义映射）。
+# Non-os write APIs: each maps to an existing category (Path methods by semantics).
+_NONOS_CALLS = {
+    'shutil.move': 'replace',
+    'shutil.rmtree': 'rmtree',
+    'shutil.chown': 'chown',
+    'shutil.copy': 'copy', 'shutil.copy2': 'copy',
+    'shutil.copyfile': 'copy', 'shutil.copytree': 'copy',
+}
+_PATH_METHOD_KINDS = {
+    'mkdir': 'mkdir', 'unlink': 'unlink', 'rmdir': 'unlink',
+    'chmod': 'chmod', 'touch': 'utime',
+    'rename': 'replace', 'replace': 'replace',
+}
+_IMPORT_MODULES = ('os', 'shutil', 'pathlib', 'subprocess', 'ctypes')
+# 同一仓内的兄弟包模块（盒内可能不在本包，但仍是第一方，不是第三方库）。
+# Sibling first-party modules (may live in another box; still first-party, not third-party).
+_FIRST_PARTY_MODULES = frozenset({
+    'daybook', 'daybook_append', 'daybook_hook', 'daybook_multidx',
+    'daybook_record', 'daybook_session_hook', 'errors', 'ledger_root', 'safeio',
+    'agent_registry', 'agent_heartbeat', 'agent_lock', 'agent_message',
+    'cross_ref', 'mcp_prompts', 'mcp_resources', 'mcp_server', 'mcp_subscribe',
+    'mcp_tools', 'mcp_transport', 'orchestrator', 'task_volume', 'volume_paths',
+})
 _MUTATOR_OWNER = {
     'open': 'LockedRoot',
     'osopen': 'LockedRoot',
@@ -199,6 +230,12 @@ _MUTATOR_OWNER = {
     'utime': 'LockedRoot',
     'copy': 'LockedRoot',
     'unlink': 'LockedRoot|temp',
+    'rmtree': 'LockedRoot|temp',
+    'ctypes': 'impossible',
+    'subproc_raw': 'impossible',
+    'mode_var': 'impossible',
+    'indirect': 'impossible',
+    'foreign': 'impossible',
     'chown': 'impossible',
     'link': 'impossible',
     'truncate': 'impossible',
@@ -219,10 +256,12 @@ _OTHER_PARAM_EXEMPT = {
 }
 _OS_LEDGER_READONLY = frozenset({
     'open', 'close', 'read', 'pread', 'lseek', 'dup', 'stat', 'lstat', 'fstat',
-    'listdir', 'scandir', 'walk', 'getcwd', 'getpid', 'getenv', 'urandom',
+    'listdir', 'scandir', 'walk', 'getcwd', 'chdir', 'getpid', 'getenv', 'urandom',
     'fspath', 'fsencode', 'fsdecode', 'path', 'name', 'sep', 'altsep', 'curdir',
     'pardir', 'linesep', 'environ', 'get_inheritable', 'set_inheritable',
-    'access', 'readlink', 'isatty', 'terminal_size', 'cpu_count',
+    'access', 'readlink', 'isatty', 'terminal_size', 'get_terminal_size',
+    'cpu_count', 'pathconf', 'statvfs', 'getuid', 'geteuid', 'getgid', 'getegid',
+    'umask', 'kill', 'waitpid', 'fork', 'getppid', 'getloadavg', 'uname',
 })
 
 
@@ -769,13 +808,15 @@ def _find_func(tree, name):
     return None
 
 
-def _scan_write_sites(d):
-    """按包装清单扫产品件与随包脚本，返回 (扫过的件, {(文件,函数): 写种类集合}, {文件: AST})。
-    Scan the shipped product/aux files from the pack manifest; return (files, sites, trees).
-    别名会还原成原名；覆盖 open 写模式、os.open 写标志、os.replace/rename、
-    shutil.copy*、Path.write_text/bytes、tempfile、subprocess 重定向。
-    Aliases are resolved; covers open write modes, os.open write flags, os.replace/rename,
-    shutil.copy*, Path.write_text/bytes, tempfile and subprocess redirection."""
+def _scan_write_sites(d, extra=(), product_extra=()):
+    """按包装清单扫产品件与随包脚本，返回 (文件, sites, AST, 产品件集合)。
+    Scan shipped product/aux files; return (files, sites, trees, product_files).
+    发现先于归类：`sites` 只记录“算得出写类别”的函数；**看不到类别的函数仍在 trees 里**，
+    由 `_write_violations` 的全函数 `os.*`/非 os API 检查兜住。
+    Discovery precedes classification: `sites` only holds functions whose write kind could be
+    computed; functions with no computable kind remain in `trees` and are covered by
+    `_write_violations` (all-function os.* / non-os API scan)."""
+    product = set()
     try:
         if d not in sys.path:
             sys.path.insert(0, d)
@@ -784,6 +825,7 @@ def _scan_write_sites(d):
         for spec in PACKAGES.values():
             names.update(spec.get('prog', []))
             names.update(spec.get('prog_aux', []))
+            product.update(spec.get('prog', []))
         scan = [n for n in sorted(names)
                 if n.endswith('.py') and n not in _WRITE_SKIP
                 and os.path.exists(os.path.join(d, n))]
@@ -791,6 +833,11 @@ def _scan_write_sites(d):
         scan = [n for n in sorted(os.listdir(d))
                 if n.endswith('.py') and n not in _WRITE_SKIP
                 and not n.endswith('_test.py')]
+        product = set(scan)
+    for n in extra:
+        if n.endswith('.py') and n not in scan and os.path.exists(os.path.join(d, n)):
+            scan.append(n)
+    product |= {n for n in product_extra if n in scan}
     files, sites, trees = [], {}, {}
     for fn in scan:
         try:
@@ -806,15 +853,15 @@ def _scan_write_sites(d):
             kinds = _kinds_in_func(node, al)
             if kinds:
                 sites[(fn, node.name)] = kinds
-    return files, sites, trees
+    return files, sites, trees, product & set(files)
 
 
 _MUTATOR_ATTRS = {k.split('.', 1)[1] for k in _MUTATOR_CALLS}
 
 
 def _unclassified_os(node, al):
-    """账本桶函数里既不是已登记写原语、也不在只读白名单的 os.* 调用。
-    os.* calls in a ledger-bucket function that are neither declared mutators nor read-only."""
+    """既不是已登记写原语、也不在只读白名单的 os.* 调用（任意函数）。
+    os.* calls that are neither declared mutators nor on the read-only allowlist (any function)."""
     out = []
     for sub in ast.walk(node):
         if not isinstance(sub, ast.Call):
@@ -829,15 +876,103 @@ def _unclassified_os(node, al):
     return out
 
 
+def _path_bound_names(node, al):
+    """函数内由 Path(...) 赋值的局部名。Local names assigned from Path(...)."""
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) \
+                and _resolve_callee(n.value.func, al).split('.')[-1] == 'Path':
+            for tgt in n.targets:
+                if isinstance(tgt, ast.Name):
+                    out.add(tgt.id)
+    return out
+
+
+def _mode_value(node, positional=1):
+    v = node.args[positional] if len(node.args) > positional else None
+    for kw in node.keywords:
+        if kw.arg == 'mode':
+            v = kw.value
+    return v
+
+
+def _mode_is_var(node, positional=1):
+    v = _mode_value(node, positional)
+    return v is not None and not (isinstance(v, ast.Constant) and isinstance(v.value, str))
+
+
+def _mode_writes(node, positional):
+    v = _mode_value(node, positional)
+    return isinstance(v, ast.Constant) and isinstance(v.value, str) \
+        and any(c in v.value for c in 'wax+')
+
+
+def _is_builtin_open(sub, al):
+    """只有内建 open / io.open 才算，`hub.open()` 这类方法不算。
+    Only builtin open / io.open counts; method calls such as `hub.open()` do not."""
+    return isinstance(sub.func, ast.Name) \
+        and _resolve_callee(sub.func, al) in ('open', 'io.open')
+
+
+def _path_call_kind(sub, al, bound):
+    """Path 写方法 → 现有类别；open 的模式是变量 ⇒ mode_var。"""
+    f = sub.func
+    if not isinstance(f, ast.Attribute):
+        return None
+    recv = f.value
+    is_path = bool(
+        (isinstance(recv, ast.Call)
+         and _resolve_callee(recv.func, al).split('.')[-1] == 'Path')
+        or (isinstance(recv, ast.Name) and recv.id in bound))
+    if not is_path:
+        return None
+    if f.attr in _PATH_METHOD_KINDS:
+        return _PATH_METHOD_KINDS[f.attr]
+    if f.attr == 'open':
+        if _mode_is_var(sub, 0):
+            return 'mode_var'
+        return 'open' if _mode_writes(sub, 0) else None
+    if f.attr in ('write_text', 'write_bytes'):
+        return 'open'
+    return None
+
+
+def _subproc_kind(sub, t):
+    """只认 subprocess.*（含别名），且只在没有重定向时判 raw。"""
+    if t.split('.')[0] != 'subprocess':
+        return None
+    last = t.split('.')[-1]
+    if last not in ('run', 'Popen', 'call', 'check_call', 'check_output'):
+        return None
+    red = [kw for kw in sub.keywords
+           if kw.arg in ('stdout', 'stderr', 'capture_output')]
+    if not red:
+        return 'subproc_raw'
+    for kw in red:
+        if kw.arg == 'capture_output':
+            continue
+        v = kw.value
+        if isinstance(v, ast.Constant):
+            continue
+        if isinstance(v, ast.Attribute) and v.attr in ('PIPE', 'DEVNULL', 'STDOUT'):
+            continue
+        return 'subproc'
+    return None
+
+
 def _kinds_in_func(node, al):
     """一个函数体内的写类别集合（scan 与自证共用同一实现）。
     Kinds of writes inside one function (shared by the scan and the self-check)."""
     kinds = set()
+    bound = _path_bound_names(node, al)
     for sub in ast.walk(node):
         if not isinstance(sub, ast.Call):
             continue
         t = _resolve_callee(sub.func, al)
-        if t in _WRITE_SAFE:
+        pk = _path_call_kind(sub, al, bound)
+        if pk:
+            kinds.add(pk)
+        elif t in _WRITE_SAFE:
             kinds.add('safe')
         elif (isinstance(sub.func, ast.Attribute)
               and sub.func.attr in ('write', 'update', 'mkdir', 'mkdirs',
@@ -846,49 +981,247 @@ def _kinds_in_func(node, al):
               and sub.func.value.id in ('lr', '_lr', 'locked_root')):
             kinds.add('safe')
         elif t in _MUTATOR_CALLS:
-            # 所有改动文件系统状态的原语都按类别记账（目录、权限、删除、截断…），
-            # 归属见 _MUTATOR_OWNER；账本桶里出现非 safe 即红。
-            # Every filesystem-mutating primitive is recorded by category; ownership
-            # lives in _MUTATOR_OWNER and a non-safe kind in a ledger bucket is red.
             kinds.add(_MUTATOR_CALLS[t])
-        elif t in ('shutil.copy', 'shutil.copy2', 'shutil.copyfile',
-                   'shutil.copytree'):
-            kinds.add('copy')
-        elif t in ('open', 'io.open') and _open_mode_writes(sub):
-            kinds.add('open')
+        elif t in _NONOS_CALLS:
+            kinds.add(_NONOS_CALLS[t])
+        elif _is_builtin_open(sub, al):
+            if _mode_writes(sub, 1):
+                kinds.add('open')
         elif t == 'os.open' and _osopen_writes(sub):
-            kinds.add('osopen')
-        elif t in ('os.write', 'os.pwrite', 'os.writev'):
             kinds.add('osopen')
         elif t in _WRITE_TEMP:
             kinds.add('temp')
         elif isinstance(sub.func, ast.Attribute) \
                 and sub.func.attr in ('write_text', 'write_bytes'):
             kinds.add('open')
-        elif t.split('.')[-1] in ('run', 'Popen', 'call', 'check_call',
-                                  'check_output'):
-            for kw in sub.keywords:
-                if kw.arg in ('stdout', 'stderr'):
-                    v = kw.value
-                    if isinstance(v, ast.Constant):
-                        continue
-                    if isinstance(v, ast.Attribute) \
-                            and isinstance(v.value, ast.Name) \
-                            and v.value.id == 'subprocess':
-                        continue
-                    kinds.add('subproc')
+        elif _subproc_kind(sub, t) == 'subproc':
+            kinds.add('subproc')
     return kinds
+
+
+def _module_alias_binds(node, al):
+    """`o = os` / `f = os.mknod` 这类间接绑定（产品件禁用）。
+    Indirect bindings such as `o = os` / `f = os.mknod` (banned in product code)."""
+    out = []
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Assign):
+            continue
+        v = n.value
+        if isinstance(v, ast.Name):
+            o = al.get(v.id)
+            if o and o[0] == 'mod' and o[1].split('.')[0] in _IMPORT_MODULES:
+                out.append('bind-module:%s' % v.id)
+        elif isinstance(v, ast.Attribute):
+            t = _resolve_callee(v, al)
+            if t in _MUTATOR_CALLS or t in _NONOS_CALLS or t.startswith('ctypes.'):
+                out.append('bind-fn:%s' % t)
+    return out
+
+
+_P0_PROBE = '''\
+import os, shutil, subprocess, ctypes
+from pathlib import Path
+
+MODE = "w"
+
+
+def f_os_mknod(p):
+    os.mknod(p)
+
+
+def f_sh_move(a, b):
+    shutil.move(a, b)
+
+
+def f_sh_rmtree(d):
+    shutil.rmtree(d)
+
+
+def f_sh_chown(p):
+    shutil.chown(p, user="u")
+
+
+def f_path_mkdir(p):
+    Path(p).mkdir()
+
+
+def f_path_unlink(p):
+    Path(p).unlink()
+
+
+def f_path_rmdir(p):
+    Path(p).rmdir()
+
+
+def f_path_chmod(p):
+    Path(p).chmod(0o600)
+
+
+def f_path_touch(p):
+    Path(p).touch()
+
+
+def f_path_rename(p):
+    Path(p).rename(p)
+
+
+def f_path_replace(p):
+    Path(p).replace(p)
+
+
+def f_path_open(p):
+    Path(p).open("w")
+
+
+def f_path_modevar(p):
+    Path(p).open(MODE)
+
+
+def f_alias(p):
+    o = os
+    o.mknod(p)
+
+
+def f_getattr(p):
+    getattr(os, "mknod")(p)
+
+
+def f_import(p):
+    __import__("os").mknod(p)
+
+
+def f_dispatch(p):
+    {"mknod": os.mknod}["mknod"](p)
+
+
+def f_modevar(p):
+    open(p, MODE)
+
+
+def f_ctypes(p):
+    ctypes.CDLL("libc").open(p)
+
+
+def f_subproc(p):
+    subprocess.run(["rm", p])
+'''
+
+
+def _expr_has_mutator(node, al):
+    """表达式里是否夹带写原语（用于识别字典派发/别名表）。
+    Whether an expression carries a write primitive (dict dispatch / alias tables)."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute):
+            t = _resolve_callee(sub, al)
+            if t in _MUTATOR_CALLS or t in _NONOS_CALLS or t.startswith('ctypes.'):
+                return True
+        elif isinstance(sub, ast.Name):
+            o = al.get(sub.id)
+            if o and o[0] == 'mod' and o[1].split('.')[0] in _IMPORT_MODULES:
+                return True
+    return False
+
+
+def _mutator_bind_names(node, al):
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Assign) and _expr_has_mutator(n.value, al):
+            for tgt in n.targets:
+                if isinstance(tgt, ast.Name):
+                    out.add(tgt.id)
+    return out
+
+
+def _write_violations(trees, product):
+    """发现先于归类：先扫**每个函数的全部调用**，再判定类别/归属。
+    Discovery before classification: scan **all calls in every function**, then classify.
+    返回 {规则: [(文件, 函数, 详情)]}；规则不依赖 `sites`（算不出类别的函数也在内）。
+    Returns {rule: [(file, function, detail)]}; rules do not depend on `sites`."""
+    v = {'unknown_os': [], 'nonos': [], 'indirect': [], 'mode_var': [],
+         'ctypes': [], 'subproc_raw': [], 'foreign': []}
+    stdlib = getattr(sys, 'stdlib_module_names', frozenset())
+    local = {os.path.splitext(f)[0] for f in trees}
+    for fn, tree in trees.items():
+        al = _write_aliases(tree)
+        prod = fn in product
+        if prod:
+            for n in ast.walk(tree):
+                mods = []
+                if isinstance(n, ast.Import):
+                    mods = [a.name.split('.')[0] for a in n.names]
+                elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module:
+                    mods = [n.module.split('.')[0]]
+                for m in mods:
+                    if m in local or m in stdlib or m in _FIRST_PARTY_MODULES:
+                        continue
+                    v['foreign'].append((fn, '<module>', m))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            bound = _path_bound_names(node, al)
+            danger = _mutator_bind_names(node, al)
+            for sub in ast.walk(node):
+                if not isinstance(sub, ast.Call):
+                    continue
+                t = _resolve_callee(sub.func, al)
+                if t.startswith('os.'):
+                    attr = t.split('.')[-1]
+                    if attr not in _MUTATOR_ATTRS and attr not in _OS_LEDGER_READONLY:
+                        v['unknown_os'].append((fn, node.name, t))
+                pk = _path_call_kind(sub, al, bound)
+                if pk:
+                    v['nonos'].append((fn, node.name, pk, 'Path.' + sub.func.attr))
+                    if pk == 'mode_var' and prod:
+                        v['mode_var'].append((fn, node.name, 'Path.open'))
+                elif t in _NONOS_CALLS:
+                    v['nonos'].append((fn, node.name, _NONOS_CALLS[t], t))
+                elif t == 'ctypes' or t.startswith('ctypes.'):
+                    v['nonos'].append((fn, node.name, 'ctypes', t))
+                    if prod:
+                        v['ctypes'].append((fn, node.name, t))
+                else:
+                    sk = _subproc_kind(sub, t)
+                    if sk == 'subproc_raw' and prod:
+                        v['subproc_raw'].append((fn, node.name, t))
+                    elif sk == 'subproc':
+                        v['nonos'].append((fn, node.name, sk, t))
+                if prod:
+                    f = sub.func
+                    last = t.split('.')[-1]
+                    if isinstance(f, ast.Call) \
+                            and _resolve_callee(f.func, al).split('.')[-1] == 'getattr':
+                        recv = f.args[0] if f.args else None
+                        if isinstance(recv, ast.Name):
+                            o = al.get(recv.id)
+                            modname = (o[1] if o and o[0] == 'mod'
+                                       else (recv.id if recv.id in _IMPORT_MODULES else ''))
+                            if modname.split('.')[0] in _IMPORT_MODULES:
+                                v['indirect'].append((fn, node.name, 'call:getattr'))
+                    if last == '__import__':
+                        v['indirect'].append((fn, node.name, 'call:__import__'))
+                    if isinstance(sub.func, ast.Subscript) and (
+                            _expr_has_mutator(sub.func.value, al)
+                            or (isinstance(sub.func.value, ast.Name)
+                                and sub.func.value.id in danger)):
+                        v['indirect'].append((fn, node.name, 'dispatch'))
+                    if _is_builtin_open(sub, al) and _mode_is_var(sub, 1):
+                        v['mode_var'].append((fn, node.name, 'open:mode-var'))
+            if prod:
+                for d in _module_alias_binds(node, al):
+                    v['indirect'].append((fn, node.name, d))
+    return v
 
 
 def _case_write_paths(tmp):
     """AH 写路径登记表判据：登记未实现、实现未登记、账本桶直写，三者都红。
     AH write-path registry: registered-but-absent, present-but-unregistered, and any direct
     write inside a ledger bucket all fail."""
-    print('  -- AH 写路径登记表（三向都红） --')
+    print('  -- AH 写路径登记表（发现先于归类） --')
     d = os.path.dirname(os.path.abspath(SRC_BIN))
-    files, sites, trees = _scan_write_sites(d)
+    files, sites, trees, product = _scan_write_sites(d)
     reg = {(f, fn): (b, r) for f, fn, b, r in WRITE_PATHS}
     present = {k: v for k, v in reg.items() if k[0] in files}
+    viol = _write_violations(trees, product)
     if os.path.exists(os.path.join(d, 'pack.py')):
         want = {f for f, _fn, _b, _r in WRITE_PATHS}
         _ok('AH 源树：登记表涉及的件全部在场', want <= set(files),
@@ -925,34 +1258,76 @@ def _case_write_paths(tmp):
                 bad_owner.append((f, fn, kind))
     _ok('AH 写原语归属：impossible/impl-only/other-only/账本内删除 不得越界 ⇒ 红',
         not bad_owner, '越界=%s' % bad_owner[:6])
-    # 账本桶里的 os.* 调用必须落在「已登记写原语」或「只读白名单」里；第五种名字无法隐身。
-    # Inside a ledger bucket, every os.* call must be a declared mutator or on the read-only
-    # allowlist, so a fifth mutator name cannot hide.
-    unclassified = []
-    for (f, fn), (b, _r) in sorted(present.items()):
-        if b != 'ledger' or f not in trees:
-            continue
-        node = _find_func(trees[f], fn)
-        if node is None:
-            continue
-        for name in _unclassified_os(node, _write_aliases(trees[f])):
-            unclassified.append((f, fn, name))
-    _ok('AH 账本桶 os.* 全部可归类（未知调用 ⇒ 红）',
-        not unclassified, '未归类=%s' % unclassified[:6])
-    synth_mut = ast.parse('import os\n'
-                          'def f(x):\n'
-                          '    os.setxattr(x, "k", b"v")\n')
-    kinds = _kinds_in_func(_find_func(synth_mut, 'f'), _write_aliases(synth_mut))
-    _ok('AH 新写原语可被识别为独立类别（os.setxattr 自证）',
-        kinds == {'xattr'} and 'xattr' in _MUTATOR_OWNER,
-        'kinds=%r declared=%s' % (sorted(kinds), 'xattr' in _MUTATOR_OWNER))
-    synth_unknown = ast.parse('import os\n'
-                              'def f(x):\n'
-                              '    os.mknod(x)\n')
-    unk = _unclassified_os(_find_func(synth_unknown, 'f'),
-                           _write_aliases(synth_unknown))
-    _ok('AH 账本桶未归类 os.* 可被识别（os.mknod 自证）',
-        unk == ['os.mknod'], '未归类=%r' % (unk,))
+    # 发现先于归类：os.* 全集检查对**每个被扫文件的每个函数**生效，不经过 sites/present。
+    # Discovery before classification: the full os.* check covers every function of every
+    # scanned file, without going through sites/present.
+    _ok('AH os.* 全集可归类（每个函数，不分桶；未知调用 ⇒ 红）',
+        not viol['unknown_os'], '未归类=%s' % viol['unknown_os'][:6])
+    _ok('AH 非 os 写 API 已映射类别（未映射 ⇒ 红）',
+        not [x for x in viol['nonos'] if x[2] not in _MUTATOR_OWNER],
+        '未映射=%s' % [x for x in viol['nonos'] if x[2] not in _MUTATOR_OWNER][:6])
+    _ok('AH 产品件禁间接派发（getattr/__import__/字典派发/模块别名）⇒ 红',
+        not viol['indirect'], '间接=%s' % viol['indirect'][:6])
+    _ok('AH 产品件禁 open 模式变量 ⇒ 红',
+        not viol['mode_var'], '模式变量=%s' % viol['mode_var'][:6])
+    _ok('AH 产品件禁 ctypes / 无重定向 subprocess / 第三方库 ⇒ 红',
+        not (viol['ctypes'] or viol['subproc_raw'] or viol['foreign']),
+        'ctypes=%s raw=%s foreign=%s'
+        % (viol['ctypes'][:2], viol['subproc_raw'][:2], viol['foreign'][:2]))
+    prod_imp = sorted({(f, fn, k) for (f, fn), ks in sites.items() if f in product
+                       for k in ks if _MUTATOR_OWNER.get(k) == 'impossible'})
+    _ok('AH 产品件禁 impossible 类别（类别级，含未登记函数）⇒ 红',
+        not prod_imp, 'impossible=%s' % prod_imp[:6])
+    # P0 自证：全部走 `_scan_write_sites → trees/sites` 真实入口，逐个 API 单独判红。
+    # P0 self-check: all through the real `_scan_write_sites` entry; every API must go red
+    # on its own.
+    probe = os.path.join(tmp, 'p0scan')
+    os.makedirs(probe)
+    with io.open(os.path.join(probe, 'p0_probe.py'), 'w', encoding='utf-8') as f:
+        f.write(_P0_PROBE)
+    with io.open(os.path.join(probe, 'p0_foreign.py'), 'w', encoding='utf-8') as f:
+        f.write('import requests\n\n\ndef f():\n    return 1\n')
+    p_files, p_sites, p_trees, p_prod = _scan_write_sites(
+        probe, extra=('p0_probe.py', 'p0_foreign.py'),
+        product_extra=('p0_probe.py', 'p0_foreign.py'))
+    pv = _write_violations(p_trees, p_prod)
+
+    def _hit(rule, fname, needle):
+        return any(x[0] == 'p0_probe.py' and x[1] == fname and needle in str(x)
+                   for x in pv[rule])
+
+    cases = [
+        ('os.mknod（未知 os.*）', 'unknown_os', 'f_os_mknod', 'os.mknod'),
+        ('shutil.move', 'nonos', 'f_sh_move', 'replace'),
+        ('shutil.rmtree', 'nonos', 'f_sh_rmtree', 'rmtree'),
+        ('shutil.chown', 'nonos', 'f_sh_chown', 'chown'),
+        ('Path.mkdir', 'nonos', 'f_path_mkdir', 'mkdir'),
+        ('Path.unlink', 'nonos', 'f_path_unlink', 'unlink'),
+        ('Path.rmdir', 'nonos', 'f_path_rmdir', 'unlink'),
+        ('Path.chmod', 'nonos', 'f_path_chmod', 'chmod'),
+        ('Path.touch', 'nonos', 'f_path_touch', 'utime'),
+        ('Path.rename', 'nonos', 'f_path_rename', 'replace'),
+        ('Path.replace', 'nonos', 'f_path_replace', 'replace'),
+        ('Path.open("w")', 'nonos', 'f_path_open', 'open'),
+        ('Path.open(模式变量)', 'mode_var', 'f_path_modevar', 'Path.open'),
+        ('open(模式变量)', 'mode_var', 'f_modevar', 'mode-var'),
+        ('模块别名 o = os', 'indirect', 'f_alias', 'bind-module'),
+        ('getattr', 'indirect', 'f_getattr', 'call:getattr'),
+        ('__import__', 'indirect', 'f_import', 'call:__import__'),
+        ('字典派发', 'indirect', 'f_dispatch', 'dispatch'),
+        ('ctypes', 'ctypes', 'f_ctypes', 'ctypes.'),
+        ('无重定向 subprocess', 'subproc_raw', 'f_subproc', 'subprocess.run'),
+    ]
+    for label, rule, fname, needle in cases:
+        _ok('P0 自证：%s ⇒ 红' % label, _hit(rule, fname, needle),
+            'rule=%s fn=%s' % (rule, fname))
+    _ok('P0 自证：第三方库 import ⇒ 红',
+        any(x[0] == 'p0_foreign.py' and 'requests' in str(x)
+            for x in pv['foreign']), 'foreign=%s' % pv['foreign'][:2])
+    _ok('P0 自证：发现不依赖 sites（os.mknod 无类别仍被看见）',
+        ('p0_probe.py', 'f_os_mknod') not in p_sites
+        and _hit('unknown_os', 'f_os_mknod', 'os.mknod'),
+        'in_sites=%s' % (('p0_probe.py', 'f_os_mknod') in p_sites))
     # other 桶＝后门：只允许「目标由 tempfile 生成」。任一条改标 other ⇒ 红。
     # `other` is a backdoor if prose suffices: only tempfile-generated targets are allowed.
     bad_other = []
@@ -1574,7 +1949,7 @@ def _case_subdir(tmp):
                             os.path.dirname(SRC_BIN), d, vol, long_msg],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
-    time.sleep(0.4)
+    time.sleep(0.6)
     still_running = app.poll() is None
     probe = subprocess.run([sys.executable, '-B', '-c', _CHILD_PROBE, d, d],
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -4615,6 +4990,21 @@ try:
         assert lr.write(rt.rel('x.txt'), b'b', mode=safeio.WriteMode.APPEND_EXISTING,
                         pad_newline=True) is False
         lr.write(rt.rel('y.txt'), b'zz\n', mode=safeio.WriteMode.REPLACE)
+        # 六个目录类原语必须显式拒绝，不静默回退按路径
+        # The six directory primitives must reject explicitly, never fall back to path calls
+        for _fn, _args in (
+                ('mkdir', (rt.rel('d1'),)),
+                ('mkdirs', (rt.rel('d2'),)),
+                ('mkdirs_path', (os.path.join(A, 'd3'),)),
+                ('chmod', (rt.rel('x.txt'), 0o600)),
+                ('unlink', (rt.rel('x.txt'),)),
+                ('utime', (rt.rel('x.txt'), (0, 0)))):
+            try:
+                getattr(lr, _fn)(*_args)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('%s 未在 Windows 分支拒绝' % _fn)
     assert rt.read(rt.rel('x.txt')) == b'a\nb'
     assert rt.read(rt.rel('y.txt')) == b'zz\n'
     try:
@@ -4677,7 +5067,8 @@ def _case_win_path(work):
                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        universal_newlines=True, timeout=180)
     out = (r.stdout + r.stderr).strip()
-    _ok('W1 Windows 写路径分支（无目录 fd·realpath 归属判·拒绝重解析点·追加后复核 inode）',
+    _ok('W1 Windows 写路径分支（无目录 fd·realpath 归属判·拒绝重解析点·追加后复核 inode·'
+        'mkdir/mkdirs/mkdirs_path/chmod/unlink/utime 六原语显式拒绝）',
         'WINPATH_OK' in out, out[-200:])
     if os.name == 'nt':
         hold = os.path.join(d, 'hold.py')

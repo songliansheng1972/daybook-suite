@@ -46,6 +46,8 @@ Usage:
 """
 import os, time, hmac, hashlib, secrets, weakref
 
+import errors
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 KEY_DIR_NAME = '.daybook_keys'     # 密钥目录（相对注册卷所在目录）/ key dir (next to the registry volume)
@@ -172,8 +174,8 @@ class Registry:
                 # handle, so a renamed root cannot chmod the new root's same-named file.
                 # Best-effort: a failed chmod does not block registration.
                 lr.chmod(lr.root.rel_of(self.path, 'agent_registry.register.chmod'), 0o600)
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                errors.warn('agent_registry.chmod 跳过 %s（%s）' % (self.path, exc))
         self._agents[agent_id] = Agent(agent_id, name, secret, _now(), False)
         return agent_id, secret
 

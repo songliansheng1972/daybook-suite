@@ -59,6 +59,18 @@
 - 读数：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
   属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 verify rc=0。
 
+### 复签补轮四：发现先于归类（2026-11-18）
+
+- AH 扫描返回全部函数树；`os.*` 全集与非 os 写 API 逐函数检查，不再依赖 `sites`。
+- 补 `shutil.move/rmtree/chown`、Path 八个写方法、ctypes、无重定向 subprocess、
+  `open` 模式变量、第三方库；产品件禁模块别名/被调 getattr/`__import__`/字典派发。
+- 自证改走真实 `_scan_write_sites` 入口，逐条打印；`os.mknod` 无类别仍在 `sites` 外判红。
+- score 精确匹配断言名；`--audit-names` 校验唯一；P1 失败分支改名。
+- 三处 best-effort 失败改 `errors.warn`；W1 六原语 Windows 拒绝；文档写明 Windows 上
+  build/backup/record/register 不可用。
+- 只有 daybook 盒自带判据，mcp/orch 盒仅由 pack --verify 保证同源。
+- 读数：源树 536/22、盒 416/45、P1–P10 全绿、14/14、verify 0、mcp 23/23、orch 全绿。
+
 ### 复签补轮三：权限/删除/时间戳同属一个写能力（2026-11-18）
 
 - `Registry.register` 的 `os.chmod(self.path, 0o600)` 移进 `with locked(self.root)`，
