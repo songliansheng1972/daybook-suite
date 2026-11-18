@@ -158,6 +158,19 @@ def run(seed=7, mode='const'):
                            cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
         _same('P7 orchestrator alarm rc=3：体检零落盘', tmp, before, r, 3)
+
+    # 9) build(dry=True)：rc=0 也必须零落盘（dry 自证：闭包面不把 dry 当写边）
+    with common.tmpdir('p7i_') as tmp:
+        common.make_ledger(tmp)
+        common.run_entry(tmp, ['baseline'])
+        common.run_entry(tmp, ['index'])
+        before = common.snapshot(tmp)
+        code = ('import io,sys; sys.path.insert(0, "."); import daybook;'
+                'c=daybook.parse_conf(io.open("daybook.conf",encoding="utf-8").read(),".");'
+                'daybook.build(c,".",dry=True,authors=True)')
+        r = subprocess.run([PY, '-B', '-c', code], cwd=tmp, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True)
+        _same('P7 build(dry=True) rc=0：只算不写·账本目录零变化', tmp, before, r, 0)
     return common.summary()
 
 

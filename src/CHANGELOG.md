@@ -42,6 +42,36 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签不签：闭包种子＝登记本身、差额报集合差、免签双限定（2026-11-18）
+
+- **P0 闭包种子口径**：源头改为「所有签为 `ledger`/`impl` 的函数」＋原语类别命中，不再按 kind
+  分层判断。`safe` 是写的结果属性，不是写能力的门槛：包装一个「已登记但 kind 仅 `safe`」的
+  helper，wrapper 自身也必须进写能力面。反向自证（内存树 `a.py`）：
+  `_evil_wrap_cursor → _write_cursor`（`_write_cursor` 登记 `ledger`、kind 仅 `{'safe'}`）⇒
+  cap=`[_write_cursor, _evil_wrap_cursor]`、未登记=`[_evil_wrap_cursor]`，判据必须红（现为 PASS）。
+- **只读路径不签**：`os.open` flags 常量折叠后，safeio 的 9 条只读/句柄实现
+  （`_from_dir_path`/`_walk_parent`/`read`/`as_root`/`held`/`locked`/`root_scope`/`open`/
+  `read_vol`）不再有任何写类别，登记表里的对应条目整条删除（不签、也不新设「只读实现」桶）。
+  另登记 7 条运维/调试 CLI 主函数（`agent_*`、`daybook_multidx`、`task_volume`，均不在 8 入口
+  清单内，按产品内部件登记）与 `path_leak_check.main`（盒内无 pack.py 时它按产品件计）。
+  WRITE_PATHS：117 → 116（ledger 64 / other 37 / impl 14 / dispatch 1）。
+- **P1 差额口径**：`--audit-closure` 与记分板同时输出 `cap−reg`、`reg−cap` 两组集合差及构成
+  （入口／随包测试辅助／产品内部件；reg 侧按桶分组），不再用 `|cap|−|reg|` 的算术差冒充。
+  源树本轮：`cap−reg = 25（入口 10｜测试/辅助 15｜产品内部件 0）`；`reg−cap = 1（dispatch 1）`。
+  盒内：`cap−reg = 5（入口 5）`；`reg−cap = 36（dispatch 1｜other 35）`。
+- **P1 字段改名**：`--audit-calls` 的「判为纯计算调用点／纯计算 callee」改为「非原语调用点／
+  非原语 callee」，并注明含只读/纯计算/外部，**不代表不写**（`uninstall` 经 `atomic_json`
+  写 `.vscode/tasks.json`、`write_message` 写协议流仍在这一侧）；`--audit-closure` 的
+  「纯计算面」改为「内建/容器方法面」。本轮读数：写面调用点 91 / 非原语调用点 3806 /
+  非原语 callee 去重 533。
+- **P2 免签与豁免键**：入口改为「入口名 ∩ 8 入口文件」双重限定（`_is_entry`）；未解析同名红判
+  的写能力名集也按「非入口」逐函数过滤，同名内部函数不再免签。`_CLOSURE_EXEMPT` 键加入行号
+  `(文件, 函数, callee, 行号)`，同函数第二处同名调用不会被前一行顺带放行；删除 3 条已无对应
+  边的死豁免，现 10 条（命中 0）。
+- **读数**：闭包覆盖 927/2154 = 43%（未解析 1227：内建/容器方法面 922、可能写缺口 305）；
+  写能力函数 140 / 未登记 0 / 同名红 0（豁免 10）。源树 0 红 / 558 项；`daybook/` 盒
+  0 红 / 437 项；P1–P10 全绿；变异 15/15；三包 `--verify` 全同；mcp 23/23；orch 全绿。
+
 ### 复签补轮：record 同码、Registry dir_fd、边界与句柄证据（2026-11-18）
 
 - `daybook_record` 的 append 子进程补 `cwd=HERE`；append/index 非零按 2/3/4/5/6 还原成

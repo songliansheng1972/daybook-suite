@@ -163,6 +163,7 @@ WRITE_PATHS = (
     ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
     ('orchestrator.py', '__init__', 'ledger', 'Hub 建卷父目录（目录走 LockedRoot.mkdirs）'),
     ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
+    ('path_leak_check.py', 'main', 'other', '随包测试：rmtree 只清 tempfile 目录'),
     ('path_leak_check.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
     ('safeio.py', 'chmod', 'impl', 'safeio 唯一改权限链（dir_fd）'),
     ('safeio.py', 'mkdir', 'impl', 'safeio 唯一建目录链（dir_fd）'),
@@ -172,10 +173,7 @@ WRITE_PATHS = (
     ('safeio.py', '_replace', 'impl', 'safeio 唯一写链（临时件 + replace + fsync(dfd)）'),
     ('safeio.py', '_append_win', 'impl', 'Windows 追加（realpath 归属判 + O_APPEND + inode 复核）'),
     ('safeio.py', '_replace_win', 'impl', 'Windows 替换（临时件 + os.replace）'),
-    ('safeio.py', '_from_dir_path', 'impl', 'safeio 根句柄构造（O_DIRECTORY + dev_ino）'),
-    ('safeio.py', '_walk_parent', 'impl', 'safeio 根内父链构造（dir_fd）'),
     ('safeio.py', 'mkdirs', 'impl', 'safeio 递归建目录（dir_fd）'),
-    ('safeio.py', 'read', 'impl', 'safeio 根内读取（O_NOFOLLOW + dir_fd）'),
     ('safeio.py', 'release', 'impl', 'safeio 锁释放'),
     ('safeio.py', 'update', 'impl', 'safeio 唯一写链（REPLACE）'),
     ('task_volume.py', '__init__', 'ledger', '账本内容/派生件'),
@@ -192,51 +190,21 @@ WRITE_PATHS = (
     ('agent_message.py', 'handle', 'ledger', '收件箱/回执落账'),
     ('agent_message.py', 'send', 'ledger', '发消息：收件箱追加'),
     ('agent_message.py', 'server_close', 'ledger', '关服务：socket 清理 + 关闭记录'),
-    ('agent_registry.py', '_load', 'other', '只读加载注册表；静态经 _write_secret 卷进来'),
-    ('daybook.py', '_build_lock', 'ledger', '复用已持凭证的 build 锁'),
     ('daybook.py', 'backup', 'ledger', '备份：持根锁写 backup/'),
     ('daybook_hook.py', 'run', 'ledger', 'HOOK-A：追更目标卷'),
     ('daybook_multidx.py', 'build', 'ledger', '多级目录派生件写入'),
-    ('daybook_record.py', '_open_ledger', 'other', '只解析 conf/Root；静态经 build 卷进来'),
-    ('daybook_record.py', '_precheck', 'other', 'dry build 判 2/3/4/5，零落盘'),
     ('daybook_session_hook.py', '_entry', 'ledger', '入口期：归档会话输入'),
     ('daybook_session_hook.py', 'archive_code_changes', 'ledger', '归档代码变更（原件）'),
     ('daybook_session_hook.py', 'archive_message', 'ledger', '归档消息（原件）'),
     ('daybook_session_hook.py', 'handle_event', 'ledger', '处理事件：归档 + 登记'),
     ('daybook_session_hook.py', 'uninstall', 'ledger', '卸载：清 hook 登记'),
-    ('mcp_resources.py', '_audit_vol', 'other', '只读路径（经根句柄）'),
-    ('mcp_resources.py', '_multidx_dir', 'other', '只读路径（多级目录）'),
-    ('mcp_resources.py', '_root', 'other', '只读根句柄解析（经 _from_dir_path）'),
-    ('mcp_resources.py', '_vol_path', 'other', '只读路径（卷名→路径）'),
-    ('mcp_resources.py', 'find_resource', 'other', '只读查找'),
-    ('mcp_resources.py', 'list_resources', 'other', '只读列卷'),
     ('mcp_resources.py', 'read_resource', 'other', '只读读取'),
     ('mcp_resources.py', '_read_dir_resource', 'other', '只读目录资源'),
-    ('mcp_resources.py', 'resource_exists', 'other', '只读存在性'),
-    ('mcp_resources.py', 'resource_file_path', 'other', '只读路径映射'),
-    ('mcp_resources.py', 'resource_path', 'other', '只读路径映射（subscribe 用）'),
-    ('mcp_resources.py', 'self_check', 'other', '启动自检：只读根/conf/卷'),
-    ('mcp_subscribe.py', '_cur_mtime', 'other', '只读取 mtime'),
-    ('mcp_subscribe.py', '_watch_loop', 'other', '轮询 mtime 并推送，不落盘'),
-    ('mcp_subscribe.py', 'subscribe', 'other', '登记内存订阅，不落盘'),
-    ('mcp_tools.py', '_agent_reg', 'other', '取注册表实例（只读路径）'),
     ('mcp_tools.py', '_audit', 'ledger', '审计卷 append-only'),
-    ('mcp_tools.py', '_audit_vol', 'other', '只读路径（审计卷）'),
-    ('mcp_tools.py', '_entry_full', 'other', '只读条目原文'),
-    ('mcp_tools.py', '_entry_ref', 'other', '只读互见引用'),
-    ('mcp_tools.py', '_multi_query', 'other', '只读层级下钻'),
-    ('mcp_tools.py', '_multidx_dir', 'other', '只读多级目录路径'),
-    ('mcp_tools.py', '_read_cursor', 'other', '只读游标'),
-    ('mcp_tools.py', '_read_multidx_tsv', 'other', '只读多级目录 TSV'),
     ('mcp_tools.py', '_record_signature', 'ledger', '签名边车 append-only'),
-    ('mcp_tools.py', '_root', 'other', '只读根句柄（经 mcp_resources._root）'),
-    ('mcp_tools.py', '_verify_agent', 'other', '只读身份校验'),
-    ('mcp_tools.py', '_vp', 'other', '只读卷路径'),
     ('mcp_tools.py', '_write_cursor', 'ledger', '写游标（账本派生件）'),
     ('mcp_tools.py', 'call_tool', 'ledger', '工具派发：写工具经各登记点落账'),
-    ('orchestrator.py', '_ledger_alarms', 'other', 'dry build 体检，零落盘'),
     ('orchestrator.py', '_log', 'ledger', '编排卷条目'),
-    ('orchestrator.py', 'alarm', 'other', '体检只读（心跳/注册表/状态机）'),
     ('orchestrator.py', 'claim', 'ledger', '认领：加锁迁移状态'),
     ('orchestrator.py', 'digest', 'other', '只读多级目录摘要'),
     ('orchestrator.py', 'join', 'ledger', '加入：注册 + 落编排卷'),
@@ -246,45 +214,18 @@ WRITE_PATHS = (
     ('orchestrator.py', 'review', 'ledger', '裁决：迁移状态 + 落编排卷'),
     ('orchestrator.py', 'submit', 'ledger', '交活：迁移状态 + 落编排卷'),
     ('safeio.py', '__exit__', 'impl', 'safeio 句柄退出（释放锁/关 fd）'),
-    ('safeio.py', 'as_root', 'impl', 'safeio 根句柄归一'),
-    ('safeio.py', 'held', 'impl', 'safeio 已持凭证查询'),
-    ('safeio.py', 'locked', 'impl', 'safeio 根锁上下文'),
     ('safeio.py', 'mkdirs_path', 'impl', 'safeio 归属判 + 建目录（dir_fd）'),
-    ('safeio.py', 'root_scope', 'impl', 'safeio 句柄作用域'),
     ('safeio.py', 'write', 'impl', 'safeio 唯一写链入口'),
     ('task_volume.py', 'transition', 'ledger', '状态迁移落账本'),
-    # 闭包面第二层：经属性类型/局部类型解析后新增的只读路径（自身无直接写类别）。
-    # Second closure layer: read-only paths newly reached after attribute/local type resolution
-    # (no direct write kind of their own).
-    ('agent_heartbeat.py', '_last_beat', 'other', '只读心跳卷末条'),
-    ('agent_heartbeat.py', '_last_beats', 'other', '只读心跳卷'),
-    ('agent_heartbeat.py', 'dead_agents', 'other', '只读心跳判死'),
-    ('agent_heartbeat.py', 'is_alive', 'other', '只读心跳查询'),
-    ('cross_ref.py', '_read_text', 'other', '只读卷文本'),
-    ('cross_ref.py', 'find_backrefs', 'other', '只读反查引用'),
-    ('cross_ref.py', 'make_ref', 'other', '只读构造引用串'),
-    ('cross_ref.py', 'resolve', 'other', '只读解析引用'),
-    ('cross_ref.py', 'verify', 'other', '只读验引用'),
-    ('cross_ref.py', 'verify_ref', 'other', '只读验单条引用'),
-    ('daybook_append.py', '_cli_root', 'other', '只读解析账本根'),
-    ('daybook_hook.py', 'parse_dialog', 'other', '只读解析对话卷'),
-    ('mcp_resources.py', 'read_vol', 'other', '只读卷内容'),
-    ('orchestrator.py', '_load', 'other', '只读编排卷'),
-    ('orchestrator.py', '_scan_vol_rows', 'other', '只读扫卷行'),
-    ('orchestrator.py', 'board', 'other', '只读看板'),
-    ('orchestrator.py', 'entry_sha8', 'other', '只读算条目 SHA8'),
-    ('orchestrator.py', 'make_entry_ref', 'other', '只读构造条目引用'),
-    ('orchestrator.py', 'parse_ledger', 'other', '只读解析编排卷'),
-    ('orchestrator.py', 'pull', 'other', '只读拉取动态'),
-    ('orchestrator.py', 'read_multidx_rows', 'other', '只读多级目录行'),
-    ('orchestrator.py', 'volume_text', 'other', '只读卷文本'),
-    ('orchestrator.py', 'who', 'other', '只读成员查询'),
-    ('safeio.py', 'open', 'impl', 'safeio 底层打开（O_NOFOLLOW/dir_fd，读或建）'),
-    ('safeio.py', 'read_vol', 'impl', 'safeio 根内整卷读取'),
-    ('task_volume.py', '_next_tid', 'other', '只读算下一个任务号'),
-    ('task_volume.py', '_read_all', 'other', '只读任务卷'),
-    ('task_volume.py', 'get', 'other', '只读任务历史'),
-    ('task_volume.py', 'list', 'other', '只读任务清单'),
+    # 运维/调试工具的 CLI 主函数（不是 8 入口清单里的产品入口，按内部件登记）。
+    # Ops/debug CLI mains (not one of the 8 sanctioned entries, so registered as internals).
+    ('agent_heartbeat.py', 'main', 'ledger', '运维工具 CLI：按子命令驱动心跳写入'),
+    ('agent_lock.py', 'main', 'ledger', '运维工具 CLI：取/放锁并写租约日志'),
+    ('agent_message.py', '__init__', 'ledger', '建服务时清理残留 socket（unlink）'),
+    ('agent_message.py', 'main', 'ledger', '服务 CLI：收发消息落账'),
+    ('agent_registry.py', 'main', 'ledger', '运维工具 CLI：注册/注销写 keys 与注册卷'),
+    ('daybook_multidx.py', 'main', 'ledger', '多级索引 CLI：驱动派生件写入'),
+    ('task_volume.py', '_main', 'ledger', '任务卷 CLI：建/迁移任务'),
 )
 
 # 唯一写链的调用形态：持有 LockedRoot 的 `lr.write(...)` / `lr.update(...)`（步骤 3 起
@@ -730,7 +671,7 @@ def _write_call_targets(call, aliases):
     if t == 'os.open':
         # flags 判不出只读 ⇒ 按写（默认值反转）。
         # Undecidable flags ⇒ write (reversed default).
-        return [call.args[0]] if call.args and not _osopen_readonly(call) else []
+        return [call.args[0]] if call.args and not _osopen_readonly(call, aliases) else []
     if t in ('open', 'io.open'):
         return [call.args[0]] if call.args and _open_mode_writes(call) else []
     if t in ('os.replace', 'os.rename', 'shutil.copy', 'shutil.copy2',
@@ -1162,15 +1103,60 @@ def _subproc_kind(sub, t):
     return 'subproc' if red else 'subproc_raw'
 
 
-def _osopen_readonly(sub):
-    """`os.open` 只有能证明 O_RDONLY(0) 才只读；flags 是变量/表达式一律按写。
-    `os.open` is read-only only when O_RDONLY(0) is proven; a variable/expression flags
-    argument is a write (default-write)."""
+_FLAG_WRITE_MASK = 0
+for _n in ('O_WRONLY', 'O_RDWR', 'O_CREAT', 'O_TRUNC', 'O_APPEND'):
+    _FLAG_WRITE_MASK |= getattr(os, _n, 0)
+
+
+def _fold_os_constant(node, al, depth=0):
+    """把 `os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW` / `getattr(os,'O_X',0)` 折成整数。
+    判不出（变量、未知属性、超深）⇒ None。
+    Fold os flag constants (bitwise-or, getattr with default) to an int; None when unknown."""
+    if depth > 6:
+        return None
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        a = _fold_os_constant(node.left, al, depth + 1)
+        b = _fold_os_constant(node.right, al, depth + 1)
+        return None if a is None or b is None else a | b
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        o = al.get(node.value.id)
+        if o and o[0] == 'mod' and o[1].split('.')[0] == 'os':
+            return getattr(os, node.attr, None)
+    if isinstance(node, ast.Name):
+        o = al.get(node.id)
+        if o and o[0] == 'from':
+            mod, _, nm = o[1].partition('.')
+            if mod == 'os':
+                return getattr(os, nm, None)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+            and node.func.id == 'getattr' and len(node.args) >= 2:
+        tgt = node.args[0]
+        key = node.args[1]
+        if isinstance(tgt, ast.Name) and isinstance(key, ast.Constant) \
+                and isinstance(key.value, str):
+            o = al.get(tgt.id)
+            if o and o[0] == 'mod' and o[1].split('.')[0] == 'os':
+                return getattr(os, key.value,
+                               _fold_os_constant(node.args[2], al, depth + 1)
+                               if len(node.args) > 2 else None)
+    return None
+
+
+def _osopen_readonly(sub, al=None):
+    """`os.open` 的只读判定：flags 做常量折叠，折出的值不含任何写位 ⇒ 只读。
+    折不出（变量/表达式）⇒ 按写（默认值）。**不签字豁免**。
+    `os.open` read-only verdict: fold the flags expression; a value with no write bit is
+    read-only. Unfoldable flags are a write (default). No signatures involved."""
     v = sub.args[1] if len(sub.args) > 1 else None
     for kw in sub.keywords:
         if kw.arg == 'flags':
             v = kw.value
-    return isinstance(v, ast.Constant) and v.value == 0
+    if v is None:
+        return False
+    folded = _fold_os_constant(v, al or {})
+    return folded is not None and not (folded & _FLAG_WRITE_MASK)
 
 
 _READONLY_CALLS = {
@@ -1330,7 +1316,7 @@ def _call_kind(sub, al, scope=None, pure=None, paths=None, site=None):
     if t in ('tempfile.gettempdir', 'tempfile.gettempdirb'):
         return None
     if t == 'os.open':
-        return None if _osopen_readonly(sub) else 'osopen'
+        return None if _osopen_readonly(sub, al) else 'osopen'
     if t in ('io.StringIO', 'io.BytesIO'):
         return None
     if _is_builtin_open(sub, al) or t == 'io.open':
@@ -1435,27 +1421,44 @@ def _scope_kinds(scope, calls, al, site=None):
     return kinds
 
 
-# 闭包面：入口函数不签（它们本来就什么都可达，签字信息量为零），归入已有的 8 入口清单。
-# Closure surface: entry functions are never signed (they reach everything by definition);
-# they are covered by the existing 8-entry table instead.
+# 闭包面：入口函数不签（它们本来就什么都可达，签字信息量为零）。
+# 双重限定：函数名在入口名集合里，**且**文件属于 8 个产品入口文件之一；只在名字上免签
+# 会让任何新内部函数叫 serve/dispatch/__init__ 就蒙混过关。
+# Entry functions are never signed (they reach everything by definition). Double qualification:
+# the name is in the entry-name set **and** the file is one of the 8 product entry files.
+# Name-only exemption would let any new internal `serve`/`dispatch`/`__init__` slip through.
 _ENTRY_NAMES = frozenset({'main', '_main', '__init__', 'dispatch', 'serve'})
+_ENTRY_FILES = frozenset({
+    'daybook.py', 'daybook_record.py', 'daybook_append.py', 'daybook_hook.py',
+    'daybook_session_hook.py', 'orchestrator.py', 'mcp_server.py', 'cross_ref.py',
+})
+
+
+def _is_entry(file, fn):
+    return fn in _ENTRY_NAMES and file in _ENTRY_FILES
 _BUILTIN_NAMES = frozenset(dir(builtins))
-# 逐条豁免的未解析边（(文件, 函数, callee)）：写明为什么它不可能落在写能力函数上。
-# 宁红勿漏：默认红，只有在这里逐条签字才放行。
-# Per-edge exemptions for unresolved calls ((file, function, callee)): each states why it
-# cannot target a write-capable function. Red by default; only a line here lets it through.
+# 纯计算面（内建/容器类型的方法名）：这类调用不碰文件系统，不算闭包缺口。
+# 按类别判定，不逐个 callee 签。
+# Pure-computation surface (builtin/container method names): these never touch the filesystem
+# and are not closure gaps. Category-based, not signed per callee.
+_PURE_METHOD_NAMES = frozenset().union(
+    *[set(dir(t)) for t in (str, bytes, dict, list, set, tuple, int, float)])
+# 逐条豁免的未解析边（(文件, 函数, callee, 行号)）：写明为什么它不可能落在写能力函数上。
+# 键带行号：同一函数里第二处同名调用不会被前一行顺带放行。
+# Per-edge exemptions for unresolved calls ((file, function, callee, line)): each states why
+# it cannot target a write-capable function. The line is part of the key, so a second call
+# with the same name in the same function is not waved through by the first.
 _CLOSURE_EXEMPT = {
-    ('daybook.py', '_run_ops', 'write'): 'lr（LockedRoot 凭证）的 write，已解析为 safe 链',
-    ('daybook.py', '_run_ops', 'unlink'): 'lr（LockedRoot 凭证）的 unlink，已解析为 safe 链',
-    ('daybook_append.py', 'append_one', 'write'): 'lr.write：safe 链（已登记 safe）',
-    ('daybook_append.py', 'append_one', 'lock'): 'rt.lock()：取锁不是写',
-    ('agent_lock.py', 'release', 'release'): 'ent["lr"].release()：凭证释放，不是账本写',
-    ('daybook_record.py', '_open_ledger', 'read'): 'rt.read()：Root 根内读取',
-    ('safeio.py', 'lock', 'release'): 'mx.release()：线程互斥量释放',
-    ('safeio.py', 'release', 'release'): '_proc_mutex(key).release()：线程互斥量释放',
-    ('safeio.py', 'update', 'read'): 'self.root.read(rel)：Root 根内读取',
-    ('mcp_transport.py', 'write_message', 'write'): 'outfile 是协议输出流（stdout/管道），非第一方写函数',
-    ('safeio.py', 'lock', 'acquire'): 'mx.acquire()：线程互斥量获取（_proc_mutex），非文件写',
+    ('agent_lock.py', 'release', 'release', 162): 'ent["lr"].release()：凭证释放，不是账本写',
+    ('daybook_append.py', 'append_one', 'lock', 400): 'rt.lock()：取锁不是写',
+    ('daybook_record.py', '_open_ledger', 'read', 58): 'rt.read()：Root 根内读取',
+    ('mcp_transport.py', 'write_message', 'write', 155): 'outfile 是协议输出流（stdout/管道）',
+    ('safeio.py', 'lock', 'acquire', 468): 'mx.acquire()：线程互斥量获取（_proc_mutex）',
+    ('safeio.py', 'lock', 'acquire', 470): 'mx.acquire()：线程互斥量获取（_proc_mutex）',
+    ('safeio.py', 'lock', 'acquire', 472): 'mx.acquire()：线程互斥量获取（_proc_mutex）',
+    ('safeio.py', 'lock', 'release', 494): 'mx.release()：线程互斥量释放',
+    ('safeio.py', 'release', 'release', 865): '_proc_mutex(key).release()：线程互斥量释放',
+    ('safeio.py', 'update', 'read', 835): 'self.root.read(rel)：Root 根内读取',
 }
 
 
@@ -1722,6 +1725,14 @@ def functions_of(cls):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
 
+def _kw_true(call, name):
+    for kw in call.keywords:
+        if kw.arg == name and isinstance(kw.value, ast.Constant) \
+                and kw.value.value is True:
+            return True
+    return False
+
+
 def _closure_graph(trees):
     """第一方调用图：已解析边 + 未解析边（逐条带 file:line 与类型）。
     First-party call graph: resolved edges plus every unresolved edge with file:line and type.
@@ -1754,6 +1765,10 @@ def _closure_graph(trees):
                     call, al, f, mod2file, funcs, classes, cls, pure, local_ext,
                     local_ty, attr_ty, attr_ext)
                 if kind == 'edge':
+                    # build(dry=True) 只算不写（P7 有零落盘实跑自证）；它不是写边。
+                    # build(dry=True) computes only (P7 proves zero writes at runtime); not an edge.
+                    if target == ('daybook.py', 'build') and _kw_true(call, 'dry'):
+                        continue
                     tgt.add(target)
                     continue
                 if kind in ('external', 'safe-chain'):
@@ -1764,13 +1779,17 @@ def _closure_graph(trees):
     return edges, unresolved
 
 
-def _closure_capability(trees, sites):
-    """账本写能力函数的传递闭包：种子＝实际写类别 ∩ 账本类别；沿已解析第一方边传播。
-    temp 与派发不进闭包（不改根内状态，各有各的闸：temp 在 other 桶、派发逐个登记）。
-    Transitive closure of ledger-write-capable functions: seeds are direct write kinds that
-    are ledger kinds; propagation follows resolved first-party edges only. temp and dispatch
-    are excluded (they do not change in-root state and have their own gates)."""
-    cap = {k for k, v in sites.items() if v & _LEDGER_KINDS}
+def _closure_capability(trees, sites, reg=None):
+    """账本写能力函数的传递闭包：**源头＝所有签为 ledger/impl 的函数**（签了这次写，
+    就等于承认这函数有写能力），加上原语写类别命中的函数作为补充；沿已解析第一方边传播。
+    不按 kind 分层判断「算不算写」：safe 是写的结果属性，不是写能力的门槛。
+    temp 与派发不进闭包（不改根内状态，各有各的闸）。
+    Transitive closure of write capability: **every function signed ledger/impl is a source**
+    (approving a write admits the capability), plus primitive write-kind hits. Do not tier by
+    kind: `safe` is an outcome attribute, not a capability threshold. temp/dispatch excluded."""
+    reg = reg if reg is not None else {(f, n): (b, r) for f, n, b, r in WRITE_PATHS}
+    cap = {k for k in reg if reg[k][0] in ('ledger', 'impl')}
+    cap |= {k for k, v in sites.items() if v & _LEDGER_KINDS}
     edges, unresolved = _closure_graph(trees)
     changed = True
     while changed:
@@ -1786,9 +1805,9 @@ def _closure_missing(trees, sites, reg, product):
     """产品内部件里必须登记、但还没登记的写能力函数；入口与随包测试不签。
     Write-capable product functions that are not registered; entry names and bundled tests
     are exempt from signing (tests are reported only)."""
-    cap, edges, unresolved = _closure_capability(trees, sites)
+    cap, edges, unresolved = _closure_capability(trees, sites, reg)
     missing = sorted(k for k in cap
-                     if k[0] in product and k[1] not in _ENTRY_NAMES and k not in reg)
+                     if k[0] in product and not _is_entry(*k) and k not in reg)
     return missing, cap, edges, unresolved
 
 
@@ -2054,8 +2073,13 @@ def _case_write_paths(tmp):
     # 它们的能力来自传递调用（闭包面），由下面的闭包判据逐条兜住。
     # Closure parts are computed first: a registered write-capable function with no direct
     # write call site is not "absent" — its capability comes transitively (closure surface).
-    _cap, _cedges, _cunres, _cmiss, _chits = _closure_parts(trees, sites, product, reg)
-    absent = sorted(k for k in present if k not in sites and k not in _cap)
+    _cap, _cedges, _cunres, _cmiss, _chits, _cgap, _cminus, _rminus = _closure_parts(
+        trees, sites, product, reg)
+    # impl 是 safeio 根句柄实现（不动），允许无直接写点；只对 ledger 桶查「登记了但找不到」。
+    # impl is the safeio root-handle implementation (untouched) and may have no direct write
+    # site; the stale-entry check applies to the ledger bucket only.
+    absent = sorted(k for k in present if k not in sites and k not in _cap
+                    and present[k][0] == 'ledger')
     # 只靠 subproc 才被看见的函数不参与「未登记写」判据：它在产品件里由下面的
     # _SUBPROC_SITES 逐个判；随包测试里的派发不属于写路径。
     # Functions seen only through subproc are not "unregistered writes": product sites are
@@ -2106,11 +2130,34 @@ def _case_write_paths(tmp):
     # ★ Closure surface: a first-party function that transitively reaches a ledger write
     #   primitive is write-capable and must be registered (product internals only). Entry
     #   names are never signed; bundled tests are reported only; temp and dispatch excluded.
-    _cap, _cedges, _cunres, _cmiss, _chits = _closure_parts(trees, sites, product, reg)
+    _cap, _cedges, _cunres, _cmiss, _chits, _cgap, _cminus, _rminus = _closure_parts(
+        trees, sites, product, reg)
+    _nedges = sum(len(v) for v in _cedges.values())
+    _total = _nedges + len(_cunres)
+    _cov = (100 * _nedges // _total) if _total else 100
+    _diff = _closure_diff_text(_cminus, _rminus, product, reg)
+    print('[数据] 闭包覆盖 已解析/总边 = %d/%d = %d%%｜可能写缺口 %d｜内建/容器方法面 %d｜%s'
+          % (_nedges, _total, _cov, len(_cgap), len(_cunres) - len(_cgap), _diff))
     _ok('闭包面：产品内部件写能力函数必须登记（入口/测试不签；temp/派发不进闭包）',
-        not _cmiss, '未登记=%s' % _cmiss[:8])
+        not _cmiss, '未登记=%s｜闭包覆盖 %d/%d=%d%%｜可能写缺口 %d｜%s'
+        % (_cmiss[:8], _nedges, _total, _cov, len(_cgap), _diff))
     _ok('闭包面：未解析边的 callee 与本仓写能力函数同名 ⇒ 红（宁红勿漏）',
         not _chits, '同名未豁免=%s' % _chits[:8])
+    # ★ 反向自证：包装一个「已登记但 kind 只有 safe」的 helper，wrapper 必须进写能力面。
+    #   种子是登记本身，不是 kind：safe 是写的结果属性，不是写能力的门槛。
+    # ★ Reverse self-proof: wrapping a registered helper whose only kind is `safe` must land
+    #   the wrapper on the write-capability surface (seeds are registrations, not kinds).
+    _self_src = ('def _write_cursor(*a, **k):\n    return _raw_write(*a, **k)\n'
+                 'def _evil_wrap_cursor(*a, **k):\n    return _write_cursor(*a, **k)\n')
+    _self_trees = {'a.py': ast.parse(_self_src)}
+    _self_reg = {('a.py', '_write_cursor'): ('ledger', '签过的 helper（kind 仅 safe）')}
+    _self_sites = {('a.py', '_write_cursor'): {'safe'}}
+    _self_cap = _closure_capability(_self_trees, _self_sites, _self_reg)[0]
+    _self_miss = [k for k in _self_cap
+                  if k[0] in {'a.py'} and not _is_entry(*k) and k not in _self_reg]
+    _ok('P0 自证：包装「只带 safe 的已登记 helper」的 wrapper ⇒ 写能力面未登记红',
+        _self_miss == [('a.py', '_evil_wrap_cursor')],
+        'cap=%s miss=%s' % (sorted(_self_cap), _self_miss))
     # 类别表不替具体调用点背书：产品件每一处 subprocess 都必须出现在登记表里。
     # The category table never vouches for a call site: every product subprocess must be listed.
     offsite = sorted((f, fn) for (f, fn), kinds in sites.items()
@@ -6420,21 +6467,62 @@ def _closure_parts(trees, sites, product, reg):
     """闭包面的两组判定素材：未登记的写能力函数；未解析且与写能力函数同名的边。
     The two closure verdicts: unregistered write-capable functions, and unresolved edges
     whose callee name matches a write-capable function."""
-    cap, edges, unresolved = _closure_capability(trees, sites)
+    cap, edges, unresolved = _closure_capability(trees, sites, reg)
     missing = sorted(k for k in cap
-                     if k[0] in product and k[1] not in _ENTRY_NAMES and k not in reg)
+                     if k[0] in product and not _is_entry(*k) and k not in reg)
     # 「写能力函数」按登记桶判：ledger/impl 才是能写根内状态的函数；闭包面补签的只读路径
     # （other 桶、自身无直接写类别）不算，否则 read/get/list 这类同名会把信号淹掉。
     # "Write-capable" means ledger/impl buckets (they can change in-root state). Closure-only
     # read paths in the other bucket do not count, or names like read/get/list drown the signal.
-    names = {fn for (f, fn) in reg if reg[(f, fn)][0] in ('ledger', 'impl')}
-    names |= {fn for (f, fn), kinds in sites.items() if kinds & _LEDGER_KINDS}
-    names -= _ENTRY_NAMES
-    hits = sorted({(u['file'], u['fn'], u['callee'], u['line']) for u in unresolved
+    # 入口双重限定：只有「入口名 + 入口文件」才算入口；名字相同但不在入口文件里的内部函数
+    # 仍进写能力名集（宁红勿漏）。
+    # Entry is double-qualified: only entry-name **and** entry-file counts; an internal function
+    # with the same name in another file stays in the write-capable name set.
+    names = {fn for (f, fn) in reg
+             if reg[(f, fn)][0] in ('ledger', 'impl') and not _is_entry(f, fn)}
+    names |= {fn for (f, fn), kinds in sites.items()
+              if kinds & _LEDGER_KINDS and not _is_entry(f, fn)}
+    # 未解析边再切一刀：纯计算面（内建/容器方法名）不算闭包缺口；只把可能写的那一侧
+    # 当真实缺口，并只在这一侧做「同名 ⇒ 红」。
+    # Split unresolved edges again: the pure-computation surface is not a closure gap; only the
+    # possibly-writing side counts as a real gap and is subject to the same-name red.
+    gap = [u for u in unresolved if u['callee'] not in _PURE_METHOD_NAMES]
+    hits = sorted({(u['file'], u['fn'], u['callee'], u['line']) for u in gap
                    if u['file'] in product and u['callee']
                    and u['callee'] in names
-                   and (u['file'], u['fn'], u['callee']) not in _CLOSURE_EXEMPT})
-    return cap, edges, unresolved, missing, hits
+                   and (u['file'], u['fn'], u['callee'], u['line']) not in _CLOSURE_EXEMPT})
+    # 差额必须报集合差（两侧），不许用 |cap|−|reg| 的算术差冒充。
+    # Differences are reported as two set differences; the arithmetic |cap|−|reg| is not a gap.
+    cap_minus = sorted(set(cap) - set(reg))
+    reg_minus = sorted(set(reg) - set(cap))
+    return (cap, edges, unresolved, missing, hits, gap, cap_minus, reg_minus)
+
+
+def _closure_role(k, product):
+    """差额构成：入口（8 入口文件×入口名）/ 随包测试辅助 / 产品内部件。
+    Difference composition: entry (entry name in an entry file) / bundled test-aux / product."""
+    if _is_entry(*k):
+        return '入口'
+    if k[0] not in product:
+        return '随包测试/辅助'
+    return '产品内部件'
+
+
+def _closure_diff_text(cap_minus, reg_minus, product, reg):
+    """记分板用的单行差额构成（两组集合差都要出现，且与覆盖率同屏）。
+    One-line difference composition for the scoreboard (both set differences, next to coverage)."""
+    roles = {}
+    for k in cap_minus:
+        r = _closure_role(k, product)
+        roles[r] = roles.get(r, 0) + 1
+    buckets = {}
+    for k in reg_minus:
+        b = reg[k][0]
+        buckets[b] = buckets.get(b, 0) + 1
+    return ('cap−reg %d（入口 %d｜测试/辅助 %d｜产品内部件 %d）｜reg−cap %d（%s）'
+            % (len(cap_minus), roles.get('入口', 0), roles.get('随包测试/辅助', 0),
+               roles.get('产品内部件', 0), len(reg_minus),
+               '｜'.join('%s %d' % (b, buckets[b]) for b in sorted(buckets))))
 
 
 def _audit_closure():
@@ -6446,10 +6534,29 @@ def _audit_closure():
     d = os.path.dirname(os.path.abspath(SRC_BIN))
     _files, sites, trees, product = _scan_write_sites(d)
     reg = {(f, fn): (b, r) for f, fn, b, r in WRITE_PATHS}
-    cap, edges, unresolved, missing, hits = _closure_parts(trees, sites, product, reg)
+    cap, edges, unresolved, missing, hits, gap, cap_minus, reg_minus = _closure_parts(
+        trees, sites, product, reg)
     nedges = sum(len(v) for v in edges.values())
-    print('[audit-closure] 已解析边=%d 未解析边=%d 写能力函数=%d 未登记=%d'
-          % (nedges, len(unresolved), len(cap), len(missing)))
+    total = nedges + len(unresolved)
+    print('[audit-closure] 已解析边=%d 未解析边=%d 总边=%d 闭包覆盖=%d/%d=%d%%'
+          % (nedges, len(unresolved), total, nedges, total,
+             (100 * nedges // total) if total else 100))
+    print('  未解析切分：内建/容器方法面=%d 可能写缺口=%d' % (len(unresolved) - len(gap), len(gap)))
+    print('  写能力函数=%d 未登记=%d' % (len(cap), len(missing)))
+    # 差额只报集合差与构成，不许用 |cap|−|reg| 的算术差冒充。
+    # Differences are set differences with composition; the arithmetic |cap|−|reg| is not a gap.
+    print('  集合差 cap−reg 共 %d 条（cap=写能力面，reg=登记表）' % len(cap_minus))
+    for role in ('入口', '随包测试/辅助', '产品内部件'):
+        rows = [k for k in cap_minus if _closure_role(k, product) == role]
+        print('    [%s] %d 条' % (role, len(rows)))
+        for f, fn in rows:
+            print('      %s::%s' % (f, fn))
+    print('  集合差 reg−cap 共 %d 条（按登记桶分组；桶名只是预期，不代表写能力）' % len(reg_minus))
+    for b in sorted({reg[k][0] for k in reg_minus}):
+        rows = [k for k in reg_minus if reg[k][0] == b]
+        print('    [%s] %d 条' % (b, len(rows)))
+        for f, fn in rows:
+            print('      %s::%s  %s' % (f, fn, reg[(f, fn)][1]))
     by = {}
     for u in unresolved:
         by.setdefault(u['reason'], []).append(u)
@@ -6465,25 +6572,22 @@ def _audit_closure():
     print('  未解析边同名写能力函数（红，除非已豁免）共 %d 条' % len(hits))
     for f, fn, callee, line in hits:
         print('    %s:%d %s() callee=%s' % (f, line, fn, callee))
-    ro_all = sorted(k for k in cap if k in reg and k not in sites)
-    ro = [k for k in ro_all if reg[k][0] == 'other']
-    print('  闭包面补签（无直接写调用点）共 %d 条，其中 other 只读 %d 条'
-          % (len(ro_all), len(ro)))
-    for f, fn in ro:
-        print('    %s::%s  [%s] %s' % (f, fn, reg[(f, fn)][0], reg[(f, fn)][1]))
     print('  已签豁免 %d 条' % len(_CLOSURE_EXEMPT))
-    for (f, fn, callee), why in sorted(_CLOSURE_EXEMPT.items()):
-        print('    豁免 %s::%s.%s  %s' % (f, fn, callee, why))
+    for (f, fn, callee, line), why in sorted(_CLOSURE_EXEMPT.items()):
+        print('    豁免 %s:%d %s.%s  %s' % (f, line, fn, callee, why))
     return 0
 
 
 def _audit_calls():
-    """兜底读数（只报告，不当绿证）：写面调用点 / 判为纯计算的调用点 / 纯计算 callee 去重列表。
-    Fallback reading (report only, never a green proof): write-surface call sites, call sites
-    judged pure, and the deduped callee list behind those pure judgements."""
+    """兜底读数（只报告，不当绿证）：写面调用点 / 非原语调用点 / 非原语 callee 去重列表。
+    「非原语」= 不匹配任何写原语类别（含只读、纯计算、外部调用），**不代表该调用点不写**
+    （例如 `uninstall` 经 `atomic_json` 写 tasks.json、`write_message` 写协议流）。
+    Fallback reading (report only, never a green proof): write-surface call sites, non-primitive
+    call sites, and the deduped callee list behind them. "Non-primitive" means no write-primitive
+    category matched (read-only/pure/external included) and does **not** mean it never writes."""
     d = os.path.dirname(os.path.abspath(SRC_BIN))
     _files, _sites, trees, product = _scan_write_sites(d)
-    writes, pure_sites, pure_callees = 0, 0, set()
+    writes, nonprim_sites, nonprim_callees = 0, 0, set()
     for fn, tree in trees.items():
         if fn not in product:
             continue
@@ -6494,14 +6598,15 @@ def _audit_calls():
             for sub in calls:
                 k = _call_kind(sub, al, scope, pure, paths, (fn, name))
                 if k is None:
-                    pure_sites += 1
-                    pure_callees.add(_resolve_callee(sub.func, al))
+                    nonprim_sites += 1
+                    nonprim_callees.add(_resolve_callee(sub.func, al))
                 else:
                     writes += 1
-    print('[audit-calls] 写面调用点=%d 判为纯计算调用点=%d 纯计算 callee 去重=%d'
-          % (writes, pure_sites, len(pure_callees)))
-    for x in sorted(pure_callees):
-        print('  pure  %s' % x)
+    print('[audit-calls] 写面调用点=%d 非原语调用点=%d 非原语 callee 去重=%d'
+          % (writes, nonprim_sites, len(nonprim_callees)))
+    print('  注：非原语＝不匹配写原语类别（含只读/纯计算/外部）；不代表不写，见闭包面。')
+    for x in sorted(nonprim_callees):
+        print('  非原语  %s' % x)
     return 0
 
 
