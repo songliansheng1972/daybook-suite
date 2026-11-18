@@ -27,6 +27,8 @@ Usage:
 """
 import os, re, sys, hashlib
 
+import errors
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # 引用正则：[卷名#L行号-SHA256前8位]
@@ -209,15 +211,27 @@ class CrossRef:
         return results
 
 
+def _int(tok, what):
+    try:
+        return int(tok)
+    except (ValueError, TypeError):
+        raise errors.ConfigError('%s 必须是整数：%r' % (what, tok))
+
+
 def main():
+    """统一出口：参数错 ConfigError(2)，运行错 6，绝不裸 traceback。"""
+    return errors.run_entry(_main)
+
+
+def _main():
     if len(sys.argv) < 2:
-        print(__doc__); return 1
+        raise errors.ConfigError(__doc__ or '缺子命令')
     cr = CrossRef()
     cmd = sys.argv[1]
     if cmd == 'make' and len(sys.argv) >= 4:
-        print(cr.make_ref(sys.argv[2], int(sys.argv[3])))
+        print(cr.make_ref(sys.argv[2], _int(sys.argv[3], '行号')))
     elif cmd == 'resolve' and len(sys.argv) >= 4:
-        r = cr.resolve(sys.argv[2], int(sys.argv[3]))
+        r = cr.resolve(sys.argv[2], _int(sys.argv[3], '行号'))
         if r:
             print(r[0])
             if r[3]:
@@ -226,21 +240,20 @@ def main():
             print('（无条目）')
     elif cmd == 'verify' and len(sys.argv) >= 4:
         if len(sys.argv) < 5:
-            sys.stderr.write('verify 需要基准 SHA8：cross_ref.py verify <卷> <行号> <sha8>\n')
-            return 2
+            raise errors.ConfigError(
+                'verify 需要基准 SHA8：cross_ref.py verify <卷> <行号> <sha8>')
         try:
-            ok = cr.verify(sys.argv[2], int(sys.argv[3]), sys.argv[4])
+            ok = cr.verify(sys.argv[2], _int(sys.argv[3], '行号'), sys.argv[4])
         except ValueError as exc:
-            sys.stderr.write('%s\n' % exc)
-            return 2
+            raise errors.ConfigError(str(exc))
         print('verify: %s' % ('PASS' if ok else 'FAIL'))
     elif cmd == 'parse' and len(sys.argv) >= 3:
         print(cr.parse(sys.argv[2]))
     elif cmd == 'backrefs' and len(sys.argv) >= 4:
-        for vol, ln, line in cr.find_backrefs(sys.argv[2], int(sys.argv[3])):
+        for vol, ln, line in cr.find_backrefs(sys.argv[2], _int(sys.argv[3], '行号')):
             print('%s#L%d: %s' % (vol, ln, line))
     else:
-        print(__doc__); return 1
+        raise errors.ConfigError(__doc__ or '未知子命令')
     return 0
 
 

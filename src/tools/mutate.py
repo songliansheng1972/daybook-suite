@@ -190,6 +190,45 @@ def m8_rel_first_segment(text):
     raise MutationError('M8 锚点消失：Rel.__init__ 无 for seg in parts')
 
 
+def m9_drop_liveness(text):
+    """去掉写前凭证校验（write/update 各一处）。"""
+    tree = _parse(text)
+
+    def pred(node):
+        c = node.value
+        return (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute)
+                and c.func.attr == '_ensure_live')
+
+    hit = 0
+    for fn in ('write', 'update'):
+        if _drop_stmt(_func(tree, fn, 'LockedRoot'), pred):
+            hit += 1
+    if hit < 2:
+        raise MutationError('M9 锚点消失：write/update 的 _ensure_live 不全（hit=%d）' % hit)
+    return ast.unparse(tree)
+
+
+def m10_task_reopen_by_path(text):
+    """TaskVolume.create 写前把 Root 退回 str(path) 重开（换根后改道新 inode）。"""
+    tree = _parse(text)
+    f = _func(tree, 'create', 'TaskVolume')
+    hit = False
+    for node in ast.walk(f):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                call = item.context_expr
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) \
+                        and call.func.id == 'locked' and call.args \
+                        and isinstance(call.args[0], ast.Attribute) \
+                        and call.args[0].attr == 'root':
+                    call.args[0] = ast.Call(func=ast.Name(id='str', ctx=ast.Load()),
+                                            args=[call.args[0]], keywords=[])
+                    hit = True
+    if not hit:
+        raise MutationError('M10 锚点消失：TaskVolume.create 无 locked(self.root)')
+    return ast.unparse(tree)
+
+
 MUTATIONS = [
     {'id': 'M1', 'file': 'safeio.py', 'expect': 'P1',
      'desc': '锁键改 label（同 inode 不再同一把锁）', 'apply': m1_lock_key_to_label},
@@ -207,6 +246,10 @@ MUTATIONS = [
      'desc': '删 _replace 的 fsync(dfd)', 'apply': m7_drop_dir_fsync},
     {'id': 'M8', 'file': 'safeio.py', 'expect': 'P2',
      'desc': 'Rel 只校验首段（.. 逃逸）', 'apply': m8_rel_first_segment},
+    {'id': 'M9', 'file': 'safeio.py', 'expect': 'P8',
+     'desc': '去掉写凭证的释放/线程校验', 'apply': m9_drop_liveness},
+    {'id': 'M10', 'file': 'task_volume.py', 'expect': 'P9',
+     'desc': 'TaskVolume 写时按路径重开 Root（换根改道）', 'apply': m10_task_reopen_by_path},
 ]
 
 BY_ID = {m['id']: m for m in MUTATIONS}

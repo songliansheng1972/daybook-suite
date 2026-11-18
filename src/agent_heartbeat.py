@@ -38,13 +38,17 @@ class Heartbeat:
         """period：心跳周期（秒）。dead_after：缺多少周期判定 dead。
         period: heartbeat period (in seconds). dead_after: how many missed periods count as dead."""
         self.path = path or os.path.join(HERE, '心跳卷.txt')
-        # 不自报根失败即报错；不再用目标目录猜账本根
-        # No guessing the ledger root from the target directory: leave it None and fail on write
-        self.root = root
+        # 不自报根失败即报错；收 Root 时复用同一 dev_ino，不按路径重开
+        # No guessing the ledger root from the target directory. A Root is reused as-is.
+        from safeio import as_root
+        self.root = as_root(root, 'agent_heartbeat')[0] if root else None
         self.period = period
         self.dead_after = dead_after
         if not os.path.exists(self.path):
             from safeio import locked, WriteMode
+            if not self.root:
+                raise RuntimeError('Heartbeat: 缺少账本根（root）·拒绝初始化'
+                                   '（不猜目标所在目录）')
             with locked(self.root) as lr:
                 lr.write(lr.root.rel_of(self.path, 'agent_heartbeat.init'), b'',
                          mode=WriteMode.REPLACE)

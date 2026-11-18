@@ -46,6 +46,33 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 **诚实边界**：仅在「只删索引、游标与封存未动」时能判 3；同时改写两份派生件、或卷+游标+封存
 三者自洽改写，本实现不承诺识别（缺外部锚：封存仍在账本目录内、无签名）。外部锚另开一单。
 
+### 复签收口：三条所有权补立（2026-11-18 · P1/P2）
+
+1. **写凭证生命周期**：`LockedRoot.write/update` 写前过 `_ensure_live()`（未释放且仍在本线程
+   持有表）。所有权从「曾经拿到过对象」收回「此刻仍持锁」。红证：释放后旧凭证、跨线程、
+   子进程持 flock 窗口三种情形均 RuntimeError 且零写（P8）；变异 M9（删 `_ensure_live`）⇒ P8 红。
+2. **入口参数收口**：`daybook.py watch` 的 `int()` 解析改抛 `ConfigError`；`errors.run_entry`
+   统收 `ValueError`/`TypeError` 为 6，绝不让 traceback 出栈。红证：旧码 `watch abc` ⇒ rc=1 +
+   ValueError traceback；绿证：现 rc=2 + 单行文案（P6 畸形参数格）。
+3. **入口级换根**：`orchestrator.Hub` 启动只开一次 `Root`，把同一句柄交给
+   `TaskVolume`/`Heartbeat`/`AgentLock`/`Registry`；`agent_message.AgentServer` 同样固定
+   inbox 路径与 Root；`mcp_resources._ROOT_CACHE` 按路径缓存 Root（换根仍写旧 inode，已核）。
+   红证：M10（TaskVolume 写时退回 `str(root)` 重开）⇒ P9 红；绿证：P9 三类均写旧 inode、
+   新同名目录零新增。
+4. **入口清单对齐**：统一退出码入口明确为 8 个（daybook / append / hook / session_hook /
+   record / orchestrator / mcp_server / cross_ref），P6 矩阵改为 8×7=56 格；`agent_*`、
+   `daybook_multidx`、`mcp_subscribe`、`chatroom_server` 明确为运维/调试工具，不承诺统一码。
+   `daybook_record` 与 `cross_ref` 补走 `run_entry`，不再持有字面退出码。
+5. **登记链路**：`daybook_record.py` 调 append 时补作者位（`记录器`），不再 4 参必败；
+   红证：旧 4 参调用 rc=2（作者必填），绿证：`record()` 落原件并在对话卷出现 `[记录器]`。
+6. **orch 文档退出码**：README.orch.md / orchestrator.md / orchestrator.py docstring 统一为
+   `0 干净｜3 有硬警｜2 参数/文件错｜6 执行异常`，中英文一致。
+7. **删旧自证**：删除 `src/tools/write_audit.py`、`audit_fixture.py`；步骤 0 的可复现读数
+   改为 P3 + M4（见下），不再保留一套没人跑的假自证。
+8. **本轮读数**：源树 `0 红 / 504 项（PASS 504；跳过 24）`；`daybook/` 盒
+   `0 红 / 384 项（PASS 384；跳过 47）`；属性 P1–P9 全绿；score
+   `变异 10 / 杀死 10 / 存活 0 / 死变异 0`；仓根与 `_build` 三包 `--verify` 均 rc=0。
+
 ### 单一源件与打包校验（2026-11-18 · 步骤 6）
 
 1. **不变量与唯一归属**：「源件唯一，盒内副本逐字节一致」不属于 `build_one` 或某个盒，
@@ -256,11 +283,14 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
 
 ### 架构收口 · 步骤 0／1（2026-11-15）
 
-45. **步骤 0：写路径先变成运行时观测**：新增 `src/tools/write_audit.py`，用
-    `sys.addaudithook` 记录 `open` / `os.rename` / `os.remove` / `os.mkdir`，只保留落在账本根内的
-    写事件，打印「调用栈顶层函数 + 目标相对段」并与登记表对账。三态读数（判据自己打印）：
-    绿 `登记=4 实扫=4 未登记=0`；红（夹具插一行 stray 写）`未登记=1 命中stray=True`；
-    变异红（过滤条件改成全部忽略）`登记=4 实扫=0 登记未实扫=4`。跳过一律打印原因与计数。
+45. **步骤 0：写路径先变成运行时观测**（已迁移）：原 `src/tools/write_audit.py` 与
+    `audit_fixture.py` 随步骤 5 判据分层迁入属性层，旧工具删除，不再保留一套没人跑的假自证。
+    现在由 `src/tests/prop/p3_single_write.py` 用同一 `sys.addaudithook` 记录根内写事件并核对
+    调用栈是否经过 `safeio.LockedRoot.write/_append/_replace/update`。
+    可复现读数：`python3 src/tests/prop/run_all.py --only P3 --seed 7` ⇒ P3 全绿（3 项）；
+    变异 `python3 src/tools/score.py --only M4` ⇒ M4 被 P3 杀死（1/1）。
+    原三态读数（`登记=4 实扫=4 未登记=0` / `未登记=1` / `登记未实扫=4`）对应到 P3 的
+    「事件全经 safeio」与 M4 旁路红证，命令与读数均以当前打印为准。
 46. **步骤 1：根句柄 `Root` + 锁挂目录 fd**：`safeio.py` 引入四个单一所有权——
     `Root`（`O_RDONLY|O_DIRECTORY` fd + 一次 `fstat` 取得的 `dev_ino`；`label`/`orig` 只用于文案与
     取名，不参与锁判定）、`Rel`（构造即校验，`..`/`.`/空段/分隔符直接拒绝）、`LockedRoot`

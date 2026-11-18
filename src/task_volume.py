@@ -59,11 +59,12 @@ class TaskVolume:
     Task status volume · append-only."""
     def __init__(self, path=None, root=None):
         self.path = path or os.path.join(HERE, '任务卷.txt')
-        # 账本根一律显式给出（realpath 归一）；不再回退到卷所在目录
-        # The ledger root is always explicit (realpath-normalised); no fallback to the volume dir.
-        self.root = os.path.realpath(root or HERE)
+        # 账本根一律显式给出；收 Root 就复用同一 dev_ino，绝不按路径重开（入口换根后仍写旧 inode）
+        # The ledger root is always explicit; a Root is reused (same dev_ino) instead of being
+        # reopened by path, so an entry-level rename keeps writing the original inode.
+        from safeio import as_root, locked, WriteMode
+        self.root, _opened = as_root(root or HERE, 'task_volume')
         if not os.path.exists(self.path):
-            from safeio import locked, WriteMode
             with locked(self.root) as lr:
                 lr.write(lr.root.rel_of(self.path, 'task_volume.init'), b'',
                          mode=WriteMode.REPLACE)

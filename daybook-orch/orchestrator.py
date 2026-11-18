@@ -71,8 +71,8 @@ Usage:
     python3 orchestrator.py alarm
     python3 orchestrator.py digest [--vol 卷] [--cls 类] [--push 收件人]   # v3.1 读多级目录·分发摘要
     python3 orchestrator.py selftest
-退出码：0 正常；1 alarm 有硬警；2 参数/文件错；3 alarm 执行异常（读卷/解析失败）；6 运行失败（写原语)。
-Exit codes: 0 clean; 1 alarm hard warning; 2 argument/file error; 3 alarm execution error;
+退出码：0 正常；3 alarm 有硬警；2 参数/文件错；6 alarm 执行异常（读卷/解析失败）；6 运行失败（写原语)。
+Exit codes: 0 clean; 3 alarm hard warning; 2 argument/file error; 6 alarm execution error;
 6 runtime failure (write primitive).
 Exit codes: 0 normal; 1 alarm has a hard warning; 2 argument/file error; 3 alarm execution error (volume read/parse failure).
 """
@@ -538,8 +538,15 @@ class Hub:
         # Both the ledger root and the conf location come from ledger_root (shared with
         # index/MCP/the append CLI/the hook); root/--root only locates conf, [index] root decides.
         from ledger_root import locate as _locate_conf
+        from safeio import Root
         self.conf_dir, self.conf_path = _locate_conf(override=root)
         self.root = _vp.resolve_root(root)
+        # 入口只开一次 Root：后续 TaskVolume/Heartbeat/AgentLock/编排卷追加都复用同一 dev_ino。
+        # 根被 rename 后仍写旧 inode，不会因「同名目录已就位」静默改道。
+        # Open the Root once at the entry; TaskVolume/Heartbeat/AgentLock and ledger appends
+        # reuse the same dev_ino. After a rename they keep writing the original inode instead of
+        # silently following a newly-created same-named directory.
+        self.root_handle = Root._from_dir_path(self.root, 'orchestrator.Hub')
         # 传 conf 目录，不传已解析的账本根：否则 resolve_volumes 会把根再当 conf 解析一遍，
         # [index] root 非空时全部命令 rc=2。
         # Pass the conf directory, not the resolved ledger root: otherwise resolve_volumes
@@ -555,10 +562,10 @@ class Hub:
             parent = os.path.dirname(path)
             if parent and not os.path.isdir(parent):
                 os.makedirs(parent, exist_ok=True)
-        self.reg = _reg.Registry(self.vols['registry'])
-        self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root)
-        self.hb = _hb.Heartbeat(self.vols['heartbeat'], root=self.root)
-        self.lock = _lock.AgentLock(self.vols['leases'], root=self.root)
+        self.reg = _reg.Registry(self.vols['registry'], root=self.root_handle)
+        self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root_handle)
+        self.hb = _hb.Heartbeat(self.vols['heartbeat'], root=self.root_handle)
+        self.lock = _lock.AgentLock(self.vols['leases'], root=self.root_handle)
         self.ledger = self.vols['ledger']
         self.rules = load_rules(rule or DEFAULT_RULE)
         self.roles = load_roles(roles or DEFAULT_ROLES)
@@ -611,7 +618,7 @@ class Hub:
         _dba.append_one(self.ledger, kind, title, body, author=disp, to=to_ids,
                         msg_id=eid, re_ref=re_ref, sig=sig, now=now,
                         author_id=author if AUTHOR_ID_RE.match(author or '') else None,
-                        root=self.root)
+                        root=self.root_handle)
         return eid
 
     def _resolve_to(self, to):

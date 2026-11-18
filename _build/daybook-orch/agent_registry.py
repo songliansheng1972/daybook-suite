@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
+"""Agent 身份注册表（W-DB-023-G3·第 1 项）
+Agent identity registry (W-DB-023-G3 · item 1)
+================================================
+- 多 Agent 写同卷需区分·作者字段从字符串改为 agent_id+signature·不可伪造
+  Multiple agents writing the same volume must be distinguished · the author field changes from a string to agent_id+signature · unforgeable
+- 零依赖：仅用 Python 3 标准库（hashlib/hmac/uuid/json/os/time）
+  Zero dependencies: only the Python 3 standard library (hashlib/hmac/uuid/json/os/time)
+- 签名算法：HMAC-SHA256（够用·简单·不引入 cryptography/Ed25519）
+  Signature algorithm: HMAC-SHA256 (sufficient · simple · no cryptography/Ed25519 dependency)
+- 注册表 append-only·白箱可审计
+  The registry is append-only · white-box auditable
+- 不绑任一 LLM·开放
+  Not bound to any LLM · open
+
+注册卷.txt 格式（每行一条·append-only）：
+Registry volume (注册卷.txt) format (one entry per line · append-only):
+  [时间] [注册] [agent_id] [agent_name] [密钥文件=.daybook_keys/<agent_id>.key]
+  [时间] [吊销] [agent_id]
+  旧格式 [时间] [注册] [agent_id] [agent_name] [secret_hex] 仍可读（兼容）。
+  The legacy form with the secret hex inline is still readable (compatibility).
+
+密钥文件 / Key file:
+  独立文件 `.daybook_keys/<agent_id>.key`·权限 0600（目录 0700）·内容为 secret hex。
+  A separate file `.daybook_keys/<agent_id>.key`, mode 0600 (directory 0700), holding the secret hex.
+  注册卷.txt 不再写明文密钥（旧卷仍兼容读取，新注册一律外置）。
+  注册卷.txt no longer stores the plaintext secret (legacy volumes remain readable; new registrations always go external).
+
+签名规则：
+Signature rules:
+  payload = 条目正文（去掉作者字段）
+  payload = the entry body (with the author field removed)
+  signature = HMAC-SHA256(secret, payload).hexdigest()
+
+用法：
+Usage:
+  from agent_registry import Registry
+  reg = Registry('注册卷.txt')
+  agent = reg.register('汤姆')           # 注册一个 Agent，返回 (agent_id, secret) · register an agent, returns (agent_id, secret)
+  sig  = reg.sign(agent_id, '某条正文')    # 算签名 · compute a signature
+  ok   = reg.verify(agent_id, '某条正文', sig)  # 验签 · verify a signature
+  reg.revoke(agent_id)                   # 吊销 · revoke
+"""
+import os, time, hmac, hashlib, secrets
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+KEY_DIR_NAME = '.daybook_keys'     # 密钥目录（相对注册卷所在目录）/ key dir (next to the registry volume)
+KEY_REF_PREFIX = '密钥文件='       # 注册条目第 5 段的引用前缀 / 5th-field prefix in a registration entry
+
+
+def _now():
+    return time.strftime('%Y-%m-%d %H:%M')
+
+
+class Agent:
+    """单个 Agent 的身份信息（值对象）。
+    Identity info of a single agent (value object)."""
+    __slots__ = ('agent_id', 'name', 'secret', 'created_at', 'revoked')
+
+    def __init__(self, agent_id, name, secret, created_at, revoked=False):
+        self.agent_id = agent_id
+        self.name = name
+        self.secret = secret
+        self.created_at = created_at
+        self.revoked = revoked
+
+    def __repr__(self):
+        return '<Agent %s name=%s revoked=%s>' % (self.agent_id[:8], self.name, self.revoked)
+
+
+class Registry:
+    """Agent 身份注册表。append-only·白箱可审计。
+    Agent identity registry. append-only · white-box auditable.
+
+    所有写操作追加到注册卷.txt；读操作走内存（启动时全量加载）。
+    All writes append to 注册卷.txt; reads go through memory (fully loaded at startup).
+    不改历史 = 吊销只追加吊销条目·不删原注册条目。
+    History is never rewritten: revocation only appends a revocation entry · the original registration entry is not deleted."""
+    def __init__(self, path=None, root=None):
+        self.path = path or os.path.join(HERE, '注册卷.txt')
+        # 收 Root 就复用同一 dev_ino；CLI 路径只解析一次
+        # Reuse the Root handle when given; a CLI path is resolved once here.
+        from safeio import as_root
+        self.root, _opened = as_root(root or os.path.dirname(os.path.abspath(self.path)),
+                                     'agent_registry')
+        self._agents = {}  # agent_id -> Agent · 内存索引 · in-memory index
+        self._load()
+
+    def _load(self):
+        if not os.path.exists(self.path):
+            return
+        from safeio import read_vol
+        text, _enc, _why = read_vol(self.path)
+        for line in text.splitlines():
+            line = line.rstrip('\n')
+            if not line or not line.startswith('['):
+                continue
+            # [时间] [注册] [agent_id] [name] [密钥文件=...] · 注册条目 · registration entry
+            # [时间] [吊销] [agent_id] · 吊销条目 · revocation entry
+            parts = [p.strip() for p in line.split(']')]
+            parts = [p.lstrip(' [') for p in parts if p.strip()]
+            if len(parts) < 3:
+                continue
+            if parts[1] == '注册' and len(parts) >= 5:
+                aid, name, ref = parts[2], parts[3], parts[4]
+                if ref.startswith(KEY_REF_PREFIX):
+                    secret = self._read_secret(ref[len(KEY_REF_PREFIX):].strip())
+                else:
+                    secret = ref          # 旧格式内联密钥 / legacy inline secret
+                self._agents[aid] = Agent(aid, name, secret, parts[0], False)
+            elif parts[1] == '吊销' and len(parts) >= 3:
+                aid = parts[2]
+                if aid in self._agents:
+                    self._agents[aid].revoked = True
+
+    def _key_dir(self):
+        """密钥目录绝对路径。
+        Absolute path of the key directory."""
+        return os.path.join(os.path.dirname(os.path.abspath(self.path)), KEY_DIR_NAME)
+
+    def _read_secret(self, rel):
+        """从密钥文件读 secret·缺失返 None。
+        Read the secret from its key file · None when missing."""
+        p = rel if os.path.isabs(rel) else os.path.join(os.path.dirname(os.path.abspath(self.path)), rel)
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return f.read().strip() or None
+        except OSError:
+            return None
+
+    def _write_secret(self, agent_id, secret):
+        """写独立密钥文件（0600）·返回注册卷引用的相对路径。
+        Write the standalone key file (0600) · return the relative path recorded in the registry volume.
+        文件走 LockedRoot.write(REPLACE, 0600)（在账本根内 ⇒ 只有这一套写路径）；
+        目录仍显式 0700，不依赖 umask。
+        The file goes through LockedRoot.write(REPLACE, 0600) (it lives inside the ledger root,
+        so there is exactly one write path); the directory stays explicitly 0700."""
+        d = self._key_dir()
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+        fn = agent_id + '.key'
+        p = os.path.join(d, fn)
+        from safeio import locked, WriteMode
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(p, 'agent_registry._write_secret'), secret + '\n',
+                     mode=WriteMode.REPLACE, perm=0o600)
+        return KEY_DIR_NAME + '/' + fn
+
+    def register(self, name):
+        """注册新 Agent。返回 (agent_id, secret_hex)。secret 仅此刻可见·不打印。
+        Register a new agent. Returns (agent_id, secret_hex). The secret is visible only at this moment · never printed.
+        密钥写入独立 0600 文件；注册卷只记密钥文件引用·不落明文。
+        The key goes into a standalone 0600 file; the registry volume records only the key-file reference, never the plaintext."""
+        agent_id = 'ag-' + secrets.token_hex(8)  # 16 字符前缀 · 16-char prefix
+        secret = secrets.token_hex(32)            # 64 字符 hex · 256bit · 64-char hex · 256-bit
+        ref = self._write_secret(agent_id, secret)
+        rec = '[%s] [注册] [%s] [%s] [%s]\n' % (_now(), agent_id, name, KEY_REF_PREFIX + ref)
+        from safeio import locked, WriteMode
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(self.path, 'agent_registry.register'), rec,
+                     mode=WriteMode.APPEND_CREATE)
+        try:
+            os.chmod(self.path, 0o600)            # 旧卷可能含内联密钥·一并收紧 / legacy volumes may hold inline secrets · tighten too
+        except OSError:
+            pass
+        self._agents[agent_id] = Agent(agent_id, name, secret, _now(), False)
+        return agent_id, secret
+
+    def revoke(self, agent_id):
+        """吊销·append-only·不删原注册条目。
+        Revoke · append-only · the original registration entry is not deleted."""
+        if agent_id not in self._agents:
+            raise KeyError('agent %s 不存在' % agent_id)
+        rec = '[%s] [吊销] [%s]\n' % (_now(), agent_id)
+        from safeio import locked, WriteMode
+        with locked(self.root) as lr:
+            lr.write(lr.root.rel_of(self.path, 'agent_registry.revoke'), rec,
+                     mode=WriteMode.APPEND_CREATE)
+        self._agents[agent_id].revoked = True
+
+    def lookup(self, agent_id):
+        return self._agents.get(agent_id)
+
+    def sign(self, agent_id, payload):
+        """对 payload（条目正文）算 HMAC-SHA256。返回 hex 签名。
+        Compute HMAC-SHA256 over the payload (entry body). Returns a hex signature."""
+        a = self._agents.get(agent_id)
+        if not a or a.revoked:
+            raise PermissionError('agent %s 不存在或已吊销' % agent_id)
+        if not a.secret:
+            raise PermissionError('agent %s 密钥文件缺失' % agent_id)
+        return hmac.new(a.secret.encode('utf-8'),
+                        payload.encode('utf-8'),
+                        hashlib.sha256).hexdigest()
+
+    def verify(self, agent_id, payload, sig):
+        """验签·常数时间比较防时序攻击。
+        Verify · constant-time comparison to prevent timing attacks."""
+        a = self._agents.get(agent_id)
+        if not a or a.revoked or not a.secret:
+            return False
+        expected = self.sign(agent_id, payload)
+        return hmac.compare_digest(expected, sig)
+
+    def list(self):
+        return list(self._agents.values())
+
+
+def main():
+    """CLI：注册 / 列表 / 验签 demo。
+    CLI: register / list / verify demo.
+    用法：
+    Usage:
+      python3 agent_registry.py register 汤姆
+      python3 agent_registry.py list
+      python3 agent_registry.py verify <agent_id> <payload> <sig>
+    """
+    import sys
+    if len(sys.argv) < 2:
+        print(__doc__); return 1
+    reg = Registry()
+    cmd = sys.argv[1]
+    if cmd == 'register' and len(sys.argv) >= 3:
+        aid, secret = reg.register(sys.argv[2])
+        print('agent_id: %s' % aid)
+        print('secret:   %s' % secret)
+        print('（secret 仅此刻可见·请妥善保存）')
+    elif cmd == 'list':
+        for a in reg.list():
+            print('%s %s revoked=%s' % (a.agent_id, a.name, a.revoked))
+    elif cmd == 'verify' and len(sys.argv) >= 5:
+        ok = reg.verify(sys.argv[2], sys.argv[3], sys.argv[4])
+        print('verify: %s' % ('PASS' if ok else 'FAIL'))
+    else:
+        print(__doc__); return 1
+    return 0
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main())

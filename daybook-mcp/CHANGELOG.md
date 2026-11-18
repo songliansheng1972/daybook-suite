@@ -42,6 +42,24 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签收口：三条所有权补立（P1/P2 · 2026-11-18）
+
+- **写凭证生命周期**：`LockedRoot.write/update` 写前过 `_ensure_live()`（未释放且仍在本线程
+  持有表）。红证：释放后旧凭证 / 跨线程 / 子进程持锁窗口均 RuntimeError 且零写（P8）；
+  变异 M9（删校验）⇒ P8 红。
+- **入口参数收口**：`daybook.py watch` 的 `int()` 改抛 `ConfigError`；`errors.run_entry`
+  统收 `ValueError`/`TypeError` 为 6。旧码 `watch abc` ⇒ rc=1 + traceback；现 rc=2 + 单行文案。
+- **入口级换根**：`orchestrator.Hub` 启动只开一次 `Root`，交给 TaskVolume / Heartbeat /
+  AgentLock / Registry；`agent_message.AgentServer` 固定 inbox 与 Root；`_ROOT_CACHE`
+  按路径缓存 Root（换根写旧 inode，已核）。M10（写时按路径重开）⇒ P9 红。
+- **8 个统一退出码入口**：daybook / append / hook / session_hook / record / orchestrator /
+  mcp_server / cross_ref；P6 改为 8×7=56 格。`agent_*`、`daybook_multidx`、`mcp_subscribe`、
+  `chatroom_server` 明确为运维/调试工具，不承诺统一码。
+- `daybook_record.py` 调 append 补作者位（`记录器`），并在对话卷可查；orch 三份文档退出码
+  统一为 3/6；删除 `tools/write_audit.py`、`audit_fixture.py`，步骤 0 读数改由 P3 + M4 复现。
+- 读数：源树 `0 红 / 504 项（跳过 24）`；`daybook/` 盒 `0 红 / 384 项（跳过 47）`；
+  属性 P1–P9 全绿；`变异 10 / 杀死 10 / 存活 0 / 死变异 0`；两套 `--verify` rc=0。
+
 ### 单一源件与打包校验（步骤 6 · 2026-11-18）
 
 - 不变量「源件唯一，盒内副本逐字节一致」唯一归属 `pack.py` 的 `plan_for()` 清单：

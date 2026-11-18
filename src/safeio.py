@@ -533,6 +533,12 @@ class LockedRoot:
         self.root = root
         self._released = False
 
+    def _ensure_live(self):
+        """凭证仍有效：未释放，且确实在本线程的持有表里。写前必过一次。
+        The credential is still live: not released and still in this thread's held stack."""
+        if self._released or self not in _held_list():
+            raise RuntimeError('safeio: 写凭证已释放或不属于本线程·拒绝写入（零写）')
+
     def write(self, rel, data, *, mode, perm=0o644, pad_newline=False):
         """★唯一写链。rel 已合法；走查、错误包装、fsync、追加后 inode 复核全在这里。
         ★The single write chain: walk, error wrapping, fsync and the post-append inode check
@@ -540,6 +546,7 @@ class LockedRoot:
         APPEND_*：末字节检查（读不到就跳过补换行）→ 写 → stat(dir_fd) 复核写 fd 的 inode。
         REPLACE：临时件（dir_fd, O_EXCL|O_NOFOLLOW）→ fsync → os.replace(dir_fd 两端) → fsync(dfd)。
         Returns the padded flag for append modes (False for REPLACE)."""
+        self._ensure_live()
         if not isinstance(rel, Rel):
             raise TypeError('safeio.LockedRoot.write: 需要 Rel（由 Root.rel 构造）')
         if isinstance(data, str):
@@ -725,6 +732,7 @@ class LockedRoot:
     def update(self, rel, fn):
         """持锁读-改-写：读旧值（缺件按空）→ fn → 同一个 write(REPLACE)。不是第二个原语。
         Locked read-modify-write: read (missing ⇒ empty) → fn → the same write(REPLACE)."""
+        self._ensure_live()
         if not isinstance(rel, Rel):
             raise TypeError('safeio.LockedRoot.update: 需要 Rel（由 Root.rel 构造）')
         try:

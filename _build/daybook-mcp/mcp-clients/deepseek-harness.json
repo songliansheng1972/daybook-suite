@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "daybook": {
+      "command": "/path/to/daybook-suite/daybook-mcp/daybook-mcp",
+      "args": [],
+      "env": {
+        "MCP_READ_ONLY": "1",
+        "DAYBOOK_ROOT": "/path/to/daybook-ledger",
+        "DAYBOOK_AGENT_ID": "DEEPSEEK_HARNESS"
+      }
+    }
+  }
+}

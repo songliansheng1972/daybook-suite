@@ -2688,9 +2688,10 @@ def _case_lock_assert(tmp):
     else:
         agent_src = io.open(os.path.join(here, 'agent_lock.py'), encoding='utf-8').read()
         dup_anchor = """        if exclusive_held(rt):
-            rt.close()
+            if own:
+                rt.close()
             raise RuntimeError('agent_lock: 同线程重复获取账本根锁（%s）·拒绝等待'
-                               '（同线程等自己必自死锁；互斥范围是整个账本根）' % self.root)"""
+                               '（同线程等自己必自死锁；互斥范围是整个账本根）' % rt)"""
         assert dup_anchor in agent_src
         md = os.path.join(tmp, 'ak_mut_agent')
         os.makedirs(md)
@@ -4077,8 +4078,9 @@ def _case_entry_wrappers(tmp):
             shutil.rmtree(d, ignore_errors=True)
 
 
-_ENTRIES6 = ('daybook.py', 'daybook_append.py', 'daybook_hook.py',
-             'daybook_session_hook.py', 'orchestrator.py', 'mcp_server.py')
+_ENTRIES = ('daybook.py', 'daybook_append.py', 'daybook_hook.py',
+            'daybook_session_hook.py', 'orchestrator.py', 'mcp_server.py',
+            'daybook_record.py', 'cross_ref.py')
 _FAULTS7 = ('CONFIG', 'VIOLATION', 'AUTHOR', 'EVIDENCE', 'RUNTIME', 'COMPOSE', 'NO_TRACE')
 
 
@@ -4122,7 +4124,7 @@ def _literal_codes(path):
 
 
 def _case_error_table(tmp):
-    """P6：错误表唯一映射——6 入口 × 7 故障类；同故障同码、多故障取最高严重度、无 traceback。
+    """P6：错误表唯一映射——8 入口 × 7 故障类；同故障同码、多故障取最高严重度、无 traceback。
     P6: the single error table — 6 entries × 7 fault classes; the same fault maps to the same
     code everywhere, composition takes the highest severity, and no entry prints a traceback."""
     here = os.path.dirname(SRC_BIN)
@@ -4152,7 +4154,7 @@ def _case_error_table(tmp):
         E.worst([]) is None and E.exit_code(type('X', (Exception,), {'kind': 99})()) == 6)
 
     # 静态：每个入口只有一个出口，且不持有数字码
-    for name in _ENTRIES6:
+    for name in _ENTRIES:
         p = os.path.join(here, name)
         if not os.path.exists(p):
             _skip('P6 %s：当前盒无此文件' % name)
@@ -4167,7 +4169,7 @@ def _case_error_table(tmp):
             'run_entry=%d 字面码=%r 旧常量=%s' % (n_run, lits, bool(holds)))
 
     cells = [0]
-    outs = {n: [] for n in _ENTRIES6}
+    outs = {n: [] for n in _ENTRIES}
 
     def probe(entry, kind, argv, cwd, env=None):
         """跑一格：退出码必须等于 TABLE[kind]，且输出无 traceback。
@@ -4177,7 +4179,7 @@ def _case_error_table(tmp):
         exits 2 must never masquerade as the same code."""
         ap = argv[0]
         full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
-        if os.path.basename(ap) in _ENTRIES6 and not os.path.exists(full):
+        if os.path.basename(ap) in _ENTRIES and not os.path.exists(full):
             na(entry, kind, '当前盒无 %s' % os.path.basename(ap))
             return
         e = dict(os.environ)
@@ -4216,6 +4218,10 @@ def _case_error_table(tmp):
               [os.path.join(here, 'orchestrator.py'), '--home', missing, 'who'], d)
         probe('mcp_server.py', 'CONFIG',
               [os.path.join(here, 'mcp_server.py'), '--home', missing], d)
+        probe('daybook_record.py', 'CONFIG',
+              [os.path.join(here, 'daybook_record.py'), '--no-index'], d)
+        probe('cross_ref.py', 'CONFIG',
+              [os.path.join(here, 'cross_ref.py')], d)
 
         # EVIDENCE：daybook（无封存）/ hook（缺对话卷）/ session（坏游标）同为 5
         d_ev = tempfile.mkdtemp(prefix='p6ev_', dir=tmp)
@@ -4233,7 +4239,8 @@ def _case_error_table(tmp):
                    '--events-root', ev, '--state', bad_state, '--workspace', d_ev], d_ev)
         finally:
             shutil.rmtree(d_ev, ignore_errors=True)
-        for e in ('daybook_append.py', 'orchestrator.py', 'mcp_server.py'):
+        for e in ('daybook_append.py', 'orchestrator.py', 'mcp_server.py',
+                  'daybook_record.py', 'cross_ref.py'):
             na(e, 'EVIDENCE', '该入口不读取派生证据，缺件在它这里表现为配置错或运行失败')
 
         # VIOLATION：daybook 等长改写 / 司南 幽灵负责人硬警 → 同为 3
@@ -4265,7 +4272,8 @@ def _case_error_table(tmp):
         finally:
             shutil.rmtree(d_o, ignore_errors=True)
         for e in ('daybook_append.py', 'daybook_hook.py',
-                  'daybook_session_hook.py', 'mcp_server.py'):
+                  'daybook_session_hook.py', 'mcp_server.py',
+                  'daybook_record.py', 'cross_ref.py'):
             na(e, 'VIOLATION', '该入口不做 append-only 判定，违例在 CLI 与 MCP 的 index 处判')
 
         # AUTHOR：只有 daybook 有作者口径机检 → 4
@@ -4279,7 +4287,7 @@ def _case_error_table(tmp):
             probe('daybook.py', 'AUTHOR', ['daybook.py'], d_a)
         finally:
             shutil.rmtree(d_a, ignore_errors=True)
-        for e in _ENTRIES6[1:]:
+        for e in _ENTRIES[1:]:
             na(e, 'AUTHOR', '该入口不跑作者口径机检（作者位只经 daybook index 判）')
 
         # RUNTIME：append 目标不可写 / session 状态越界 / 司南 体检读失败 → 同为 6
@@ -4315,20 +4323,22 @@ def _case_error_table(tmp):
             shutil.rmtree(d_or, ignore_errors=True)
         for e, why in (('daybook.py', '运行期写拒绝由 R9-2/R10-2 专项覆盖'),
                        ('daybook_hook.py', '运行期写拒绝由 R10-3 专项覆盖'),
-                       ('mcp_server.py', 'stdio 运行期拒绝需注入签名会话，由 R10-3 覆盖')):
+                       ('mcp_server.py', 'stdio 运行期拒绝需注入签名会话，由 R10-3 覆盖'),
+                       ('daybook_record.py', '原件/登记/索引失败由 record 自身分步报错，此处不注入'),
+                       ('cross_ref.py', '只读引用解析，无运行期写路径')):
             na(e, 'RUNTIME', why)
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
-    # COMPOSE：合成只在 errors.worst 一处，六个入口共用同一份（逐入口记一格）
+    # COMPOSE：合成只在 errors.worst 一处，八个入口共用同一份（逐入口记一格）
     comp_ok = E.worst([E.LedgerViolation('v'), E.AuthorConvention('a'),
                        E.RuntimeFailure('r')]).kind == E.VIOLATION
-    for entry in _ENTRIES6:
+    for entry in _ENTRIES:
         cells[0] += 1
         _ok('P6 %s × COMPOSE（表级 worst 合成）' % entry, comp_ok)
 
     # NO_TRACE：本入口所有动态探针的输出里都不得有 traceback
-    for entry in _ENTRIES6:
+    for entry in _ENTRIES:
         if not outs[entry]:
             cells[0] += 1
             _skip('P6 %s × NO_TRACE 不适用：本层没有该入口的动态探针' % entry)
@@ -4337,7 +4347,7 @@ def _case_error_table(tmp):
         _ok('P6 %s × NO_TRACE：全部探针输出无 traceback' % entry,
             all('Traceback' not in o for o in outs[entry]))
 
-    _ok('P6 矩阵格数对账（6 入口 × 7 故障类 = 42）', cells[0] == 42,
+    _ok('P6 矩阵格数对账（8 入口 × 7 故障类 = 56）', cells[0] == 56,
         '已判 %d 格' % cells[0])
 
     # 收口回归：司南自检全绿——「持租约锁后再记日志」不得同线程重入根锁（会自死锁）

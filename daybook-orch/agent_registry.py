@@ -82,7 +82,11 @@ class Registry:
     History is never rewritten: revocation only appends a revocation entry · the original registration entry is not deleted."""
     def __init__(self, path=None, root=None):
         self.path = path or os.path.join(HERE, '注册卷.txt')
-        self.root = root or os.path.dirname(os.path.abspath(self.path))
+        # 收 Root 就复用同一 dev_ino；CLI 路径只解析一次
+        # Reuse the Root handle when given; a CLI path is resolved once here.
+        from safeio import as_root
+        self.root, _opened = as_root(root or os.path.dirname(os.path.abspath(self.path)),
+                                     'agent_registry')
         self._agents = {}  # agent_id -> Agent · 内存索引 · in-memory index
         self._load()
 

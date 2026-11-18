@@ -69,8 +69,13 @@ class AgentLock:
         # 只有两个形参：租约卷位置 + 账本根；不再有「锁目录」这种被静默丢弃的参数
         # Only two parameters: lease volume location + ledger root. The old `lock_dir`
         # parameter was silently ignored and has been removed.
+        from safeio import Root
         self.lease_vol = lease_vol or LEASE_VOL
-        self.root = root or os.path.dirname(os.path.abspath(self.lease_vol))
+        self.root = root if isinstance(root, Root) else (
+            root or os.path.dirname(os.path.abspath(self.lease_vol)))
+        # 入口传入 Root 时借用（不关闭）；CLI 传路径时每次 acquire 自开自关
+        # A Root passed by an entry is borrowed (never closed); a CLI path is opened per acquire.
+        self._borrowed = isinstance(self.root, Root)
         # 租约：lease_id -> {'cm': 已进入的锁上下文, 'tid': 获取线程 ident}
         # Leases: lease_id -> {'cm': entered lock context, 'tid': acquiring thread id}
         self._ctx = {}
@@ -105,19 +110,25 @@ class AgentLock:
         ★ Step 2: the lock and the bookkeeping share one Root handle (dev_ino fixed at open);
           a path is no longer an identity."""
         from safeio import Root, exclusive_held
-        rt = Root._from_dir_path(self.root, 'agent_lock.acquire')
+        if self._borrowed:
+            rt, own = self.root, False
+        else:
+            rt, own = Root._from_dir_path(self.root, 'agent_lock.acquire'), True
         if exclusive_held(rt):
-            rt.close()
+            if own:
+                rt.close()
             raise RuntimeError('agent_lock: 同线程重复获取账本根锁（%s）·拒绝等待'
-                               '（同线程等自己必自死锁；互斥范围是整个账本根）' % self.root)
+                               '（同线程等自己必自死锁；互斥范围是整个账本根）' % rt)
         try:
             lr = rt.lock(timeout=None if blocking else 0)
         except TimeoutError:
-            rt.close()
+            if own:
+                rt.close()
             return None
         ts = _now_ts()
         lease_id = self._lease_id(label, agent_id, ts)
-        self._ctx[lease_id] = {'lr': lr, 'root': rt, 'tid': threading.get_ident()}
+        self._ctx[lease_id] = {'lr': lr, 'root': rt, 'own': own,
+                              'tid': threading.get_ident()}
         try:
             self._log(lease_id, 'acquire', 'label=%s agent=%s' % (label, agent_id), rt)
         except BaseException:
@@ -126,7 +137,8 @@ class AgentLock:
             # release the lock, then re-raise
             self._ctx.pop(lease_id, None)
             lr.release()
-            rt.close()
+            if own:
+                rt.close()
             raise
         return lease_id
 
@@ -148,7 +160,8 @@ class AgentLock:
             self._log(lease_id, 'release', root=ent['root'])
         finally:
             ent['lr'].release()
-            ent['root'].close()
+            if ent.get('own'):
+                ent['root'].close()
         return True
 
     def held_by(self, label):

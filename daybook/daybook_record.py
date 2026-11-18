@@ -11,6 +11,8 @@ import subprocess
 import sys
 import time
 
+import errors
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -42,7 +44,7 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
     append_script = os.path.join(HERE, 'daybook_append.py')
     result = subprocess.run(
         [sys.executable, append_script, os.path.join(HERE, '对话卷.txt'),
-         '对话', entry_title, reference],
+         '对话', entry_title, '记录器', reference],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         universal_newlines=True,
@@ -73,6 +75,12 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
 
 
 def main():
+    """统一出口：run_entry 收口所有 OSError/ValueError/TypeError，不打 traceback。
+    Unified boundary: run_entry owns every OSError/ValueError/TypeError — no traceback."""
+    return errors.run_entry(_main)
+
+
+def _main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--role', required=True,
                         choices=('用户', '助手', '实验代码'))
@@ -83,14 +91,17 @@ def main():
                         help='批量补录时暂不更新索引')
     args = parser.parse_args()
     content = sys.stdin.buffer.read()
-    try:
-        if args.timestamp:
+    if args.timestamp:
+        try:
             time.strptime(args.timestamp, '%Y%m%d_%H%M%S')
+        except ValueError:
+            raise errors.ConfigError('--timestamp 格式必须是 YYYYMMDD_HHMMSS：%r'
+                                     % args.timestamp)
+    try:
         path, digest, index_output = record(
             args.role, args.title, content, args.timestamp, not args.no_index)
     except (OSError, ValueError, RuntimeError) as exc:
-        print('记录失败：%s' % exc, file=sys.stderr)
-        return 1
+        raise errors.RuntimeFailure('记录失败：%s' % exc)
     print('原件已保存：%s' % path)
     print('SHA256：%s' % digest)
     print(index_output, end='')

@@ -110,16 +110,20 @@ def decode_stream(buf):
     return msgs, buf
 
 
-def _append_inbox(msg, direction='收', root=None):
+def _append_inbox(msg, direction='收', root=None, path=None):
     """消息进 inbox 卷·append-only·白箱可审计。
-    Write the message into the inbox volume · append-only · white-box auditable."""
-    from safeio import locked, WriteMode
+    Write the message into the inbox volume · append-only · white-box auditable.
+    收 Root 就复用同一 dev_ino；入口（AgentServer）启动时把 inbox 路径一并固定，
+    根 rename 后不再按路径重解析。
+    Reuse a Root handle when given; the entry (AgentServer) also fixes the inbox path at
+    startup, so a renamed root is not re-resolved by path."""
+    from safeio import Root, as_root, locked, WriteMode
     from volume_paths import resolve_root
-    # root 只用于定位 conf；锁根必须是账本根（否则持账本根锁时这里不挡）。
-    # root only locates conf; the lock root must be the ledger root (otherwise a holder of the
-    # ledger-root lock does not block this write).
-    lock_root = resolve_root(root)
-    path = inbox_path(root)
+    if isinstance(root, Root):
+        rt = root
+    else:
+        rt = as_root(resolve_root(root), 'agent_message._append_inbox')[0]
+    path = path or inbox_path(root)
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
         os.makedirs(parent, exist_ok=True)
@@ -127,7 +131,7 @@ def _append_inbox(msg, direction='收', root=None):
         _now(), direction,
         msg.get('from', '?'), msg.get('to', '?'),
         msg.get('type', '?'), msg.get('content', '').rstrip('\n'))
-    with locked(lock_root) as lr:
+    with locked(rt) as lr:
         lr.write(lr.root.rel_of(path, 'agent_message._append_inbox'), rec,
                  mode=WriteMode.APPEND_CREATE)
 
@@ -147,7 +151,8 @@ class _Handler(socketserver.BaseRequestHandler):
             buf += data
             msgs, buf = decode_stream(buf)
             for m in msgs:
-                _append_inbox(m, '收', root=getattr(self.server, 'root', None))
+                _append_inbox(m, '收', root=getattr(self.server, 'root', None),
+                              path=getattr(self.server, 'inbox', None))
                 # 广播回执 · broadcast acknowledgement
                 if m.get('type') == 'broadcast':
                     ack = {'from': m.get('to'), 'to': m.get('from'),
@@ -165,7 +170,12 @@ class AgentServer(socketserver.UnixStreamServer):
 
     def __init__(self, agent_name, root=None):
         self.agent_name = agent_name
-        self.root = root
+        from safeio import as_root
+        from volume_paths import resolve_root
+        self.root = as_root(resolve_root(root), 'agent_message.AgentServer')[0]
+        # inbox 路径在入口启动时固定；根 rename 后不按路径重解析
+        # The inbox path is fixed at entry startup; a renamed root is not re-resolved by path.
+        self.inbox = inbox_path(root)
         self.sock_path = sock_path(agent_name)
         if os.path.exists(self.sock_path):
             os.unlink(self.sock_path)

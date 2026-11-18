@@ -99,9 +99,12 @@ def run_entry(fn, collect=None):
     `collect` supplies other errors gathered during the run (e.g. build's global lists).
     裸 `RuntimeError`（safeio 的拒绝文案）在这里归为 `RuntimeFailure`（6），不打 traceback。
     裸 `OSError`（目标不可读写等入口期之外的系统错）同样归 6：入口绝不把栈甩给用户。
+    裸 `ValueError` / `TypeError`（参数解析漏网：int()/索引/类型错）也归 6，绝不让 traceback 出栈；
+    但参数解析本身应主动抛 `ConfigError`（2），这里只是最后一道兜底。
     A bare `RuntimeError` (safeio's refusal text) becomes `RuntimeFailure` (6): never a traceback.
-    A bare `OSError` (an OS-level failure outside entry-time config checks) also becomes 6:
-    an entry never dumps a stack at the user."""
+    A bare `OSError` (an OS-level failure outside entry-time config checks) also becomes 6.
+    A bare `ValueError` / `TypeError` (a parse slip: int()/subscript/type) is likewise 6 so no stack
+    escapes; argument parsing should still raise `ConfigError` (2) deliberately — this is the net."""
     try:
         return fn()
     except DaybookError as exc:
@@ -109,9 +112,9 @@ def run_entry(fn, collect=None):
         top = worst(errs)
         sys.stderr.write('★ 运行失败（rc=%d）：%s\n' % (exit_code(top), top))
         return exit_code(top)
-    except (RuntimeError, OSError) as exc:
-        errs = ([RuntimeFailure('%s: %s' % (type(exc).__name__, exc)
-                                if not isinstance(exc, RuntimeError) else str(exc))]
+    except (RuntimeError, OSError, ValueError, TypeError) as exc:
+        errs = ([RuntimeFailure(str(exc) if isinstance(exc, RuntimeError)
+                                else '%s: %s' % (type(exc).__name__, exc))]
                 + (list(collect() or []) if collect else []))
         top = worst(errs)
         sys.stderr.write('★ 运行失败（rc=%d）：%s\n' % (exit_code(top), top))

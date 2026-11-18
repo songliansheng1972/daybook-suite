@@ -1591,7 +1591,12 @@ def _main():
     elif cmd == 'query':
         print(query(conf, root, _args[1:]), flush=True)
     elif cmd == 'watch':
-        gap = int(_args[1]) if len(_args) > 1 else 5
+        try:
+            gap = int(_args[1]) if len(_args) > 1 else 5
+        except (ValueError, TypeError):
+            raise errors.ConfigError('watch 周期必须是整数秒：%r' % (_args[1],))
+        if gap <= 0:
+            raise errors.ConfigError('watch 周期必须 > 0 秒：%r' % (gap,))
         last = None
         print('监视 %d 卷，每 %d 秒查一次变动。Ctrl-C 退出。' % (len(vols), gap), flush=True)
         while True:

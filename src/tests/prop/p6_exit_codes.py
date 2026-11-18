@@ -69,6 +69,14 @@ def run(seed=7, mode='const'):
         check('P6 配置错入口无 traceback',
               'Traceback' not in (r3.stdout + r3.stderr),
               (r3.stderr or '')[-160:])
+
+    with common.tmpdir('p6c_') as tmp:
+        common.make_ledger(tmp)
+        r4 = common.run_entry(tmp, ['watch', 'abc'], timeout=20)
+        check('P6 畸形参数（watch abc）⇒ rc=2 且无 traceback',
+              r4.returncode == 2 and 'Traceback' not in (r4.stdout + r4.stderr),
+              'rc=%d out=%s' % (r4.returncode,
+                                (r4.stdout + r4.stderr)[-160:].replace('\n', ' ')))
     return common.summary()
 
 
