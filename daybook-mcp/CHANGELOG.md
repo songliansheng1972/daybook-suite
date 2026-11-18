@@ -58,6 +58,18 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签不签（九续）：来源显式、推断不出按源树（fail-closed）（2026-11-18）
+
+- **`is_box` 不再由被测件推断**：原先看根目录有没有 `pack.py`，把 `pack.py` 挪进 `packaging/`
+  就会让「消失 4」静默转成「盒内豁免」而判绿（fail-open）。现改为**只看 guard 自己的文件名**
+  （盒内副本叫 `ledger_guard_test.py`）——这是判据自身，不是被测件；推断不出按源树（fail-closed）。
+- **反向自证**：① 挪走 `pack.py` 到 `packaging/`、再把产品件移出扫描路径 ⇒ 仍按源树判，
+  消失 4 判红「疑似漏扫」；② 盒内原样跑 ⇒ 走盒内豁免并打印「盒内豁免，消失 19 属产物边界」。
+- **随包带走两条 P2（记录在案）**：`_ALIAS_EXPECTED_KEYS=26` 是声明常量，新增合法别名必须
+  同步改它和基线文件；判据只保证「缩表必须有人看见」，不保证缩减正当。`('标题', 1)` 这类
+  「名字, 下标」在配对口径排除，但在单点名口径仍计一次、吃基线额度；不修。
+- **读数**：源树 688 PASS／0 红；`daybook` 盒 503 PASS／0 红（跳过 42）；两套 verify EXIT=0。
+
 ### 复签不签（八续）：参照集判完整、字典键不看值、消失可判红（2026-11-18）
 
 - **参照集判完整**：`_alias_tables` 逐表读，缺哪张点哪张；`_alias_ref_gate` 要求三表齐全、

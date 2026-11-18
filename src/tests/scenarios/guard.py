@@ -5525,7 +5525,20 @@ def _case_conf_dual_e2e(tmp):
 
 
 _ALIAS_TABLES = ('SEC_ALIAS', 'KEY_ALIAS', 'FIELD_ALIAS')
+# 声明清单的本义：这是「应有的 26 个中文键」这句声明，不是从树上算出来的。
+# 新增一个合法别名时，必须同步改这里与基线文件；判据只保证「缩一张表必须有人看见」，
+# 不保证缩减本身正当。
+# A declared value: adding a legal alias requires updating this constant and the baseline.
 _ALIAS_EXPECTED_KEYS = 26
+
+
+def _alias_is_box():
+    """源树/盒的来源必须显式：由 **guard 自己的文件名** 判定（盒内副本叫
+    `ledger_guard_test.py`）——这是判据自身，不是被测件。推断不出时按源树处理
+    （fail-closed）：宁可按源树把「消失」判红，也不许默认豁免。
+    The provenance is explicit: decided by the guard's OWN file name (the box copy is
+    `ledger_guard_test.py`), never by the code under test. Unknown ⇒ source (fail-closed)."""
+    return os.path.basename(os.path.abspath(__file__)) == 'ledger_guard_test.py'
 
 
 def _alias_tables(here):
@@ -5620,6 +5633,8 @@ def _alias_table_hits(here, skip=(), keys=None):
                     a, b = node.elts
                     # 元组对只认「名字 → 字符串」：`('标题', 1)` 是 (名字, 下标)，不是映射。
                     # A pair counts only with a string target: `('标题', 1)` is (name, index).
+                    # 已知代价：这类数据仍会在单点口径计一次、吃基线额度——记录在案，不修。
+                    # Known cost: such data still counts once in the single-name baseline.
                     if (isinstance(a, ast.Constant) and isinstance(a.value, str)
                             and a.value in keys and isinstance(b, ast.Constant)
                             and isinstance(b.value, str)):
@@ -5775,7 +5790,7 @@ def _alias_name_verdict(here, base_path):
     hits = _alias_name_hits(here, keys=keys)
     base = _read_alias_baseline(base_path)
     total, base_total, new, gone, moved = _alias_baseline_diff(hits, base)
-    is_box = not os.path.exists(os.path.join(here, 'pack.py'))
+    is_box = _alias_is_box()
     blind = base_total > 0 and total == 0
     red = (not ref_ok) or bool(new) or blind or (gone > 0 and not is_box)
     if not ref_ok:
@@ -5990,6 +6005,30 @@ def _case_conf_alias_single(here):
                 % (src_file, vm['ok'], vm['reason']))
     finally:
         shutil.rmtree(movedout, ignore_errors=True)
+    # 反证：把 pack.py 挪进 packaging/（自然重构）也不许让来源变成盒 ⇒ 仍按源树判红。
+    # 来源只看 guard 自己的文件名，不看被测件内容；挪走 pack.py 必须仍是源树（fail-closed）。
+    # Moving pack.py must not flip the provenance: still source, disappearance still red.
+    if _alias_is_box():
+        _skip('来源 fail-closed 反证仅源树可验（盒内自身即盒）')
+    else:
+        noflag = tempfile.mkdtemp()
+        try:
+            _copy_tree(here, noflag)
+            os.makedirs(os.path.join(noflag, 'packaging'), exist_ok=True)
+            if os.path.exists(os.path.join(noflag, 'pack.py')):
+                shutil.move(os.path.join(noflag, 'pack.py'),
+                            os.path.join(noflag, 'packaging', 'pack.py'))
+            prod = next((f for f, _ln, _n in name_hits
+                         if os.path.isfile(os.path.join(noflag, f))), None)
+            os.makedirs(os.path.join(noflag, 'tests'), exist_ok=True)
+            shutil.move(os.path.join(noflag, prod), os.path.join(noflag, 'tests', prod))
+            vn = _alias_name_verdict(noflag, os.path.join(noflag, _ALIAS_NAME_BASELINE))
+            _ok('P0 反向自证：挪走 pack.py 仍按源树判（fail-closed）⇒ 消失判红',
+                (not vn['is_box']) and (not vn['ok']) and ('疑似漏扫' in vn['reason']),
+                'is_box=%s 判绿=%s 消失=%d %s'
+                % (vn['is_box'], vn['ok'], vn['gone'], vn['reason']))
+        finally:
+            shutil.rmtree(noflag, ignore_errors=True)
     # 反向自证：产品件整批消失（只剩 conf_norm.py 与基线）⇒ 必须红，不许「新增 0｜消失 28」绿。
     # All product files gone ⇒ red: "0 new / 28 disappeared" must not pass.
     vanished = tempfile.mkdtemp()
