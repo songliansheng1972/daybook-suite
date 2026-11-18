@@ -76,7 +76,7 @@
 
 ## 退出码（只有一张表）
 
-分类只发生在 `errors.py` 一处；入口只负责 `raise`，文案与退出码由唯一出口 `run_entry` 给。同一故障类（配置 2 / 运行期 6 / 账本 3 / 作者 4 / 证据 5）在 **8 个统一入口**里同码：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、`daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、`cross_ref.py`。例外只有一类：`daybook_session_hook.py` 的根固定为脚本目录、`cross_ref.py` 按卷名解析，**conf 不参与它们的根解析**，坏 conf 不是它们的故障（rc=0 是设计）；`daybook_append.py` 与 `daybook_hook.py` 的根解析走同一套 conf 语义，坏 conf 一律归 2、零落盘。`agent_*`、`task_volume.py`、`daybook_multidx.py`、`mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，不在 8 入口契约内，不得拿它们宣称「任何入口同码」。`verify_plain.py` 是**判据工具**（只读校验，退出码 1/2 表示「判据不成立/用法错」），同样不在 8 入口契约内，不要按统一错误类解读。
+分类只发生在 `errors.py` 一处；入口只负责 `raise`，文案与退出码由唯一出口 `run_entry` 给。同一故障类（配置 2 / 运行期 6 / 账本 3 / 作者 4 / 证据 5）在 **8 个统一入口**里同码：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、`daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、`cross_ref.py`。例外只有一类：`daybook_session_hook.py` 的根固定为脚本目录、`cross_ref.py` 按卷名解析，**conf 不参与它们的根解析**，坏 conf 不是它们的故障（rc=0 是设计）。conf 的归一与解析**只有一套**（`conf_norm.py`，三个包带同一份）：节名/键名一律 `strip + lower + 中文别名`（`[volumes]` 的键是卷名，保留大小写，只 `strip`），所以 `[索引]`、`[Index]`、`[ index ]`、`[INDEX]` 都是 `index`；归一后仍认不出的节名报 2，绝不静默降级成「没配置」。`daybook_append.py` 与 `daybook_hook.py` 的根解析走同一套 conf 语义，坏 conf 一律归 2、零落盘。`agent_*`、`task_volume.py`、`daybook_multidx.py`、`mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，不在 8 入口契约内，不得拿它们宣称「任何入口同码」。`verify_plain.py` 是**判据工具**（只读校验，退出码 1/2 表示「判据不成立/用法错」），同样不在 8 入口契约内，不要按统一错误类解读。
 
 | 码 | 类别 | 含义 |
 |---|---|---|

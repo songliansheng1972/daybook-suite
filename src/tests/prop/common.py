@@ -76,7 +76,7 @@ def tmpdir(prefix='daybook_prop_'):
 
 
 def stage(dst, names=('daybook.py', 'daybook_append.py', 'daybook_record.py',
-                      'safeio.py', 'ledger_root.py', 'errors.py')):
+                      'safeio.py', 'ledger_root.py', 'errors.py', 'conf_norm.py')):
     """把被测件拷进隔离目录（属性层永不写源树）。"""
     for n in names:
         shutil.copy2(os.path.join(SRC, n), os.path.join(dst, n))

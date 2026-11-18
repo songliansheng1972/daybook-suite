@@ -152,23 +152,12 @@ DEFAULT_HEAD_REGEX = r'^(?:\[#\d+\][ ]*)?\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{
 
 # ── 别名归一（英文为准·中文兼容）─────────────────────────────
 # ── Alias normalisation (English canonical · Chinese legacy). ──
-# ★ 唯一入口：load_conf()。下游一律只见英文名。
-# ★ Single entry point: load_conf(). Everything downstream sees English only.
-SEC_ALIAS = {
-    '卷': 'volumes', '条目': 'entries', '规则': 'rules', '索引': 'index',
-    '触发': 'trigger', '多级': 'multilevel', '钩子': 'hooks',
-}
-KEY_ALIAS = {
-    '头正则': 'head_regex', '附头正则': 'extra_head_regex', '标正则': 'tag_regex',
-    '字段': 'fields', '根': 'root', '输出目录': 'out_dir', '索引前缀': 'index_prefix',
-    '清单名': 'manifest', '自动索引': 'auto_index', '增量索引': 'incremental',
-    '多级索引': 'multilevel_enabled', '二级键': 'level2_field', '变动令': 'on_change',
-    '类': 'category', '标题': 'title', '作者': 'author',
-}
-FIELD_ALIAS = {
-    '卷': 'volume', '行号': 'line', '时间': 'time',
-    '类': 'category', '标题': 'title', '作者': 'author',
-}
+# ★ 唯一实现在 conf_norm：完整包与 daybook-orch 独立包带同一份，别处不再抄表。
+# ★ The one implementation lives in conf_norm: the full package and the standalone
+#   daybook-orch package ship the same file; no other copy of the table exists.
+from conf_norm import (SEC_ALIAS, KEY_ALIAS, FIELD_ALIAS, ConfError, parse_text,
+                       canon_sec as _canon_sec, canon_key as _canon_key,
+                       canon_field as _canon_field)
 
 # ── [volumes] 段的非卷键（键值双条件判据）────────────────────
 # ── Non-volume keys in the [volumes] section (key+value double criterion). ──
@@ -224,18 +213,18 @@ def _skip_non_volume(key, value, base):
 
 
 def canon_sec(name):
-    """节名归一。Canonical section name."""
-    return SEC_ALIAS.get(name, name)
+    """节名归一（唯一实现在 conf_norm）。Canonical section name."""
+    return _canon_sec(name)
 
 
 def canon_key(name):
-    """键名归一（含规则键与字段名）。Canonical key/field name."""
-    return KEY_ALIAS.get(name, name)
+    """键名归一（唯一实现在 conf_norm）。Canonical key/field name."""
+    return _canon_key(name)
 
 
 def canon_field(name):
-    """字段名归一（含内置三字段）。Canonical field name."""
-    return FIELD_ALIAS.get(name, name)
+    """字段名归一（唯一实现在 conf_norm）。Canonical field name."""
+    return _canon_field(name)
 
 
 # ── 编码自动检测与转码（零依赖·不静默·须报出所用编码）──
@@ -257,50 +246,38 @@ def read_text(path):
 
 
 def parse_conf(text, base, label='daybook.conf'):
-    """把 conf 文本解析成「节 → 键」；整份不可解析 ⇒ ConfigError。
-    Parse conf text into sections; a wholly unparseable conf raises ConfigError.
+    """把 conf 文本解析成「节 → 键」；整份不可解析/节名认不出 ⇒ ConfigError。
+    Parse conf text into sections; a wholly unparseable conf or an unknown section raises
+    ConfigError.
     「坏 conf」必须与「空账本」可区分：文件里有内容、却没有任何可识别的 `[节]` 或
-    `键=值`，一律 rc=2，绝不 rc=0 写空索引。A conf with content but not a single
-    recognisable section/key is a config error (rc=2); it must never look like an empty
-    ledger that indexes 0 entries and exits 0."""
+    `键=值`，一律 rc=2，绝不 rc=0 写空索引。归一与行解析的唯一实现在 conf_norm，
+    本函数只叠加「卷表键值双条件」这层 daybook 专属逻辑。
+    A conf with content but not a single recognisable section/key is a config error (rc=2); it
+    must never look like an empty ledger that indexes 0 entries and exits 0. Normalisation and
+    line parsing live only in conf_norm; this function adds only the daybook-specific volume
+    key+value criterion."""
+    try:
+        sections, _content, _parsed = parse_text(text)
+    except ConfError as exc:
+        raise errors.ConfigError('%s（%s）' % (exc, label))
     conf = {'volumes': {}, 'entries': {}, 'index': {}, 'trigger': {},
             'volumes_skipped': {}, '_files': {}}
-    sec = None
-    content = 0
-    parsed = 0
-    for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith('#'): continue
-        content += 1
-        m = re.match(r'^\[(.+)\]$', line.strip())
-        if m:
-            sec = canon_sec(m.group(1)); conf.setdefault(sec, {}); parsed += 1; continue
-        if sec and '=' in line:
-            k, v = line.split('=', 1)
-            k = canon_key(k.strip())
-            v = v.strip()
-            if sec == 'volumes':
-                # 真实文件全集：backup/watch 用（内部卷也要备份），索引仍只认 volumes
-                # All real files: used by backup/watch (internal volumes must be backed up too);
-                # the index still sees only `volumes`.
-                p = v if os.path.isabs(v) else os.path.join(base, v)
-                if os.path.isfile(p):
-                    conf['_files'][k] = v
-                # ★ 卷表键值双条件：只有「键名在内 + 值不是真卷」才算非卷配置，跳过并留痕
-                # ★ Twofold criterion: only when the key looks non-volume AND the value is not a
-                #   real volume do we skip it — and we always leave a trace.
-                why = _skip_non_volume(k, v, base)
-                if why:
-                    conf['volumes_skipped'][k] = {'value': v, 'reason': why}
-                    continue
-            if k == 'fields':
-                # 字段表里每个名字也归一。Field list members are canonicalised too.
-                v = ','.join(canon_field(x) for x in v.split(','))
-            conf.setdefault(sec, {})[k] = v
-            parsed += 1
-    if content and not parsed:
-        raise errors.ConfigError(
-            'daybook.conf 整份无法解析（%s）：没有可识别的 [节] 或 键=值；'
-            '坏 conf 不等于空账本' % label)
+    for sec, kv in sections.items():
+        conf.setdefault(sec, {}).update(kv)
+    for k, v in list((sections.get('volumes') or {}).items()):
+        # 真实文件全集：backup/watch 用（内部卷也要备份），索引仍只认 volumes
+        # All real files: used by backup/watch (internal volumes must be backed up too);
+        # the index still sees only `volumes`.
+        p = v if os.path.isabs(v) else os.path.join(base, v)
+        if os.path.isfile(p):
+            conf['_files'][k] = v
+        # ★ 卷表键值双条件：只有「键名在内 + 值不是真卷」才算非卷配置，跳过并留痕
+        # ★ Twofold criterion: only when the key looks non-volume AND the value is not a
+        #   real volume do we skip it — and we always leave a trace.
+        why = _skip_non_volume(k, v, base)
+        if why:
+            conf['volumes_skipped'][k] = {'value': v, 'reason': why}
+            del conf['volumes'][k]
     return conf
 
 

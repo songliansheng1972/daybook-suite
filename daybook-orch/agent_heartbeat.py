@@ -34,7 +34,7 @@ def _now_ts():
 
 
 class Heartbeat:
-    def __init__(self, path=None, period=10, dead_after=3, root=None):
+    def __init__(self, path=None, period=10, dead_after=3, root=None, materialize=True):
         """period：心跳周期（秒）。dead_after：缺多少周期判定 dead。
         period: heartbeat period (in seconds). dead_after: how many missed periods count as dead."""
         self.path = path or os.path.join(HERE, '心跳卷.txt')
@@ -49,7 +49,10 @@ class Heartbeat:
                                 if _opened else None)
         self.period = period
         self.dead_after = dead_after
-        if not os.path.exists(self.path):
+        if materialize and not os.path.exists(self.path):
+            # materialize=False（体检只读开卷）：缺卷不建，由调用方报「账本未检查」。
+            # materialize=False (read-only health check): a missing volume stays missing and the
+            # caller reports "ledger not checked".
             from safeio import locked, WriteMode
             if not self.root:
                 raise RuntimeError('Heartbeat: 缺少账本根（root）·拒绝初始化'

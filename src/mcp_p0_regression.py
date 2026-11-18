@@ -14,7 +14,7 @@ MCP P0 minimal regression (read-only mode / second-level cross_ref head / produc
   8. 只读模式零写盘 + 密钥文件 0600 + 注册卷不落明文
   9. 根目录由 conf [index] root 解析（空/非空/无效/DAYBOOK_ROOT 覆盖）
   10. 启动路径零 __pycache__（不依赖外部环境变量）
-  11. 空卷自检：启动与 resources/list 都向 stderr 告警
+  11. 空卷自检：配置错 2、直接退出（不是「起来了但工具全报错」）
   12. cross_ref 编号前缀：带编号/旧无编号/跳号/编号重复/末条到文末（make 与 verify 双路径）
 退出码：0=PASS 1=FAIL
 Exit code: 0=PASS 1=FAIL
@@ -469,8 +469,9 @@ def test_zero_bytecode():
 
 
 def test_empty_volumes_warns():
-    """12. 空卷自检：启动与 resources/list 都向 stderr 告警，不静默。
-    Empty-volume self-check: both startup and resources/list warn on stderr, never silently."""
+    """12. 空卷自检：配置错 2、直接退出（不是「起来了但工具全报错」）。
+    Empty-volume self-check: config error 2 and exit immediately — never "starts up but every
+    tool fails". This is a deliberate external behaviour change (see CHANGELOG ⚠)."""
     t, server = _copy_server()
     try:
         with open(os.path.join(t, 'daybook.conf'), 'w', encoding='utf-8') as f:
@@ -481,9 +482,10 @@ def test_empty_volumes_warns():
         req = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'resources/list'})
         p = subprocess.run([sys.executable, server], input=req + '\n',
                            capture_output=True, text=True, timeout=20, env=env)
-        empty = json.loads(p.stdout.splitlines()[0]).get('result', {}).get('resources') == []
-        return _ok('12 空卷有 stderr 告警且列表为 0', 'volumes 为空' in p.stderr and empty,
-                   p.stderr.strip().splitlines()[0] if p.stderr.strip() else 'no stderr')
+        return _ok('12 空卷：配置错 2、直接退出（stdout 空）',
+                   p.returncode == 2 and not p.stdout.strip()
+                   and 'volumes 为空' in p.stderr and 'Traceback' not in p.stderr,
+                   'rc=%d out=%r err=%r' % (p.returncode, p.stdout[:60], p.stderr[-160:]))
     finally:
         shutil.rmtree(t, ignore_errors=True)
 
@@ -505,7 +507,7 @@ def main():
             ('密钥 0600 + 不落明文', test_secret_file_mode(t)),
             ('根目录由 conf 解析', test_root_from_conf()),
             ('启动路径零 __pycache__', test_zero_bytecode()),
-            ('空卷自检告警', test_empty_volumes_warns()),
+            ('空卷自检退出 2', test_empty_volumes_warns()),
         ]
     finally:
         shutil.rmtree(t, ignore_errors=True)

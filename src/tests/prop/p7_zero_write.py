@@ -143,21 +143,26 @@ def run(seed=7, mode='const'):
         finally:
             os.chmod(tmp, 0o755)
 
-    # 8) orchestrator alarm：rc=3（账本被等长改写）——体检不得写回任何字节
+    # 8) orchestrator alarm：rc=3（账本被等长改写）——体检不得写回任何字节。
+    #    从「编排卷文件不存在」起跑：体检只读开卷，绝不把缺卷建出来（修前 rc=0 却建两卷）。
+    # 8) orchestrator alarm: rc=3 (equal-length rewrite) and not a single byte written. Start
+    #    with the orchestration volumes absent: the check opens read-only and never creates a
+    #    missing volume (before, rc=0 still created two files).
     with common.tmpdir('p7g_') as tmp:
         common.make_ledger(tmp)
         common.run_entry(tmp, ['baseline'])
         common.run_entry(tmp, ['index'])
         orch = os.path.join(common.SRC, 'orchestrator.py')
-        subprocess.run([PY, '-B', orch, '--home', tmp, 'join', '汤姆'],
-                       cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       universal_newlines=True)
+        absent = [n for n in ('任务卷.txt', '心跳卷.txt')
+                  if not os.path.exists(os.path.join(tmp, n))]
+        check('P7 alarm 起跑：任务卷/心跳卷均不存在（缺卷不建）',
+              len(absent) == 2, 'absent=%s' % absent)
         common.tamper_mid(os.path.join(tmp, '账卷.txt'))
         before = common.snapshot(tmp)
         r = subprocess.run([PY, '-B', orch, '--home', tmp, 'alarm'],
                            cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            universal_newlines=True)
-        _same('P7 orchestrator alarm rc=3：体检零落盘', tmp, before, r, 3)
+        _same('P7 orchestrator alarm rc=3：体检零落盘（不建卷）', tmp, before, r, 3)
 
     # 9) build(dry=True)：rc=0 也必须零落盘（dry 自证：闭包面不把 dry 当写边）
     with common.tmpdir('p7i_') as tmp:

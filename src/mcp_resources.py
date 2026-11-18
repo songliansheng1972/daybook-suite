@@ -306,6 +306,26 @@ def self_check():
             '自检失败：volumes 登记 %d 卷，其中 %d 卷文件不存在（root=%s）：%s；'
             '证据缺失（5），服务不带病常驻'
             % (len(vols), len(missing), root, ', '.join(missing)))
+    # 存在但读不出（chmod 000 之类）同样是「带病」：只判 exists 会让服务起来、
+    # 第一次 tools/call 才炸 PermissionError。自检要么如实拦住，要么别承诺「绝不带病常驻」。
+    # Existing but unreadable (e.g. chmod 000) is a disease too: an exists-only check lets the
+    # server start and the first tools/call raise PermissionError. The self-check either stops
+    # it truthfully or must drop the "never runs sick" promise.
+    unreadable = []
+    for n, rel in vols.items():
+        p = rel if os.path.isabs(rel) else os.path.join(root, rel)
+        try:
+            if not os.access(p, os.R_OK):
+                unreadable.append(n)
+                continue
+            with open(p, 'rb') as probe:
+                probe.read(1)
+        except OSError:
+            unreadable.append(n)
+    if unreadable:
+        raise errors.EvidenceMissing(
+            '自检失败：卷文件存在但不可读（root=%s）：%s；证据缺失（5），服务不带病常驻'
+            % (root, ', '.join(unreadable)))
     return root, len(vols)
 
 

@@ -183,12 +183,19 @@ def process_once(events_root, state_path, workspace, root, initialize=False):
     with locked(root) as lr:
         lr.mkdirs_path(os.path.dirname(state_path), 'daybook_session_hook.state_dir')
     state = load_state(state_path)
+    fresh = False
     if state is None:
         if not initialize:
             state = initialize_state(events_root, state_path, root)
             print('已建立初始游标；既有会话不回灌。', flush=True)
             return
         state = {'offsets': {}, 'workspaces': {}, 'code_hashes': {}}
+        # --initialize：显式从零建游标。落盘放在本轮处理之后（见下）——本轮若以 3/5 失败，
+        # 就不许留下状态文件（非零退出零落盘）；没有可消费事件时也要落盘，否则「已建立」不成立。
+        # --initialize builds the cursor from zero; the write happens after this round (below) so a
+        # 3/5 failure leaves no state file (zero writes on a non-zero exit). With nothing to
+        # consume it still persists, otherwise "established" would be false.
+        fresh = True
 
     changed = False
     for path in event_files(events_root):
@@ -211,8 +218,10 @@ def process_once(events_root, state_path, workspace, root, initialize=False):
             handle_event(event, session_id, state, workspace, root)
         state['offsets'][path] = offset + complete_length
         changed = True
-    if changed:
+    if changed or fresh:
         atomic_json(state_path, state, root)
+    if fresh:
+        print('已建立初始游标（--initialize：从零开始，既有事件不跳过）。', flush=True)
 
 
 def install(root):

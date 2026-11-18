@@ -30,7 +30,6 @@ and are never mistaken for internal volumes.
 """
 import io
 import os
-import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -73,27 +72,23 @@ def resolve_root(root=None):
 
 
 def read_conf_sections_from(path):
-    """读指定 conf 文件，返回 {段名小写: {键小写: 值}}。缺文件返 {}。
-    Read the given conf file → {lowercased section: {lowercased key: value}}. {} when absent."""
+    """读指定 conf 文件，返回 {归一后节名: {归一后键名: 值}}。缺文件返 {}。
+    Read the given conf file → {canonical section: {canonical key: value}}. {} when absent.
+    归一与行解析的唯一实现是 conf_norm（与 daybook 同一份）；整份不可解析或节名认不出
+    ⇒ ConfigError（2），绝不把「配置写错了」降级成「没配置」。
+    Normalisation and line parsing come from conf_norm (the same file daybook uses); a wholly
+    unparseable conf or an unknown section raises ConfigError (2), never degrades a
+    misconfiguration into "unconfigured"."""
     sections = {}
     if not path or not os.path.exists(path):
         return sections
-    sec = None
-    for line in io.open(path, encoding='utf-8'):
-        raw = line.rstrip('\n')
-        stripped = raw.strip()
-        if not stripped or stripped.startswith('#'):
-            continue
-        m = re.match(r'^\[(.+)\]$', stripped)
-        if m:
-            sec = m.group(1).strip().lower()
-            sections.setdefault(sec, {})
-            continue
-        if sec is not None and '=' in raw:
-            k, v = raw.split('=', 1)
-            k = k.strip().lower()
-            if k:
-                sections[sec][k] = v.strip()
+    from conf_norm import ConfError, parse_text
+    with io.open(path, encoding='utf-8') as f:
+        try:
+            sections, _content, _parsed = parse_text(f.read())
+        except ConfError as exc:
+            import errors
+            raise errors.ConfigError('%s（%s）' % (exc, path))
     return sections
 
 

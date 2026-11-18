@@ -45,60 +45,22 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# ── 别名归一（与 daybook 侧同表·本件自持以保自包含）──
-# ── Alias normalisation (same table as daybook.py, held locally to stay self-contained). ──
-SEC_ALIAS = {
-    '卷': 'volumes', '条目': 'entries', '规则': 'rules', '索引': 'index',
-    '触发': 'trigger', '多级': 'multilevel', '钩子': 'hooks',
-}
-KEY_ALIAS = {
-    '头正则': 'head_regex', '附头正则': 'extra_head_regex', '标正则': 'tag_regex',
-    '字段': 'fields', '根': 'root', '输出目录': 'out_dir', '索引前缀': 'index_prefix',
-    '清单名': 'manifest', '自动索引': 'auto_index', '增量索引': 'incremental',
-    '多级索引': 'multilevel_enabled', '二级键': 'level2_field', '变动令': 'on_change',
-    '类': 'category', '标题': 'title', '作者': 'author',
-}
-FIELD_ALIAS = {
-    '卷': 'volume', '行号': 'line', '时间': 'time',
-    '类': 'category', '标题': 'title', '作者': 'author',
-}
+# ── 别名归一（唯一实现在 conf_norm·与 daybook 同一份）──
+# ── Alias normalisation (the one implementation lives in conf_norm · shared with daybook). ──
+from conf_norm import (FIELD_ALIAS, ConfError, canon_sec, canon_key, canon_field,
+                       parse_text)
 
 
-def canon_sec(name):
-    """节名归一。Canonical section name."""
-    return SEC_ALIAS.get(name, name)
-
-
-def canon_key(name):
-    """键名归一。Canonical key name."""
-    return KEY_ALIAS.get(name, name)
-
-
-def canon_field(name):
-    """字段名归一。Canonical field name."""
-    return FIELD_ALIAS.get(name, name)
-
-
-# ── 配置读取（语义与 daybook.load_conf 一致·本件自持以保自包含）──
-# ── Config reader (same semantics as daybook.load_conf; local for self-containment). ──
+# ── 配置读取（与 daybook.load_conf 同一份解析·不再自持第二套）──
+# ── Config reader (the same parse as daybook.load_conf; no second copy). ──
 def load_conf(path):
-    conf, sec = {}, None
-    for line in io.open(path, encoding='utf-8'):
-        line = line.rstrip('\n')
-        if not line.strip() or line.lstrip().startswith('#'):
-            continue
-        m = re.match(r'^\[(.+)\]$', line.strip())
-        if m:
-            sec = canon_sec(m.group(1))
-            conf.setdefault(sec, {})
-            continue
-        if sec and '=' in line:
-            k, v = line.split('=', 1)
-            k = canon_key(k.strip())
-            if k == 'fields':
-                v = ','.join(canon_field(x) for x in v.split(','))
-            conf[sec][k] = v.strip()
-    return conf
+    with io.open(path, encoding='utf-8') as f:
+        try:
+            sections, _content, _parsed = parse_text(f.read())
+        except ConfError as exc:
+            import errors
+            raise errors.ConfigError('%s（%s）' % (exc, path))
+    return sections
 
 
 # ── 工具 ──────────────────────────────────────────────────────

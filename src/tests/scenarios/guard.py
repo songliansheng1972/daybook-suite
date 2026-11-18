@@ -2722,7 +2722,7 @@ def _prepare(tmp):
     (The index author-convention gate calls daybook_append.check_author_consistency, so it must be staged too.)"""
     here = os.path.dirname(SRC_BIN)
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'daybook_record.py',
-                 'ledger_root.py', 'errors.py'):
+                 'ledger_root.py', 'errors.py', 'conf_norm.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(tmp, name))
     with io.open(os.path.join(tmp, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -2999,7 +2999,7 @@ def _case_stagger(tmp):
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
-                 'errors.py'):
+                 'errors.py', 'conf_norm.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -3144,7 +3144,7 @@ def _case_partial_commit(tmp):
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
-                 'errors.py'):
+                 'errors.py', 'conf_norm.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -3223,7 +3223,7 @@ def _case_append(tmp):
     os.makedirs(d)
     here = os.path.dirname(SRC_BIN)
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
-                 'errors.py'):
+                 'errors.py', 'conf_norm.py'):
         shutil.copy2(os.path.join(here, name), os.path.join(d, name))
     with io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8') as f:
         f.write(CONF)
@@ -4754,7 +4754,7 @@ def _stage(d):
     """把被测件拷进隔离目录（含 ledger_root：根解析已三处同源）。
     Stage the artifacts under test (including ledger_root: one shared root resolver)."""
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
-                 'errors.py'):
+                 'errors.py', 'conf_norm.py'):
         shutil.copy2(os.path.join(os.path.dirname(SRC_BIN), name), os.path.join(d, name))
 
 
@@ -5013,7 +5013,7 @@ def _case_five_roots(tmp):
     present = []
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
                  'errors.py', 'daybook_hook.py', 'mcp_resources.py', 'mcp_transport.py',
-                 'volume_paths.py'):
+                 'volume_paths.py', 'conf_norm.py'):
         src = os.path.join(os.path.dirname(SRC_BIN), name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(confd, name))
@@ -5115,7 +5115,7 @@ _MATRIX_COPY = ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'
                 'mcp_tools.py', 'mcp_prompts.py', 'mcp_subscribe.py',
                 'volume_paths.py', 'orchestrator.py', 'agent_registry.py', 'cross_ref.py',
                 'task_volume.py', 'agent_lock.py', 'agent_heartbeat.py', 'agent_message.py',
-                'daybook_multidx.py', 'errors.py')
+                'daybook_multidx.py', 'errors.py', 'conf_norm.py')
 
 
 def _matrix_cmds(exedir, ledger, kinds):
@@ -5313,6 +5313,207 @@ def _case_root_matrix(tmp):
                         print('    [数据] %s 文案: %s' % (label, list(uniq)[0]))
     print('    [数据] AF 实跑：成功 %d 格 / 失败 %d 格（共 %d 格，计数取自判据自身）'
           % (n_ok, n_fail, ncell))
+
+
+_CONF_CHILD = r'''
+import json, os, sys
+stage, conf_path, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, stage)
+out = {}
+import conf_norm
+text = open(conf_path, encoding='utf-8').read()
+try:
+    sections, content, parsed = conf_norm.parse_text(text)
+    out['norm'] = {'sections': sections, 'content': content, 'parsed': parsed}
+except conf_norm.ConfError as exc:
+    out['norm'] = {'err': str(exc)}
+import errors
+try:
+    if mode == 'full':
+        import daybook
+        conf = daybook.load_conf(conf_path)
+    else:
+        import volume_paths
+        conf = volume_paths.read_conf_sections_from(conf_path)
+    out['sections'] = {k: v for k, v in conf.items()
+                       if isinstance(v, dict) and not k.startswith('_') and v}
+    out['code'] = 0
+    try:
+        if mode == 'full':
+            import ledger_root
+            out['root'] = ledger_root.resolve_root(
+                os.path.realpath(os.path.dirname(conf_path)),
+                {'index': {'root': ledger_root.read_conf_value(conf_path, 'index', 'root')}})
+        else:
+            import volume_paths
+            out['root'] = volume_paths.resolve_root(os.path.dirname(conf_path))
+    except ValueError:
+        out['code'] = 2
+        out['root'] = ''
+except errors.ConfigError:
+    out['sections'] = None
+    out['code'] = 2
+    out['root'] = ''
+print(json.dumps(out, ensure_ascii=False, sort_keys=True))
+'''
+
+_CONF_SAMPLES = (
+    ('纯注释', '# 只有注释\n# 第二行\n', 0, 'conf'),
+    ('空行', '\n\n  \n', 0, 'conf'),
+    ('BOM', '\ufeff[index]\nroot=sub\n', 0, 'sub'),
+    ('CRLF', '[index]\r\nroot=sub\r\n', 0, 'sub'),
+    ('; 注释', '; 这是注释\n', 2, None),
+    ('重复[index]', '[index]\nroot=sub\n[index]\nroot=sub2\n', 0, 'sub2'),
+    ('空节名', '[]\n', 2, None),
+    ('键无=', '[index]\nroot sub\n', 0, 'conf'),
+    ('行内注释', '[index]\nroot=sub # 注释\n', 2, None),
+    ('[index]后[other]', '[index]\nroot=sub\n[other]\nx=1\n', 2, None),
+    ('缩进键', '[index]\n  root=sub\n', 0, 'sub'),
+    ('键前无节', 'root=sub\n[index]\nroot=sub\n', 0, 'sub'),
+    ('[索引]+根', '[索引]\n根=sub\n', 0, 'sub'),
+    ('[index]+根', '[index]\n根=sub\n', 0, 'sub'),
+    ('[Index]', '[Index]\nroot=sub\n', 0, 'sub'),
+    ('[ index ]', '[ index ]\nroot=sub\n', 0, 'sub'),
+    ('[INDEX]', '[INDEX]\nroot=sub\n', 0, 'sub'),
+    ('中文节+英文键', '[索引]\nroot=sub\n', 0, 'sub'),
+    ('英文节+中文键', '[index]\n根=sub\n', 0, 'sub'),
+    ('# 注释', '# c\n[index]\nroot=sub\n', 0, 'sub'),
+)
+
+
+def _case_conf_dual(tmp):
+    """P0-4 conf 边界样本差分：20 条，完整包与 orch 包各跑一次。
+    P0-4 differential conf samples: 20 cases, run once per package (full / orch).
+    比 sections/content/parsed 与最终 root：两包同值才绿；认不出的写法必须同码 2。
+    Compare sections/content/parsed and the final root: both packages must agree; a spelling
+    that cannot be recognised must exit 2 in both."""
+    print('  -- P0-4 conf 归一差分（两包 × 20 边界样本） --')
+    py = sys.executable
+    here = os.path.dirname(SRC_BIN)
+    lack = [n for n in ('daybook.py', 'volume_paths.py', 'conf_norm.py', 'ledger_root.py')
+            if not os.path.exists(os.path.join(here, n))]
+    if lack:
+        _skip('P0-4 差分需完整包与 orch 包同场（当前盒缺 %s）' % '、'.join(lack))
+        return
+    base = os.path.join(tmp, 'confdiff')
+    os.makedirs(base)
+    full = os.path.join(base, 'full')
+    orch = os.path.join(base, 'orch')
+    os.makedirs(full)
+    os.makedirs(orch)
+    for nm in sorted(os.listdir(here)):
+        if nm.endswith('.py'):
+            shutil.copy2(os.path.join(here, nm), os.path.join(full, nm))
+    for nm in ('conf_norm.py', 'ledger_root.py', 'volume_paths.py', 'errors.py'):
+        shutil.copy2(os.path.join(here, nm), os.path.join(orch, nm))
+    bad = []
+    for i, (name, text, want, want_root) in enumerate(_CONF_SAMPLES):
+        cell = os.path.join(base, 's%02d' % i)
+        os.makedirs(cell)
+        for sub in ('sub', 'sub2'):
+            os.makedirs(os.path.join(cell, sub))
+        conf = os.path.join(cell, 'daybook.conf')
+        io.open(conf, 'w', encoding='utf-8').write(text)
+        got = {}
+        for mode, stage in (('full', full), ('orch', orch)):
+            r = subprocess.run([py, '-B', '-c', _CONF_CHILD, stage, conf, mode], cwd=cell,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               universal_newlines=True)
+            try:
+                got[mode] = json.loads((r.stdout or '').strip().splitlines()[-1])
+            except (ValueError, IndexError):
+                got[mode] = {'crash': (r.stdout + r.stderr)[-200:]}
+        f, o = got['full'], got['orch']
+        same_norm = (f.get('norm') == o.get('norm')
+                     and f.get('sections') == o.get('sections'))
+        _ok('P0-4[%02d %s] 两包 sections/content/parsed 同值' % (i + 1, name), same_norm,
+            'full=%r orch=%r' % (f.get('norm'), o.get('norm')))
+        want_dir = (os.path.realpath(cell) if want_root == 'conf' else (
+            os.path.realpath(os.path.join(cell, want_root)) if want_root else None))
+        same_root = want_root is None or (
+            f.get('root') == o.get('root') == want_dir)
+        same_code = f.get('code') == o.get('code') == want
+        if not (same_norm and same_root and same_code):
+            bad.append(name)
+        _ok('P0-4[%02d %s] 两包同码=%d、同根=%s' % (i + 1, name, want,
+                                                    os.path.basename(want_dir or '')),
+            same_code and same_root,
+            'full(code=%r root=%r) orch(code=%r root=%r)'
+            % (f.get('code'), f.get('root'), o.get('code'), o.get('root')))
+    _ok('P0-4 20 条边界样本两包全同（无分叉）', not bad, '分叉=%s' % bad)
+
+
+def _case_conf_dual_e2e(tmp):
+    """P0-3 中文/大小写 conf 双包同根同码：`[索引]/根=sub`、`[Index]`、`[ index ]`。
+    P0-3 end-to-end: the same three conf spellings must give one root and one code in both
+    packages. Artifacts prove the root; the resolver print proves it directly."""
+    print('  -- P0-3 中文/大小写 conf 双包同根同码 --')
+    py = sys.executable
+    here = os.path.dirname(SRC_BIN)
+    lack = [n for n in ('daybook.py', 'orchestrator.py', 'volume_paths.py', 'conf_norm.py')
+            if not os.path.exists(os.path.join(here, n))]
+    if lack:
+        _skip('P0-3 端到端需完整包与 orch 包同场（当前盒缺 %s）' % '、'.join(lack))
+        return
+    variants = ('[索引]\n根=sub\n\n[volumes]\n账=账卷.txt\n',
+                '[Index]\nroot=sub\n\n[volumes]\n账=账卷.txt\n',
+                '[ index ]\nroot=sub\n\n[volumes]\n账=账卷.txt\n')
+    for i, text in enumerate(variants):
+        cell = os.path.join(tmp, 'cdual%d' % i)
+        full = os.path.join(cell, 'full')
+        orch = os.path.join(cell, 'orch')
+        for d in (full, orch):
+            os.makedirs(os.path.join(d, 'sub'))
+            io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(text)
+        for nm in ('daybook.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py',
+                   'errors.py', 'conf_norm.py'):
+            shutil.copy2(os.path.join(here, nm), os.path.join(full, nm))
+        for nm in ('orchestrator.py', 'volume_paths.py', 'ledger_root.py', 'errors.py',
+                   'conf_norm.py', 'safeio.py', 'agent_registry.py', 'agent_lock.py',
+                   'agent_heartbeat.py', 'task_volume.py', 'cross_ref.py',
+                   'daybook_append.py', 'agent_message.py'):
+            shutil.copy2(os.path.join(here, nm), os.path.join(orch, nm))
+        io.open(os.path.join(full, 'sub', '账卷.txt'), 'w', encoding='utf-8').write(
+            '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')
+        # v4.0.6：非空卷首次索引退 5，先认基线再索引（同码证据仍取 index 的 0）。
+        # v4.0.6: the first index of a non-empty volume exits 5; accept the baseline first.
+        rb = subprocess.run([py, '-B', 'daybook.py', 'baseline'], cwd=full,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+        rf = subprocess.run([py, '-B', 'daybook.py', 'index'], cwd=full,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+        ro = subprocess.run([py, '-B', 'orchestrator.py', 'join', '汤姆'], cwd=orch,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+        _ok('P0-3[%d %r] 完整包 baseline+index rc=0、orch 包 join rc=0（同码）' % (i + 1, text.strip()),
+            rb.returncode == 0 and rf.returncode == 0 and ro.returncode == 0,
+            'base=%d index=%d %s | orch=%d %s' % (
+                rb.returncode, rf.returncode, (rf.stdout + rf.stderr)[-80:],
+                ro.returncode, (ro.stdout + ro.stderr)[-80:]))
+        want_f = os.path.realpath(os.path.join(full, 'sub'))
+        want_o = os.path.realpath(os.path.join(orch, 'sub'))
+        code_f = ('import sys; sys.path.insert(0, "."); import ledger_root;'
+                  'print(ledger_root.ledger_root())')
+        code_o = ('import sys; sys.path.insert(0, "."); import volume_paths;'
+                  'print(volume_paths.resolve_root())')
+        pf = subprocess.run([py, '-B', '-c', code_f], cwd=full, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True)
+        po = subprocess.run([py, '-B', '-c', code_o], cwd=orch, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True)
+        root_f = (pf.stdout or '').strip().splitlines()[-1] if pf.stdout.strip() else ''
+        root_o = (po.stdout or '').strip().splitlines()[-1] if po.stdout.strip() else ''
+        _ok('P0-3[%d %r] 两包各自落到 <conf>/sub（同一相对根）' % (i + 1, text.strip()),
+            root_f == want_f and root_o == want_o,
+            'full=%r orch=%r want=%r/%r' % (root_f, root_o, want_f, want_o))
+        _ok('P0-3[%d %r] 产物只出现在 sub/（conf 目录零新卷）' % (i + 1, text.strip()),
+            os.path.exists(os.path.join(full, 'sub', 'index_账.tsv'))
+            and not os.path.exists(os.path.join(full, 'index_账.tsv'))
+            and os.path.exists(os.path.join(orch, 'sub', '注册卷.txt'))
+            and not os.path.exists(os.path.join(orch, '注册卷.txt')),
+            'full_sub=%s orch_sub=%s' % (
+                os.path.isfile(os.path.join(full, 'sub', 'index_账.tsv')),
+                os.path.isfile(os.path.join(orch, 'sub', '注册卷.txt'))))
 
 
 _HOME_STATIC = (('daybook.py', 'take_home('), ('daybook_append.py', 'take_home('),
@@ -6019,7 +6220,7 @@ def _case_error_table(tmp):
     # [index] root=sub。形态穷举优先于格数；每格实跑并断言各自码轴。
     # P6 CONFIG: three fixed shapes × 8 entries (session split into no-event/with-event):
     # missing / wholly unparsable / [index] root=sub. Shapes first, then counts.
-    def _conf_cell(rows, entry, shape, argv, cwd, want, why, input=None):
+    def _conf_cell(rows, entry, shape, argv, cwd, want, why, input=None, env=None):
         ap = argv[0]
         full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
         if os.path.basename(ap) in _ENTRIES and not os.path.exists(full):
@@ -6031,7 +6232,8 @@ def _case_error_table(tmp):
             cells[0] += 1
             stats['dyn'] += 1
         r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, universal_newlines=True, input=input)
+                           stderr=subprocess.PIPE, universal_newlines=True, input=input,
+                           env=env)
         out = r.stdout + r.stderr
         rows.append((entry, r.returncode))
         _ok('P6 CONFIG/%s %s ⇒ rc=%d（%s）' % (shape, entry, want, why),
@@ -6105,11 +6307,34 @@ def _case_error_table(tmp):
                        conf_bound if conf_bound is not None else 0,
                        '初始化前严格校验：%s' % ('坏 conf ⇒ 2、零落盘' if conf_bound is not None
                                               else 'root=sub 干净 ⇒ 0'))
-            _conf_cell(rows, 'mcp_server.py', shape,
-                       [os.path.join(d_c, 'mcp_server.py')], d_c,
-                       conf_bound if conf_bound is not None else 2,
-                       '启动自检：%s' % ('坏 conf ⇒ 2' if conf_bound is not None
-                                       else 'volumes 为空 ⇒ 配置错 2'))
+            # mcp：root=sub 这一格必须证明「根跟随 conf」，不能用「volumes 为空」碰巧同码。
+            # 该格给一份带 [volumes] 的 conf、并在 sub/ 里不放卷 ⇒ 5（证据缺失），
+            # 不是 2（空卷自检）。空卷另列一格，两种机制分开读。
+            # mcp: the root=sub cell must prove "root follows conf", not accidentally match 2 via
+            # an empty volume table. Give it a conf with [volumes] and leave the volume absent
+            # under sub/ ⇒ 5 (missing evidence), not 2 (empty-volumes self-check). Empty volumes
+            # get their own cell so the two mechanisms are never read as one.
+            clean_env = {k: v for k, v in os.environ.items()
+                         if k not in ('DAYBOOK_ROOT', 'DAYBOOK_HOME')}
+            if shape == 'root=sub':
+                d_m = os.path.join(d_c, 'mcpconf')
+                os.makedirs(os.path.join(d_m, 'sub'))
+                io.open(os.path.join(d_m, 'daybook.conf'), 'w', encoding='utf-8').write(
+                    '[volumes]\n探针=探针卷.txt\n\n[index]\nroot=sub\n')
+                _conf_cell(rows, 'mcp_server.py', shape,
+                           [os.path.join(d_c, 'mcp_server.py')], d_m, 5,
+                           'root 跟随 conf=sub：卷不在 sub ⇒ 证据缺失 5（不是空卷 2）',
+                           env=clean_env)
+            else:
+                _conf_cell(rows, 'mcp_server.py', shape,
+                           [os.path.join(d_c, 'mcp_server.py')], d_c, 2,
+                           '启动自检：%s ⇒ 2' % shape, env=clean_env)
+            d_ev0 = os.path.join(d_c, 'mcpmpty')
+            os.makedirs(d_ev0)
+            io.open(os.path.join(d_ev0, 'daybook.conf'), 'w', encoding='utf-8').write(
+                '[volumes]\n\n[index]\nroot=\n')
+            _conf_cell(rows, 'mcp_server.py', '空卷', [os.path.join(d_c, 'mcp_server.py')],
+                       d_ev0, 2, '空卷自检单列：volumes 为空 ⇒ 配置错 2', env=clean_env)
             _conf_cell(rows, 'cross_ref.py', shape,
                        [os.path.join(d_c, 'cross_ref.py'), 'resolve', '协作卷', '1'], d_c, 0,
                        'conf 不参与根解析：按卷名解析 ⇒ 0')
@@ -7255,6 +7480,8 @@ def main():
         _case_msg_consistency(work)
         _case_five_roots(work)
         _case_root_matrix(work)
+        _case_conf_dual(work)
+        _case_conf_dual_e2e(work)
         _case_pad_notice(work)
         _case_write_paths(work)
         _case_home_flag(work)

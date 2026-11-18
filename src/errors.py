@@ -31,6 +31,14 @@ severity; no entry ever prints a traceback.
     它们的写面不经过 conf 定位。
   · `daybook_multidx` 对已改写卷 rc=0 重建派生视图：**明示豁免**。`append-only` 是账本卷级
     不变量，只覆盖账本卷，不覆盖派生视图；别把这句套到 multidx 上。
+  · conf 的归一与解析**只有一套**（`conf_norm`，完整包 / mcp / orch 同带一份）：节名键名
+    统一 `strip + lower + 中文别名`（`[volumes]` 的键是卷名，保留大小写），`[索引]`／
+    `[Index]`／`[ index ]`／`[INDEX]` 都是 `index`；归一后仍认不出的节名 ⇒ 2
+    （「配置写错了」不得降级成「没配置」）。
+  · `orchestrator.py alarm` 体检**只读开卷**：缺编排卷不建卷，报「账本未检查」（软警，rc 仍 0）；
+    账本 append-only 违例仍走硬警 3。缺卷不是「干净」，也不会把缺卷读成空名册去判幽灵。
+  · `mcp_server.py` 启动自检失败直接退出：volumes 为空 / 卷指向目录 ⇒ 2；登记卷缺失 /
+    卷存在但不可读 ⇒ 5。绝不「服务起来了但每个工具都报错」。
   · A volume path that is a directory is a CONFIG error (2): both `daybook.py` and
     `daybook_append.py` must return 2 for the same conf. Only runtime refusals
     (unwritable target/permission/root swapped) stay 6.
@@ -44,6 +52,11 @@ severity; no entry ever prints a traceback.
     name) do not use conf for root resolution: rc=0 under a bad conf is by design (P6 asserts 0).
     Their write surface never depends on conf location. `daybook_multidx` rebuilding derived
     views (rc=0) is an explicit exemption: append-only covers ledger volumes, not derived views.
+    Conf normalisation and parsing exist once (`conf_norm`, shipped by all three packages):
+    names are `strip + lower + Chinese alias`; a section still unknown after normalisation is a
+    config error (2). `orchestrator.py alarm` opens volumes read-only and reports "ledger not
+    checked" instead of creating a missing one. `mcp_server.py` refuses to start sick: empty
+    volumes / a volume pointing at a directory ⇒ 2; a missing or unreadable volume ⇒ 5.
 """
 import sys
 

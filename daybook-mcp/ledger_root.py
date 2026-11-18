@@ -25,7 +25,6 @@ LedgerRoot · the single ledger-root resolver (shared by daybook / MCP / append 
      directory and does not use this resolver — it is installed inside the workspace and its
      archive must land there (see that module's docstring).
 """
-import io
 import os
 
 CONF_NAME = 'daybook.conf'
@@ -96,30 +95,26 @@ def read_conf_value(conf_path, section, key):
     根规则不在这里：返回值一律交给 resolve_root。
     The root rule is not here: the raw value goes straight to resolve_root.
 
-    **唯一 conf 语义**：直接复用 `daybook.load_conf`（严格解析），不再自带第二套轻量解析。
-    同一份文件只许一个结论：有非注释内容却零可识别节/键 ⇒ ConfigError（2），绝不 fail-open。
-    **One conf semantics**: delegate to `daybook.load_conf`; never parse a second way. Content
-    with no recognisable section/key raises ConfigError (2), never fails open.
+    **唯一 conf 语义**：归一与行解析只有一套（`conf_norm`）。完整包直接走
+    `daybook.load_conf`；`daybook-orch` 独立包不带 `daybook.py`，退回同包的
+    `volume_paths.read_conf_sections_from`——两条路都调用同一个 `conf_norm.parse_text`，
+    所以归一分叉在结构上不可能发生。这是**发行边界**（文件读取路径不同），不是第二套语义，
+    也不是「轻量解析还在」：本函数自己没有一行归一逻辑。
+    **One conf semantics**: normalisation and line parsing exist only in `conf_norm`. The full
+    package goes through `daybook.load_conf`; the standalone `daybook-orch` package ships no
+    `daybook.py` and falls back to the same-package `volume_paths.read_conf_sections_from` —
+    both call the one `conf_norm.parse_text`, so normalisation cannot diverge. This is a
+    **packaging boundary** (a different file-reading path), not a second semantics, and not
+    "the lightweight parser is still here": this function holds no normalisation logic at all.
 
-    orchestrator 独立包不带 `daybook.py`：此时退回同包的 section 读取器（`volume_paths`），
-    严格性判据与 `parse_conf` 逐字对齐（只认非注释内容）。这是发行边界，不是第二套语义。
-    The standalone orchestrator box ships no `daybook.py`: it falls back to the same-package
-    section reader (`volume_paths`) with parse_conf's exact strictness rule — a packaging
-    boundary, not a second semantics."""
+    坏 conf（整份不可解析 / 节名认不出）⇒ ConfigError（2），绝不 fail-open 成空值再回落
+    conf 目录继续写。A bad conf raises ConfigError (2); it never fails open to '' and then
+    keeps writing into the conf directory."""
     try:
         import daybook as _db
     except ImportError:
         from volume_paths import read_conf_sections_from
         sections = read_conf_sections_from(conf_path)
-        if not sections:
-            ink = [ln for ln in io.open(conf_path, encoding='utf-8')
-                   if ln.strip() and not ln.lstrip().startswith('#')] if os.path.exists(
-                       conf_path) else []
-            if ink:
-                from errors import ConfigError
-                raise ConfigError(
-                    'daybook.conf 整份无法解析（%s）：没有可识别的 [节] 或 键=值；'
-                    '坏 conf 不等于空账本' % conf_path)
         return str((sections.get(section) or {}).get(key, '') or '')
     conf = _db.load_conf(conf_path)
     return str((conf.get(section) or {}).get(key, '') or '')

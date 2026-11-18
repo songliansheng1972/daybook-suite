@@ -2,7 +2,7 @@
 
 ## v4.0.6 · 2026-11-14
 
-> ### ⚠ 升级前必读：两处行为变更 / Read before upgrading: two behaviour changes
+> ### ⚠ 升级前必读：三处行为变更 / Read before upgrading: three behaviour changes
 >
 > 1. **非空卷首次索引退 5，需显式认基线**。首次索引会建立封存证据，但按新裁定**不再自动写回**：
 >    先返回 5，执行一次 `python3 daybook.py baseline`（别名 `认基线`）后才写回游标与封存，
@@ -23,6 +23,12 @@
 >    **The author is mandatory.** Legacy 3/4-arg forms, `未标`/empty placeholders and `--name=`
 >    are removed and refused with rc=2; standalone mode also refuses machine ids.
 >    The MCP tool path is unaffected.
+> 3. **MCP 空卷不再「带病常驻」**。`daybook.conf` 的 `[volumes]` 为空、卷配成目录 ⇒ 启动即退
+>    **2**；登记卷缺失、卷存在但不可读（`chmod 000` 等）⇒ 启动即退 **5**。修前是「服务起来了，
+>    首个 `tools/call` 才报错」；把启动成功当健康检查的外部脚本需要改。
+>    **MCP no longer starts sick**: an empty `[volumes]`, a volume pointing at a directory ⇒ exit 2
+>    at startup; a missing or unreadable volume ⇒ exit 5. Before, the server started and the first
+>    `tools/call` failed.
 >
 > ### ⚠ 退出码变更（对外契约，单列）· Exit-code changes (external contract)
 >
@@ -41,6 +47,39 @@
 > 否则会把「硬警」判成成功、把「执行异常」判成「违例」。
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
+
+### 复签不签（四续）：conf 归一单源、alarm 只读开卷、自检补可读性（2026-11-18）
+
+- **P0 conf 解析只留一套**：新增零依赖 `conf_norm.py`（别名表 + `strip/lower` 归一 + 行解析），
+  完整包、`daybook-mcp`、`daybook-orch` 带同一份。`daybook.parse_conf`、
+  `daybook_multidx.load_conf`、`volume_paths.read_conf_sections_from` 全部调用它，
+  `ledger_root.read_conf_value` 的 fallback 不再自带归一/空判据。分叉（`[索引] 根=sub` 下
+  完整包 `root=sub`、orch 包 `root=''`；`[Index]`/`[ index ]` 只有一包认）在结构上去掉。
+  三包 `pack.py --verify` 全同。
+- **P0 认不出就说真话**：归一后仍不在 `KNOWN_SECTIONS` 的节名、空节名、
+  「有非注释内容却零可识别节/键」一律 `ConfigError`（2），不再静默忽略（`[INDEX]` 归一到
+  `index` 照常认；`[other]` 报 2 并点名）。
+- **P0/P0-4 判据**：新增 20 条边界样本差分（纯注释、空行、BOM、CRLF、`;` 注释、重复节、
+  空节名、键无 `=`、行内注释、未知节、缩进键、键前无节、`[索引]+根`、`[index]+根`、
+  `[Index]`、`[ index ]`、`[INDEX]`、中英混用、`#` 注释），完整包与 orch 包各跑一次，
+  比 `sections/content/parsed` 与最终 root。另加三类 conf（`[索引]/根=sub`、`[Index]`、
+  `[ index ]`）端到端：两包各自落到 `<conf>/sub`、同码 0。
+- **P1 alarm 不建卷**：`Hub(create=False)` 下 `TaskVolume`/`Heartbeat` 只读开卷；`alarm` 缺
+  编排卷时报 `ledger_unchecked`「账本未检查」（软警，rc 0），不把缺卷读成空名册去判幽灵。
+  P7 改为从「任务卷/心跳卷不存在」起跑，仍以等长改写取 3，并断言零落盘（含不建卷）。
+- **P1 空卷测试改期望**：`mcp_p0_regression.test_empty_volumes_warns` 改按新语义断言
+  （rc=2、stdout 空、stderr 点名 `volumes 为空`），不再 `json.loads('')` 崩。
+- **P2 自检补可读性**：`mcp_resources.self_check` 在 exists 之后加 `os.access(R_OK)` + 试开
+  一次；存在但不可读 ⇒ 证据缺失 5。半吊子自检（只看 exists）与「绝不带病常驻」不能并存。
+- **P2 session `--initialize` 游标**：显式从零建游标时**落盘**（即使本轮无可消费事件），
+  文案如实写「从零开始，既有事件不跳过」；修前只有「已建立」字样、无状态文件。
+- **P2 措辞**：`read_conf_value` 注释改为发行边界的实话（fallback 在，但归一逻辑一行都没有）。
+- **P1-3 P6 mcp 格分机制**：`root=sub` 的 mcp 格改用带 `[volumes]` 的 conf、卷不在 `sub/`
+  ⇒ 5（证明根跟随 conf），空卷单列一格 ⇒ 2，两种机制不再读成同一种。
+- **读数**：差分 20/20 两包同值；三类 conf 双包同根（`<conf>/sub`）同码 0；干净根
+  `alarm` rc=0 且新增文件 `[]`；坏 conf `alarm` rc=2 零落盘；mcp 空卷 2 / 根跟随缺卷 5 /
+  `chmod 000` 5。源树 0 红 / 673 项；`daybook/` 盒 0 红 / 489 项；属性层全绿；变异 15/15；
+  闭包覆盖 932/2155 = 43%（可能写缺口 316）；三包 `--verify` 全同。
 
 ### 复签不签（三续）：conf 语义唯一、三形态矩阵、session 拆格（2026-11-18）
 

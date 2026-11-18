@@ -59,7 +59,7 @@ def _now():
 class TaskVolume:
     """任务状态卷·append-only。
     Task status volume · append-only."""
-    def __init__(self, path=None, root=None):
+    def __init__(self, path=None, root=None, materialize=True):
         self.path = path or os.path.join(HERE, '任务卷.txt')
         # 账本根一律显式给出；收 Root 就复用同一 dev_ino，绝不按路径重开（入口换根后仍写旧 inode）
         # The ledger root is always explicit; a Root is reused (same dev_ino) instead of being
@@ -71,7 +71,10 @@ class TaskVolume:
         # cannot leak file descriptors.
         self._root_finalizer = (weakref.finalize(self, self.root.close)
                                 if _opened else None)
-        if not os.path.exists(self.path):
+        if materialize and not os.path.exists(self.path):
+            # materialize=False（体检只读开卷）：缺卷不建，由调用方报「账本未检查」。
+            # materialize=False (read-only health check): a missing volume stays missing and the
+            # caller reports "ledger not checked".
             with locked(self.root) as lr:
                 lr.write(lr.root.rel_of(self.path, 'task_volume.init'), b'',
                          mode=WriteMode.REPLACE)

@@ -532,7 +532,7 @@ class Hub:
     """编排中心：六件原语 + 路由，统一入口。
     Orchestration hub: the six primitives + routing, under a single entry point."""
 
-    def __init__(self, root=None, rule=None, roles=None):
+    def __init__(self, root=None, rule=None, roles=None, materialize=True):
         # 账本根与 conf 位置都由 ledger_root 唯一解析（与 index/MCP/追加 CLI/钩子同源）；
         # root/--root 只用于定位 conf，[index] root 说了算。
         # Both the ledger root and the conf location come from ledger_root (shared with
@@ -540,28 +540,19 @@ class Hub:
         from ledger_root import locate as _locate_conf
         from safeio import Root
         self.conf_dir, self.conf_path = _locate_conf(override=root)
-        # 先判「整份不可解析」，再建根/卷/状态：坏 conf 必须在任何落盘之前归 2。
-        # 读取器与卷表解析同源（volume_paths），不引入第三套 conf 语义。
-        # Reject a wholly unparsable conf before creating root/volumes/state, using the same
-        # reader as volume resolution (no third conf semantics). The old order wrote task and
-        # heartbeat volumes before load_conf, so rc=2 left files behind.
+        # 先判 conf，再建根/卷/状态：坏 conf 必须在任何落盘之前归 2。
+        # 读取器与卷表解析同源（volume_paths → conf_norm），不引入第三套 conf 语义。
+        # Reject a bad conf before creating root/volumes/state, using the same reader as volume
+        # resolution (volume_paths → conf_norm). The old order wrote task and heartbeat volumes
+        # before load_conf, so rc=2 left files behind.
         if self.conf_path:
             if not os.path.exists(self.conf_path):
                 raise errors.ConfigError(
                     '未找到 daybook.conf：%s（请用 --home 或 DAYBOOK_HOME 指定 conf 所在目录）'
                     % self.conf_dir)
-            if not _vp.read_conf_sections_from(self.conf_path):
-                # 与 daybook.parse_conf 的 content/parsed 判据逐字对齐：只有「有非注释内容、
-                # 却零可识别节/键」才归 2；纯注释 conf 视为空配置（root 回落 conf 目录）。
-                # orchestrator 盒不带 daybook 解析器，这里只做这一条空判据。
-                # Mirrors parse_conf's content/parsed rule exactly: only non-comment content with
-                # zero recognisable section/key is a config error; a comment-only conf is empty.
-                ink = [ln for ln in io.open(self.conf_path, encoding='utf-8')
-                       if ln.strip() and not ln.lstrip().startswith('#')]
-                if ink:
-                    raise errors.ConfigError(
-                        'daybook.conf 整份无法解析（%s）：没有可识别的 [节] 或 键=值；'
-                        '坏 conf 不等于空账本' % self.conf_path)
+            # 整份不可解析 / 节名认不出 ⇒ ConfigError（2）：由唯一解析器说真话。
+            # Wholly unparsable / unknown section ⇒ ConfigError (2): the one parser tells the truth.
+            _vp.read_conf_sections_from(self.conf_path)
         self.root = _vp.resolve_root(root)
         # 入口只开一次 Root：后续 TaskVolume/Heartbeat/AgentLock/编排卷追加都复用同一 dev_ino。
         # 根被 rename 后仍写旧 inode，不会因「同名目录已就位」静默改道。
@@ -592,8 +583,10 @@ class Hub:
                 for parent in parents:
                     lr.mkdirs(lr.root.rel_of(parent, 'orchestrator.Hub.mkdir'))
         self.reg = _reg.Registry(self.vols['registry'], root=self.root_handle)
-        self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root_handle)
-        self.hb = _hb.Heartbeat(self.vols['heartbeat'], root=self.root_handle)
+        self.tv = _tv.TaskVolume(self.vols['tasks'], root=self.root_handle,
+                                 materialize=materialize)
+        self.hb = _hb.Heartbeat(self.vols['heartbeat'], root=self.root_handle,
+                                materialize=materialize)
         self.lock = _lock.AgentLock(self.vols['leases'], root=self.root_handle)
         self.ledger = self.vols['ledger']
         self.rules = load_rules(rule or DEFAULT_RULE)
@@ -940,12 +933,18 @@ class Hub:
         Ledger append-only/baseline is checked here too (`_ledger_alarms`), so "clean" can no
         longer hide an equal-length rewrite."""
         out = []
-        dead = self.hb.dead_agents()
+        # 体检只读开卷：缺卷不建，也不把它读成「干净」——显式报「账本未检查」。
+        # The check opens volumes read-only: never creates a missing one, and never reads it as
+        # "clean" — it reports "ledger not checked" explicitly.
+        missing = [role for role in ('registry', 'tasks', 'heartbeat')
+                   if not os.path.exists(self.vols[role])]
+        dead = self.hb.dead_agents() if 'heartbeat' not in missing else []
         dead_set = set(dead)
         if dead:
             out.append(Alarm('dead_agents', True, '失联 agent：%s' % '、'.join(dead)))
-        tasks = self.tv.list()
-        reg_ids = {a.agent_id for a in self.reg.list()}
+        tasks = self.tv.list() if 'tasks' not in missing else []
+        reg_missing = 'registry' in missing
+        reg_ids = set() if reg_missing else {a.agent_id for a in self.reg.list()}
         for tid, st, ag, ct, _hist in tasks:
             if st in ('进行中', '待审') and ag in dead_set:
                 out.append(Alarm('orphan_task', True,
@@ -955,9 +954,16 @@ class Hub:
                                  '滞留：%s 停在[完成]、未推进[待审]' % tid))
             # 任务卷里出现、注册卷里没有的负责人（幽灵）——硬警，修前只会判「干净」
             # Owners that appear in the task volume but not in the registry (ghosts) — a hard warning; before, they passed as "clean"
-            if ag and ag not in reg_ids:
+            # 注册卷缺失时不判幽灵：没有名册不等于名册为空，缺卷由下面的「未检查」报。
+            # No ghost verdict while the registry is missing: an absent roster is not an empty
+            # roster; the "not checked" alarm below covers it.
+            if ag and not reg_missing and ag not in reg_ids:
                 out.append(Alarm('ghost_owner', True,
                                  '幽灵负责人：%s 的 %s 未在注册卷' % (tid, ag)))
+        if missing:
+            out.append(Alarm('ledger_unchecked', False,
+                             '账本未检查：编排卷文件不存在（%s）；体检只读开卷、不建卷'
+                             % '、'.join(missing)))
         out.extend(self._ledger_alarms())
         return out
 
@@ -1061,7 +1067,11 @@ def _main(argv=None):
         raise errors.ConfigError('未指定子命令')
 
     try:
-        hub = Hub(root=args.root, rule=args.rule, roles=args.roles)
+        # 体检（alarm）只读开卷：缺卷不建，报「账本未检查」；其余命令沿用建卷语义。
+        # alarm opens volumes read-only: a missing volume stays missing and is reported as
+        # "ledger not checked"; other commands keep the create-on-open behaviour.
+        hub = Hub(root=args.root, rule=args.rule, roles=args.roles,
+                  materialize=(args.cmd != 'alarm'))
     except errors.ConfigError:
         # Hub 在落盘前严格校验 conf：坏 conf 原样穿透归 2，不包成「初始化失败 6」。
         # Hub strictly validates conf before any write: a bad conf passes through as 2, never
@@ -1133,11 +1143,11 @@ def _main(argv=None):
         for it in issues:
             print('  · [%s]%s %s' % (it.code, '★' if it.hard else '·', it.msg))
         hard = any(it.hard for it in issues)
-        unchecked = any(it.code == 'ledger_unavailable' for it in issues)
+        unchecked = any(it.code in ('ledger_unavailable', 'ledger_unchecked') for it in issues)
         if hard:
             verdict = '★ 有硬警'
         elif unchecked:
-            verdict = '干净（编排结构；账本 append-only/基线未检查：本包未随 daybook）'
+            verdict = '干净（编排结构；账本 append-only/基线未完整检查）'
         else:
             verdict = '干净（含账本 append-only/基线）'
         print('判：%s' % verdict)
