@@ -26,6 +26,7 @@ MODULES = [
     ('P7', 'p7_zero_write'),
     ('P8', 'p8_credential'),
     ('P9', 'p9_entry_root'),
+    ('P10', 'p10_build_root'),
 ]
 
 

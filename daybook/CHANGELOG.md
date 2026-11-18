@@ -59,6 +59,24 @@
 - 读数：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
   属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 verify rc=0。
 
+### 复签补轮二：目录创建收进唯一写能力（2026-11-18）
+
+- 产品件里剩余 9 处 `os.makedirs/os.mkdir` 全部改走 `LockedRoot.mkdirs_path`：
+  `daybook.build` 的 outdir、`_backup_locked` 的 `backup/`/索引备份、`daybook_record.record`
+  的「对话原件」（移进取锁区）、`daybook_session_hook` 三处、`orchestrator.Hub.__init__`
+  与 `_selftest`、`daybook_multidx._build_locked`。账本根内建目录与写文件同属一个写能力。
+- 新增 P10（build 换根：追加条目写回旧 inode、新根零目录）与 M13（outdir 退回
+  `os.makedirs`）⇒ M13 死在 `[FAIL] P10 换根后 build 不往新根建「索引」`。
+- M12 改死断言：P9 捕获 `RuntimeError` 后仍断言旧根有密钥目录/注册卷、新根没有；
+  `score.py` 只有普通断言红才算 killed，纯崩溃记 dead。M5 同口径，死在
+  `[FAIL] P5 REPLACE 后目录 fsync ≥ 1 · err=release unlocked lock`。
+- Registry 补 `LockedRoot.chmod(0o700)`，已存在的 0755 旧目录也收紧。
+- AH 识别 `os.mkdir/os.makedirs` 与 `lr.mkdir*`，登记 `_backup_locked`、session hook 三处、
+  `Hub.__init__`、`safeio.mkdir`；P6 session × EVIDENCE 改在盒内 ROOT 内放 state。
+- `verify_plain.py` 明确为判据工具，不在 8 统一入口表内。
+- 读数：源树 `0 红 / 506 项（跳过 22）`；盒 `0 红 / 386 项（跳过 45）`；P1–P10 全绿；
+  `变异 13 / 杀死 13 / 存活 0 / 死变异 0`；两套 verify rc=0；mcp 23/23、orch 全绿。
+
 ### 复签收口：三条所有权补立（P1/P2 · 2026-11-18）
 
 - **写凭证生命周期**：`LockedRoot.write/update` 写前过 `_ensure_live()`（未释放且仍在本线程

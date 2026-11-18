@@ -145,8 +145,9 @@ class Registry:
         p = os.path.join(self._key_dir(), fn)
         from safeio import locked, WriteMode
         with locked(self.root) as lr:
-            lr.mkdirs(lr.root.rel_of(self._key_dir(), 'agent_registry._write_secret'),
-                      perm=0o700)
+            kd = lr.root.rel_of(self._key_dir(), 'agent_registry._write_secret')
+            lr.mkdirs(kd, perm=0o700)
+            lr.chmod(kd, 0o700)          # 旧目录 0755 也收紧 · tighten legacy 0755 too
             lr.write(lr.root.rel_of(p, 'agent_registry._write_secret'), secret + '\n',
                      mode=WriteMode.REPLACE, perm=0o600)
         return KEY_DIR_NAME + '/' + fn

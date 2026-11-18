@@ -1134,7 +1134,9 @@ def _selftest():
         # v3.1: distribution hooked to the directory — build a multi-level directory tsv → digest should emit a 部▸类▸属 summary
         mdir = os.path.join(root, 'multilevel')
         if not os.path.isdir(mdir):
-            os.makedirs(mdir)
+            from safeio import locked as _safe_locked
+            with _safe_locked(hub.root_handle) as _lr:
+                _lr.mkdirs_path(mdir, 'orchestrator.selftest.md_dir')
         # ① 新英文名/新英文表头（canonical）/ canonical English name + English header
         with io.open(os.path.join(mdir, '协作_catalog.tsv'), 'w', encoding='utf-8') as f:
             f.write('volume\tlevel2\tline\ttime\tcategory\tauthor\ttitle\n')

@@ -31,7 +31,6 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
         raise ValueError('拒绝记录空内容')
 
     archive_dir = os.path.join(HERE, '对话原件')
-    os.makedirs(archive_dir, exist_ok=True)
     stamp = stamp or time.strftime('%Y%m%d_%H%M%S')
     digest = hashlib.sha256(content).hexdigest()
     safe_title = ''.join(
@@ -46,6 +45,7 @@ def record(role, title, content, stamp=None, update_index=True, root=None):
     # (the single atomic-replace implementation).
     from safeio import locked, WriteMode
     with locked(root or HERE) as lr:
+        lr.mkdirs_path(archive_dir, 'daybook_record.archive_dir')
         lr.write(lr.root.rel_of(archive_path, 'daybook_record.archive'), content,
                  mode=WriteMode.REPLACE)
 

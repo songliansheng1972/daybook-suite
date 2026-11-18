@@ -216,15 +216,16 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   `agent_lock.py`、`pack.py` 等，依赖它们的判据逐条打印 `[跳过]` 与原因、不进「项」计数；
   其余少掉的项来自按文件集扫描的判据（如 AH 登记条目）随文件数变化。所有场合只报打印值，
   不手写换算。
-- **判据健康度**不看条数：属性层 P1–P9 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
-  变异记分 `python3 src/tools/score.py` 打印 `变异 12 / 杀死 12 / 存活 0 / 死变异 0`。
+- **判据健康度**不看条数：属性层 P1–P10 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
+  变异记分 `python3 src/tools/score.py` 打印 `变异 13 / 杀死 13 / 存活 0 / 死变异 0`。
   健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
   `src/tests/scenarios/guard.py`（盒内仍叫 `ledger_guard_test.py`，命令不变）。
 - **统一退出码入口只有 8 个**：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、
   `daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、
   `cross_ref.py`；P6 的 8×7 矩阵只对这张清单负责。`agent_*`、`task_volume.py`、
   `daybook_multidx.py`、`mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，
-  不承诺统一码，也不得拿来宣称「任何入口同码」。
+  不承诺统一码，也不得拿来宣称「任何入口同码」。`verify_plain.py` 是**判据工具**（只读校验，
+  退出码 1/2 表示「判据不成立/用法错」），不在这张入口表内，也不要按统一错误类解读。
 
 ## 退出码（CLI）
 
@@ -277,8 +278,8 @@ daybook-suite/            ← 本仓
 └── src/                  ← 唯一源（改先落源，勿改副本）
     ├── pack.py           ← 建包器
     ├── tests/scenarios/  ← 33 组场景判据（盒内复制为 ledger_guard_test.py）
-    ├── tests/prop/       ← P1–P7 属性层（seed 化生成，失败可一键复现）
-    └── tools/            ← mutate.py（AST 变异 M1–M8）+ score.py（记分板）
+    ├── tests/prop/       ← P1–P10 属性层（seed 化生成，失败可一键复现）
+    └── tools/            ← mutate.py（AST 变异 M1–M13）+ score.py（记分板）
 ```
 
 - **只想用**：直接进三个包目录跑，各包自包含、零依赖。

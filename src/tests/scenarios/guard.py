@@ -102,6 +102,7 @@ WRITE_PATHS = (
     ('daybook.py', '_write_cursor', 'ledger', '账本内容/派生件'),
     ('daybook.py', '_run_ops', 'ledger', '账本内容/派生件'),
     ('daybook.py', 'build', 'ledger', '账本内容/派生件'),
+    ('daybook.py', '_backup_locked', 'ledger', 'backup/ 在账本根内（目录走 LockedRoot.mkdirs_path）'),
     ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（REPLACE）'),
     ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
     ('daybook_append.py', '_emit', 'ledger', '账本内容/派生件（临界区内复用已持凭证）'),
@@ -109,6 +110,9 @@ WRITE_PATHS = (
     ('daybook_multidx.py', '_build_locked', 'ledger', '账本内容/派生件'),
     ('daybook_record.py', 'record', 'ledger', '账本内容/派生件'),
     ('daybook_session_hook.py', 'atomic_json', 'ledger', '账本内容/派生件'),
+    ('daybook_session_hook.py', 'initialize_state', 'ledger', '状态目录走 LockedRoot.mkdirs_path'),
+    ('daybook_session_hook.py', 'process_once', 'ledger', '状态目录走 LockedRoot.mkdirs_path'),
+    ('daybook_session_hook.py', 'install', 'ledger', '.vscode/ 在账本根内（目录走 LockedRoot.mkdirs_path）'),
     ('entry_smoke_test.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_p0_regression.py', '_setup', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_p0_regression.py', 'test_cross_ref_numbered', 'other', '随包测试：目标由 tempfile 生成'),
@@ -125,6 +129,8 @@ WRITE_PATHS = (
     ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', '_write_fixture', 'ledger', '随包测试夹具卷（REPLACE）'),
     ('orch_fixes_test.py', '_append_fixture', 'ledger', '随包测试夹具卷（APPEND_CREATE）'),
+    ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_cross_process_lock', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
@@ -136,8 +142,10 @@ WRITE_PATHS = (
     ('orch_perf_bench.py', 'build_dataset', 'ledger', '随包压测夹具卷（REPLACE）'),
     ('orch_perf_bench.py', 'make_old_pkg', 'other', '随包压测：目标由 tempfile 生成'),
     ('orch_perf_bench.py', 'main', 'other', '随包压测：目标由 tempfile 生成'),
+    ('orchestrator.py', '__init__', 'ledger', 'Hub 建卷父目录（目录走 LockedRoot.mkdirs）'),
     ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
     ('path_leak_check.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
+    ('safeio.py', 'mkdir', 'impl', 'safeio 唯一建目录链（dir_fd）'),
     ('safeio.py', '_append', 'impl', 'safeio 唯一写链（追加）'),
     ('safeio.py', '_replace', 'impl', 'safeio 唯一写链（临时件 + replace + fsync(dfd)）'),
     ('safeio.py', '_append_win', 'impl', 'Windows 追加（realpath 归属判 + O_APPEND + inode 复核）'),
@@ -742,7 +750,8 @@ def _scan_write_sites(d):
                 if t in _WRITE_SAFE:
                     kinds.add('safe')
                 elif (isinstance(sub.func, ast.Attribute)
-                      and sub.func.attr in ('write', 'update')
+                      and sub.func.attr in ('write', 'update', 'mkdir', 'mkdirs',
+                                            'mkdirs_path', 'chmod')
                       and isinstance(sub.func.value, ast.Name)
                       and sub.func.value.id in ('lr', '_lr', 'locked_root')):
                     kinds.add('safe')
@@ -757,6 +766,13 @@ def _scan_write_sites(d):
                     kinds.add('osopen')
                 elif t in ('os.write', 'os.pwrite', 'os.writev'):
                     kinds.add('osopen')
+                elif t in ('os.mkdir', 'os.makedirs'):
+                    # 建目录也是写：产品件一律经 LockedRoot.mkdirs/mkdirs_path（dir_fd），
+                    # 裸 os.mkdir/os.makedirs 在账本桶里即判红。
+                    # Directory creation is a write too: product code must go through
+                    # LockedRoot.mkdirs/mkdirs_path (dir_fd); raw os.mkdir/os.makedirs is red
+                    # inside a ledger bucket.
+                    kinds.add('mkdir')
                 elif t in _WRITE_TEMP:
                     kinds.add('temp')
                 elif isinstance(sub.func, ast.Attribute) \
@@ -4238,8 +4254,13 @@ def _case_error_table(tmp):
             os.makedirs(ev)
             bad_state = os.path.join(d_ev, 'bad_state.json')
             io.open(bad_state, 'w', encoding='utf-8').write('{bad json')
+            # ROOT 取脚本所在目录；--state 必须在 ROOT 内（越界建目录已判 rc=6，见 R12-5）。
+            # ROOT is the script's directory; --state must live inside ROOT (an out-of-root
+            # state dir is refused with rc=6, see R12-5).
+            hook_ev = os.path.join(d_ev, 'daybook_session_hook.py')
+            shutil.copy2(os.path.join(here, 'daybook_session_hook.py'), hook_ev)
             probe('daybook_session_hook.py', 'EVIDENCE',
-                  [os.path.join(here, 'daybook_session_hook.py'), 'watch', '--once',
+                  [hook_ev, 'watch', '--once',
                    '--events-root', ev, '--state', bad_state, '--workspace', d_ev], d_ev)
             # record 从账本外 cwd 调：append 子进程必须 cwd=HERE，随后 index 缺证据 ⇒ 5
             # record invoked from an outside cwd: the append child must run with cwd=HERE,

@@ -130,7 +130,9 @@ def initialize_state(events_root, state_path, root):
                 if cwd:
                     session_id = os.path.basename(os.path.dirname(path))
                     state['workspaces'][session_id] = os.path.realpath(cwd)
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    from safeio import locked
+    with locked(root) as lr:
+        lr.mkdirs_path(os.path.dirname(state_path), 'daybook_session_hook.state_dir')
     atomic_json(state_path, state, root)
     return state
 
@@ -162,7 +164,9 @@ def handle_event(event, session_id, state, workspace, root):
 
 
 def process_once(events_root, state_path, workspace, root, initialize=False):
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    from safeio import locked
+    with locked(root) as lr:
+        lr.mkdirs_path(os.path.dirname(state_path), 'daybook_session_hook.state_dir')
     state = load_state(state_path)
     if state is None:
         if not initialize:
@@ -199,7 +203,9 @@ def process_once(events_root, state_path, workspace, root, initialize=False):
 def install(root):
     vscode_dir = os.path.join(ROOT, '.vscode')
     tasks_path = os.path.join(vscode_dir, 'tasks.json')
-    os.makedirs(vscode_dir, exist_ok=True)
+    from safeio import locked
+    with locked(root) as lr:
+        lr.mkdirs_path(vscode_dir, 'daybook_session_hook.vscode_dir')
     if os.path.exists(tasks_path):
         with open(tasks_path, encoding='utf-8') as tasks_file:
             config = json.load(tasks_file)

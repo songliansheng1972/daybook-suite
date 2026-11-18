@@ -30,7 +30,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import mutate
 
-_PROP_RE = re.compile(r'^PROP (P\d) (PASS|FAIL)$', re.M)
+_PROP_RE = re.compile(r'^PROP (P\d+) (PASS|FAIL)$', re.M)
 
 
 def _run_props(tree, only=''):
@@ -62,7 +62,14 @@ def _score_one(mut_id, expect_override=None):
         t0 = time.time()
         rc, props, out = _run_props(tree, only=expect)
         if props.get(expect) == 'FAIL':
-            return 'killed', '期望属性 %s 红（rc=%d）' % (expect, rc)
+            fails = [ln.strip() for ln in out.splitlines() if '[FAIL]' in ln]
+            crash = [ln for ln in fails if '运行异常' in ln]
+            normal = [ln for ln in fails if '运行异常' not in ln]
+            if crash and not normal:
+                return 'dead', '崩溃死（只有 %s 运行异常，未落在断言上）：%s' % (
+                    expect, crash[0][:120])
+            return 'killed', '期望属性 %s 红（rc=%d，断言：%s）' % (
+                expect, rc, (normal[0][:100] if normal else '见输出'))
         if rc != 0 and not props:
             return 'dead', '属性入口崩溃（rc=%d）' % rc
         # 期望属性绿：再跑全量，看是否被别的属性杀死（错映射/声明不符）

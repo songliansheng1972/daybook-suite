@@ -71,6 +71,40 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
    mcp 23/23、orch 全绿。
 
+### 复签补轮二：目录创建收进唯一写能力、M12 落在断言、P3 收口（2026-11-18）
+
+1. **目录创建不再是第二套写路径**：此前 `LockedRoot` 是唯一写能力，但建目录仍散落在产品件里
+   直接 `os.makedirs/os.mkdir`（`daybook.build` 的索引 outdir、`_backup_locked` 的
+   `backup/` 与索引备份、`daybook_record.record` 的「对话原件」、`daybook_session_hook` 的
+   状态目录与 `.vscode`、`orchestrator.Hub.__init__` 的卷父目录、`orchestrator._selftest` 的
+   md 目录、`daybook_multidx._build_locked` 的多级目录）。这些点换根后会把目录建到新 inode。
+   现在全部走 `LockedRoot.mkdirs_path`（`rel_of` 判归属 + `mkdirs` 逐段 dir_fd），
+   `record` 的建目录移进 `with locked(root)` 之内。所有权口径：**在账本根内建目录与写文件
+   同属一个写能力**，不再按路径重开。
+   红证（新增 M13：`build` 的 outdir 退回 `os.makedirs`）⇒ P10
+   `[FAIL] P10 换根后 build 不往新根建「索引」· old=True new=True`；
+   绿证（新增 P10）：换根后 `build` 的追加条目写回旧 inode 的 `索引/index_账.tsv`
+   （含 `第020条`），新根 `listdir == []`。
+2. **M12 从「崩溃红」改为「断言红」**：P9 把 `hub.reg.register` 包 `try/except RuntimeError`，
+   失败后仍断言「旧根有 `.daybook_keys`/注册卷、新根都没有」，故 M12 现在死在
+   `[FAIL] P9 Registry 换根后 mkdir/write 旧 inode`，不再以运行异常冒充。
+   `tools/score.py` 同步收紧：期望属性红时，只有**普通断言 FAIL** 才算 killed；只有
+   `[FAIL] P# 运行异常` 的记 **dead（崩溃死）**，不算杀死。同一口径修了 M5：P5 的六处
+   取锁/写入都经 `_attempt` 收成断言，M5 现在死在
+   `[FAIL] P5 REPLACE 后目录 fsync ≥ 1 · err=release unlocked lock`。
+3. **Registry 目录权限回补**：`_write_secret` 在 `mkdirs(perm=0o700)` 后补一次
+   `LockedRoot.chmod(0o700)`（dir_fd、不跟随末段软链），4.0.5 升级留下的 0755 旧目录
+   也会被收紧，与文档「目录 0700」一致。
+4. **审计口径补齐**：AH 的 `_scan_write_sites` 识别 `os.mkdir/os.makedirs`（账本桶内即红）
+   与 `lr.mkdir/mkdirs/mkdirs_path/chmod`（safe），并登记 `_backup_locked`、
+   `initialize_state/process_once/install`、`Hub.__init__`、`safeio.mkdir`；P6 的 session
+   hook × EVIDENCE 格改用盒内脚本（`ROOT` 内放 `--state`），与 R12-5「state 越界 ⇒ 6」一致。
+5. **`verify_plain.py` 边界写清**：它是判据工具（只读校验，1/2 = 判据不成立/用法错），
+   明确列在 8 个统一入口之外，不按统一错误类解读（仓根 README 与 `src/README.md` 同写）。
+6. **本轮读数**：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
+   属性 P1–P10 全绿；`变异 13 / 杀死 13 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
+   mcp 23/23、orch 全绿。`41c4484` 误带的 0 字节 `src/任务卷.txt` 未再出现。
+
 ### 复签收口：三条所有权补立（2026-11-18 · P1/P2）
 
 1. **写凭证生命周期**：`LockedRoot.write/update` 写前过 `_ensure_live()`（未释放且仍在本线程

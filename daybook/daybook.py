@@ -975,7 +975,7 @@ def build(conf, root='.', baseline=False, dry=False):
         # write nothing; an author-convention red is not untrusted data, so the run still writes.
         untrusted = bool(CONFIG_ERRORS or VIOLATIONS or EVIDENCE_MISSING)
         if (not dry) and not untrusted:
-            os.makedirs(outdir, exist_ok=True)
+            lr.mkdirs_path(outdir, 'daybook.build.outdir')
             _run_ops(ops, report, lr=lr)
             from safeio import WriteMode
             man = ['# 卷首清单 / Volume manifest\n',
@@ -1157,7 +1157,12 @@ def _backup_locked(conf, root='.', lr=None):
     # remains conf['volumes'] only.
     vols = conf.get('_files') or conf.get('volumes', {})
     bdir = os.path.join(root, 'backup', time.strftime('%Y-%m-%d_%H%M%S'))
-    os.makedirs(bdir, exist_ok=True)
+    if lr is not None:
+        lr.mkdirs_path(bdir, 'daybook.backup.dir')
+    else:
+        from safeio import locked as _safe_locked
+        with _safe_locked(root) as _lr:
+            _lr.mkdirs_path(bdir, 'daybook.backup.dir')
     n = 0
     for vol, path in vols.items():
         p = path if os.path.isabs(path) else os.path.join(root, path)
@@ -1181,7 +1186,12 @@ def _backup_locked(conf, root='.', lr=None):
     idx_full = idx_dir if os.path.isabs(idx_dir) else os.path.join(root, idx_dir)
     if os.path.isdir(idx_full) and os.path.abspath(idx_full) != os.path.abspath(root):
         bidx = os.path.join(bdir, os.path.basename(idx_full))
-        os.makedirs(bidx, exist_ok=True)
+        if lr is not None:
+            lr.mkdirs_path(bidx, 'daybook.backup.index_dir')
+        else:
+            from safeio import locked as _safe_locked
+            with _safe_locked(root) as _lr:
+                _lr.mkdirs_path(bidx, 'daybook.backup.index_dir')
         for name in os.listdir(idx_full):
             src = os.path.join(idx_full, name)
             if os.path.isfile(src):

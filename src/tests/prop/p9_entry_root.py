@@ -66,17 +66,22 @@ def run(seed=7, mode='const'):
                   'lease=%r old=%s new=%s' % (lid, os.path.exists(lease_old),
                                               os.path.exists(lease_new)))
 
-            hub.reg.register('p9_agent')
+            try:
+                hub.reg.register('p9_agent')
+                reg_err = ''
+            except RuntimeError as exc:
+                reg_err = str(exc)
             keys_old = os.path.join(moved, '.daybook_keys')
             keys_new = os.path.join(root, '.daybook_keys')
             reg_old = os.path.join(moved, '注册卷.txt')
             reg_new = os.path.join(root, '注册卷.txt')
             check('P9 Registry 换根后 mkdir/write 旧 inode',
-                  os.path.isdir(keys_old) and os.listdir(keys_old)
+                  not reg_err
+                  and os.path.isdir(keys_old) and os.listdir(keys_old)
                   and not os.path.exists(keys_new)
                   and os.path.exists(reg_old) and not os.path.exists(reg_new),
-                  'keys old=%s new=%s reg old=%s new=%s'
-                  % (os.path.isdir(keys_old), os.path.exists(keys_new),
+                  'err=%s keys old=%s new=%s reg old=%s new=%s'
+                  % (reg_err[:80], os.path.isdir(keys_old), os.path.exists(keys_new),
                      os.path.exists(reg_old), os.path.exists(reg_new)))
         finally:
             hub.root_handle.close()

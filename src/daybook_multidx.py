@@ -323,7 +323,7 @@ def _build_locked(conf, root, now=None, only_vol=None, orders=('子', '史', '�
     base = os.path.join(root, outdir) if outdir else root
     mdir = os.path.join(base, mdest) if mdest else os.path.join(base, 'multilevel')
     if not os.path.isdir(mdir):
-        os.makedirs(mdir)
+        lr.mkdirs_path(mdir, 'daybook_multidx.index_dir')
 
     state_path = os.path.join(mdir, '.multilevel_state.json')
     try:

@@ -263,6 +263,24 @@ def m12_registry_mkdir_by_path(text):
     return ast.unparse(tree)
 
 
+def m13_build_makedirs(text):
+    """build 的索引目录退回 os.makedirs(outdir)，换根后建到新 inode。"""
+    tree = _parse(text)
+    f = _func(tree, 'build')
+    hit = False
+    for node in ast.walk(f):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Attribute) \
+                and node.value.func.attr == 'mkdirs_path' \
+                and node.value.args and isinstance(node.value.args[0], ast.Name) \
+                and node.value.args[0].id == 'outdir':
+            node.value = _expr('os.makedirs(outdir, exist_ok=True)')
+            hit = True
+    if not hit:
+        raise MutationError('M13 锚点消失：build 无 mkdirs_path(outdir)')
+    return ast.unparse(tree)
+
+
 MUTATIONS = [
     {'id': 'M1', 'file': 'safeio.py', 'expect': 'P1',
      'desc': '锁键改 label（同 inode 不再同一把锁）', 'apply': m1_lock_key_to_label},
@@ -288,6 +306,8 @@ MUTATIONS = [
      'desc': 'Hub 传路径而不是 Root 句柄', 'apply': m11_hub_pass_path},
     {'id': 'M12', 'file': 'agent_registry.py', 'expect': 'P9',
      'desc': 'Registry 密钥目录按路径 os.makedirs', 'apply': m12_registry_mkdir_by_path},
+    {'id': 'M13', 'file': 'daybook.py', 'expect': 'P10',
+     'desc': 'build 的索引目录退回 os.makedirs(outdir)', 'apply': m13_build_makedirs},
 ]
 
 BY_ID = {m['id']: m for m in MUTATIONS}

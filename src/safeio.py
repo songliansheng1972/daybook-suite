@@ -759,6 +759,29 @@ class LockedRoot:
         for i in range(1, len(rel.parts) + 1):
             self.mkdir(Rel(rel.parts[:i]), perm)
 
+    def chmod(self, rel, mode):
+        """在根内改权限（dir_fd，不跟随末段软链）。升级旧目录时用它收紧 0700。
+        Change permissions inside the root via dir_fd (no final symlink following), used to
+        tighten legacy 0755 directories to 0700."""
+        self._ensure_live()
+        if not isinstance(rel, Rel):
+            raise TypeError('safeio.chmod: 需要 Rel（先 root.rel/rel_of）')
+        dfd, name = _walk_parent(self.root._fd, rel.parts, 'safeio.chmod')
+        try:
+            os.chmod(name, mode, dir_fd=dfd, follow_symlinks=False)
+        except OSError as exc:
+            raise RuntimeError('safeio.chmod(%s): %s' % ('/'.join(rel.parts), exc))
+        finally:
+            os.close(dfd)
+
+    def mkdirs_path(self, path, who='safeio.mkdirs'):
+        """按绝对/相对路径建目录：先 rel_of 判归属，再走 mkdirs（dir_fd）。
+        Create a directory by path: rel_of enforces containment first, then mkdirs (dir_fd)."""
+        self._ensure_live()
+        if os.path.realpath(path) == self.root.label:
+            return
+        self.mkdirs(self.root.rel_of(path, who))
+
     def update(self, rel, fn):
         """持锁读-改-写：读旧值（缺件按空）→ fn → 同一个 write(REPLACE)。不是第二个原语。
         Locked read-modify-write: read (missing ⇒ empty) → fn → the same write(REPLACE)."""

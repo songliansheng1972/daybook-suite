@@ -76,7 +76,7 @@
 
 ## 退出码（只有一张表）
 
-分类只发生在 `errors.py` 一处；入口只负责 `raise`，文案与退出码由唯一出口 `run_entry` 给。同一故障在 **8 个统一入口**里是同一个码：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、`daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、`cross_ref.py`。`agent_*`、`task_volume.py`、`daybook_multidx.py`、`mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，不在 8 入口契约内，不得拿它们宣称「任何入口同码」。
+分类只发生在 `errors.py` 一处；入口只负责 `raise`，文案与退出码由唯一出口 `run_entry` 给。同一故障在 **8 个统一入口**里是同一个码：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、`daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、`cross_ref.py`。`agent_*`、`task_volume.py`、`daybook_multidx.py`、`mcp_subscribe.py`、`chatroom_server.py` 是运维/调试工具，不在 8 入口契约内，不得拿它们宣称「任何入口同码」。`verify_plain.py` 是**判据工具**（只读校验，退出码 1/2 表示「判据不成立/用法错」），同样不在 8 入口契约内，不要按统一错误类解读。
 
 | 码 | 类别 | 含义 |
 |---|---|---|
