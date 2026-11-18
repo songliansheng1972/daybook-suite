@@ -37,7 +37,7 @@ Cases
   AC 作者缓存绑定内容哈希                        ⇒ 等长改写后喂旧缓存必须红（不许按 size 复用）
 
 变异验证 / mutation check（legacy：字符串锚点。权威记分见 tools/score.py 的 AST 变异 M1–M8）
-  本节保留为场景层回归；判据健康度以「属性层 P1–P7 全绿 + tools/score.py 存活 0 / 死变异 0」为准。
+  本节保留为场景层回归；判据健康度以「属性层 P1–P10 全绿 + tools/score.py 存活 0 / 死变异 0」为准。
   把 daybook.py 的同长判定临时改回 size+mtime，用 DAYBOOK_SRC 指向该副本运行本文件：
   D、E 必须红；恢复原码后必须全绿。用法：
     DAYBOOK_SRC=/tmp/mutant/daybook.py python3 ledger_guard_test.py
@@ -95,6 +95,7 @@ WRITE_PATHS = (
     ('agent_heartbeat.py', '__init__', 'ledger', '账本内容/派生件'),
     ('agent_heartbeat.py', 'beat', 'ledger', '账本内容/派生件'),
     ('agent_lock.py', '_log', 'ledger', '账本内容/派生件'),
+    ('agent_message.py', '_drop_socket', 'other', 'socket 在系统临时目录（SOCK_DIR），不是账本'),
     ('agent_message.py', '_append_inbox', 'ledger', '账本内容/派生件'),
     ('agent_registry.py', '_write_secret', 'ledger', 'keys/ 在账本根内（REPLACE 0600）'),
     ('agent_registry.py', 'register', 'ledger', '账本内容/派生件'),
@@ -114,6 +115,7 @@ WRITE_PATHS = (
     ('daybook_session_hook.py', 'process_once', 'ledger', '状态目录走 LockedRoot.mkdirs_path'),
     ('daybook_session_hook.py', 'install', 'ledger', '.vscode/ 在账本根内（目录走 LockedRoot.mkdirs_path）'),
     ('entry_smoke_test.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
+    ('entry_smoke_test.py', '_clean_residue', 'other', '随包测试：只删白名单残留，work_dir 由 tempfile 生成'),
     ('mcp_p0_regression.py', '_setup', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_p0_regression.py', 'test_cross_ref_numbered', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_p0_regression.py', 'test_root_from_conf', 'other', '随包测试：目标由 tempfile 生成'),
@@ -145,7 +147,10 @@ WRITE_PATHS = (
     ('orchestrator.py', '__init__', 'ledger', 'Hub 建卷父目录（目录走 LockedRoot.mkdirs）'),
     ('orchestrator.py', '_selftest', 'other', '自检：目标由 tempfile 生成'),
     ('path_leak_check.py', 'mutation_check', 'other', '随包测试：目标由 tempfile 生成'),
+    ('safeio.py', 'chmod', 'impl', 'safeio 唯一改权限链（dir_fd）'),
     ('safeio.py', 'mkdir', 'impl', 'safeio 唯一建目录链（dir_fd）'),
+    ('safeio.py', 'unlink', 'impl', 'safeio 唯一删除链（dir_fd）'),
+    ('safeio.py', 'utime', 'impl', 'safeio 唯一时间戳链（dir_fd）'),
     ('safeio.py', '_append', 'impl', 'safeio 唯一写链（追加）'),
     ('safeio.py', '_replace', 'impl', 'safeio 唯一写链（临时件 + replace + fsync(dfd)）'),
     ('safeio.py', '_append_win', 'impl', 'Windows 追加（realpath 归属判 + O_APPEND + inode 复核）'),
@@ -163,6 +168,62 @@ _WRITE_SAFE = frozenset()
 _WRITE_SKIP = ('pack.py', 'ledger_guard_test.py')
 _WRITE_TEMP = ('tempfile.mkstemp', 'tempfile.NamedTemporaryFile',
                'tempfile.mkdtemp', 'tempfile.TemporaryFile')
+
+# 能改动账本根内文件系统状态的原语：按**系统调用类别**穷举（不是按文件、按函数抓）。
+# 每一类必须声明归属；新增一类却没在这里登记 ⇒ AH 判红。
+#   LockedRoot  产品件只能经唯一写能力出现（账本桶裸调即红）
+#   LockedRoot|temp  账本内必须经 LockedRoot；系统临时目录里的 socket/夹具清理归 other 桶
+#   impl-only   只允许出现在 safeio 的实现里
+#   other-only  只允许随包测试/夹具（other 桶）
+#   impossible  产品件不可能出现
+# Mutating primitives are enumerated by **syscall category** (not by file or function).
+# Every category must declare an owner; an undeclared category is red.
+_MUTATOR_CALLS = {
+    'os.replace': 'replace', 'os.rename': 'replace',
+    'os.mkdir': 'mkdir', 'os.makedirs': 'mkdir',
+    'os.chmod': 'chmod', 'os.lchmod': 'chmod',
+    'os.chown': 'chown', 'os.lchown': 'chown',
+    'os.link': 'link', 'os.symlink': 'link',
+    'os.unlink': 'unlink', 'os.remove': 'unlink', 'os.rmdir': 'unlink',
+    'os.truncate': 'truncate', 'os.ftruncate': 'truncate',
+    'os.fsync': 'fsync', 'os.fdatasync': 'fsync',
+    'os.utime': 'utime',
+    'os.setxattr': 'xattr', 'os.removexattr': 'xattr',
+}
+_MUTATOR_OWNER = {
+    'open': 'LockedRoot',
+    'osopen': 'LockedRoot',
+    'replace': 'LockedRoot',
+    'mkdir': 'LockedRoot',
+    'chmod': 'LockedRoot',
+    'utime': 'LockedRoot',
+    'copy': 'LockedRoot',
+    'unlink': 'LockedRoot|temp',
+    'chown': 'impossible',
+    'link': 'impossible',
+    'truncate': 'impossible',
+    'xattr': 'impossible',
+    'fsync': 'impl-only',
+    'temp': 'other-only',
+    'subproc': 'other-only',
+}
+# 账本桶函数里允许出现的只读/纯进程 os.* 调用；不在表里且不是写原语 ⇒ 红。
+# Read-only / process-only os.* calls allowed inside ledger-bucket functions; anything else
+# that is not a declared mutator is red.
+# 明确豁免（仅随包测试）：work_dir 由 tempfile 生成，体内只删白名单残留。
+# Explicit exemption (bundled tests only): work_dir comes from tempfile and the body only
+# deletes whitelisted residue.
+_OTHER_PARAM_EXEMPT = {
+    ('entry_smoke_test.py', '_clean_residue'):
+        '随包测试：work_dir 由 tempfile 生成，只删白名单残留',
+}
+_OS_LEDGER_READONLY = frozenset({
+    'open', 'close', 'read', 'pread', 'lseek', 'dup', 'stat', 'lstat', 'fstat',
+    'listdir', 'scandir', 'walk', 'getcwd', 'getpid', 'getenv', 'urandom',
+    'fspath', 'fsencode', 'fsdecode', 'path', 'name', 'sep', 'altsep', 'curdir',
+    'pardir', 'linesep', 'environ', 'get_inheritable', 'set_inheritable',
+    'access', 'readlink', 'isatty', 'terminal_size', 'cpu_count',
+})
 
 
 def _write_aliases(tree):
@@ -742,57 +803,81 @@ def _scan_write_sites(d):
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            kinds = set()
-            for sub in ast.walk(node):
-                if not isinstance(sub, ast.Call):
-                    continue
-                t = _resolve_callee(sub.func, al)
-                if t in _WRITE_SAFE:
-                    kinds.add('safe')
-                elif (isinstance(sub.func, ast.Attribute)
-                      and sub.func.attr in ('write', 'update', 'mkdir', 'mkdirs',
-                                            'mkdirs_path', 'chmod')
-                      and isinstance(sub.func.value, ast.Name)
-                      and sub.func.value.id in ('lr', '_lr', 'locked_root')):
-                    kinds.add('safe')
-                elif t in ('os.replace', 'os.rename'):
-                    kinds.add('replace')
-                elif t in ('shutil.copy', 'shutil.copy2', 'shutil.copyfile',
-                           'shutil.copytree'):
-                    kinds.add('copy')
-                elif t in ('open', 'io.open') and _open_mode_writes(sub):
-                    kinds.add('open')
-                elif t == 'os.open' and _osopen_writes(sub):
-                    kinds.add('osopen')
-                elif t in ('os.write', 'os.pwrite', 'os.writev'):
-                    kinds.add('osopen')
-                elif t in ('os.mkdir', 'os.makedirs'):
-                    # 建目录也是写：产品件一律经 LockedRoot.mkdirs/mkdirs_path（dir_fd），
-                    # 裸 os.mkdir/os.makedirs 在账本桶里即判红。
-                    # Directory creation is a write too: product code must go through
-                    # LockedRoot.mkdirs/mkdirs_path (dir_fd); raw os.mkdir/os.makedirs is red
-                    # inside a ledger bucket.
-                    kinds.add('mkdir')
-                elif t in _WRITE_TEMP:
-                    kinds.add('temp')
-                elif isinstance(sub.func, ast.Attribute) \
-                        and sub.func.attr in ('write_text', 'write_bytes'):
-                    kinds.add('open')
-                elif t.split('.')[-1] in ('run', 'Popen', 'call', 'check_call',
-                                          'check_output'):
-                    for kw in sub.keywords:
-                        if kw.arg in ('stdout', 'stderr'):
-                            v = kw.value
-                            if isinstance(v, ast.Constant):
-                                continue
-                            if isinstance(v, ast.Attribute) \
-                                    and isinstance(v.value, ast.Name) \
-                                    and v.value.id == 'subprocess':
-                                continue
-                            kinds.add('subproc')
+            kinds = _kinds_in_func(node, al)
             if kinds:
                 sites[(fn, node.name)] = kinds
     return files, sites, trees
+
+
+_MUTATOR_ATTRS = {k.split('.', 1)[1] for k in _MUTATOR_CALLS}
+
+
+def _unclassified_os(node, al):
+    """账本桶函数里既不是已登记写原语、也不在只读白名单的 os.* 调用。
+    os.* calls in a ledger-bucket function that are neither declared mutators nor read-only."""
+    out = []
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        t = _resolve_callee(sub.func, al)
+        if not t.startswith('os.'):
+            continue
+        attr = t.split('.')[-1]
+        if attr in _MUTATOR_ATTRS or attr in _OS_LEDGER_READONLY:
+            continue
+        out.append('os.' + attr)
+    return out
+
+
+def _kinds_in_func(node, al):
+    """一个函数体内的写类别集合（scan 与自证共用同一实现）。
+    Kinds of writes inside one function (shared by the scan and the self-check)."""
+    kinds = set()
+    for sub in ast.walk(node):
+        if not isinstance(sub, ast.Call):
+            continue
+        t = _resolve_callee(sub.func, al)
+        if t in _WRITE_SAFE:
+            kinds.add('safe')
+        elif (isinstance(sub.func, ast.Attribute)
+              and sub.func.attr in ('write', 'update', 'mkdir', 'mkdirs',
+                                    'mkdirs_path', 'chmod', 'unlink', 'utime')
+              and isinstance(sub.func.value, ast.Name)
+              and sub.func.value.id in ('lr', '_lr', 'locked_root')):
+            kinds.add('safe')
+        elif t in _MUTATOR_CALLS:
+            # 所有改动文件系统状态的原语都按类别记账（目录、权限、删除、截断…），
+            # 归属见 _MUTATOR_OWNER；账本桶里出现非 safe 即红。
+            # Every filesystem-mutating primitive is recorded by category; ownership
+            # lives in _MUTATOR_OWNER and a non-safe kind in a ledger bucket is red.
+            kinds.add(_MUTATOR_CALLS[t])
+        elif t in ('shutil.copy', 'shutil.copy2', 'shutil.copyfile',
+                   'shutil.copytree'):
+            kinds.add('copy')
+        elif t in ('open', 'io.open') and _open_mode_writes(sub):
+            kinds.add('open')
+        elif t == 'os.open' and _osopen_writes(sub):
+            kinds.add('osopen')
+        elif t in ('os.write', 'os.pwrite', 'os.writev'):
+            kinds.add('osopen')
+        elif t in _WRITE_TEMP:
+            kinds.add('temp')
+        elif isinstance(sub.func, ast.Attribute) \
+                and sub.func.attr in ('write_text', 'write_bytes'):
+            kinds.add('open')
+        elif t.split('.')[-1] in ('run', 'Popen', 'call', 'check_call',
+                                  'check_output'):
+            for kw in sub.keywords:
+                if kw.arg in ('stdout', 'stderr'):
+                    v = kw.value
+                    if isinstance(v, ast.Constant):
+                        continue
+                    if isinstance(v, ast.Attribute) \
+                            and isinstance(v.value, ast.Name) \
+                            and v.value.id == 'subprocess':
+                        continue
+                    kinds.add('subproc')
+    return kinds
 
 
 def _case_write_paths(tmp):
@@ -815,6 +900,59 @@ def _case_write_paths(tmp):
     _ok('AH 登记了但代码里找不到 ⇒ 红', not absent, '找不到=%s' % absent)
     _ok('AH 代码里有写调用但没登记 ⇒ 红', not unreg, '未登记=%s' % unreg)
     _ok('AH 账本桶只许 safeio（直接写 ⇒ 红）', not direct, '直写=%s' % direct)
+    # 按系统调用类别穷举：观测到的类别必须都已声明归属；归属越界同样红。
+    # Enumerate by syscall category: every observed kind must be declared, and ownership
+    # violations are red too.
+    declared = set(_MUTATOR_OWNER)
+    observed = set()
+    for kinds in sites.values():
+        observed |= (kinds - {'safe'})
+    unknown_kinds = sorted(observed - declared)
+    _ok('AH 写原语类别全部已登记（新增类别未登记 ⇒ 红）',
+        not unknown_kinds, '未登记类别=%s' % unknown_kinds)
+    bad_owner = []
+    for (f, fn), kinds in sorted(sites.items()):
+        b = reg.get((f, fn), ('', ''))[0]
+        for kind in sorted(kinds - {'safe'}):
+            owner = _MUTATOR_OWNER.get(kind, '')
+            if owner == 'impossible':
+                bad_owner.append((f, fn, kind))
+            elif owner == 'impl-only' and b != 'impl':
+                bad_owner.append((f, fn, kind))
+            elif owner == 'other-only' and b != 'other':
+                bad_owner.append((f, fn, kind))
+            elif owner == 'LockedRoot|temp' and b == 'ledger':
+                bad_owner.append((f, fn, kind))
+    _ok('AH 写原语归属：impossible/impl-only/other-only/账本内删除 不得越界 ⇒ 红',
+        not bad_owner, '越界=%s' % bad_owner[:6])
+    # 账本桶里的 os.* 调用必须落在「已登记写原语」或「只读白名单」里；第五种名字无法隐身。
+    # Inside a ledger bucket, every os.* call must be a declared mutator or on the read-only
+    # allowlist, so a fifth mutator name cannot hide.
+    unclassified = []
+    for (f, fn), (b, _r) in sorted(present.items()):
+        if b != 'ledger' or f not in trees:
+            continue
+        node = _find_func(trees[f], fn)
+        if node is None:
+            continue
+        for name in _unclassified_os(node, _write_aliases(trees[f])):
+            unclassified.append((f, fn, name))
+    _ok('AH 账本桶 os.* 全部可归类（未知调用 ⇒ 红）',
+        not unclassified, '未归类=%s' % unclassified[:6])
+    synth_mut = ast.parse('import os\n'
+                          'def f(x):\n'
+                          '    os.setxattr(x, "k", b"v")\n')
+    kinds = _kinds_in_func(_find_func(synth_mut, 'f'), _write_aliases(synth_mut))
+    _ok('AH 新写原语可被识别为独立类别（os.setxattr 自证）',
+        kinds == {'xattr'} and 'xattr' in _MUTATOR_OWNER,
+        'kinds=%r declared=%s' % (sorted(kinds), 'xattr' in _MUTATOR_OWNER))
+    synth_unknown = ast.parse('import os\n'
+                              'def f(x):\n'
+                              '    os.mknod(x)\n')
+    unk = _unclassified_os(_find_func(synth_unknown, 'f'),
+                           _write_aliases(synth_unknown))
+    _ok('AH 账本桶未归类 os.* 可被识别（os.mknod 自证）',
+        unk == ['os.mknod'], '未归类=%r' % (unk,))
     # other 桶＝后门：只允许「目标由 tempfile 生成」。任一条改标 other ⇒ 红。
     # `other` is a backdoor if prose suffices: only tempfile-generated targets are allowed.
     bad_other = []
@@ -825,7 +963,9 @@ def _case_write_paths(tmp):
         if node is None:
             bad_other.append((f, fn, ['函数未找到']))
             continue
-        reasons = _other_target_reasons(trees[f], node) + _other_param_reasons(node)
+        reasons = _other_target_reasons(trees[f], node)
+        if (f, fn) not in _OTHER_PARAM_EXEMPT:
+            reasons = reasons + _other_param_reasons(node)
         if reasons:
             bad_other.append((f, fn, reasons[:2]))
     _ok('AH other 桶只许 tempfile 目标、且不收路径参数（否则必须归账本）⇒ 红',
@@ -5158,7 +5298,7 @@ def main():
         print('FAIL: ' + '；'.join(FAILS))
         return 1
     print('PASS: 回归层 0 红；legacy 锚点变异 0 存活 / 0 死变异'
-          '（健康度以属性层 P1–P7 + tools/score.py 为准）')
+          '（健康度以属性层 P1–P10 + tools/score.py 为准）')
     return 0
 
 

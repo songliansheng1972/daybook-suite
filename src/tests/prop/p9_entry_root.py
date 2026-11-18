@@ -9,6 +9,7 @@ Hub 启动时只开一次 Root，把同一句柄交给 TaskVolume / Heartbeat / 
 变异 M10（TaskVolume 写时把 Root 退回 str(path) 重开）必须让本件变红。
 """
 import os
+import stat
 
 import common
 from common import check
@@ -66,6 +67,15 @@ def run(seed=7, mode='const'):
                   'lease=%r old=%s new=%s' % (lid, os.path.exists(lease_old),
                                               os.path.exists(lease_new)))
 
+            # 新根放一份 0644 注册卷：旧实现按路径 os.chmod 会把它改成 0600。
+            # Plant a 0644 registry volume in the new root: the old path-based os.chmod
+            # would silently flip it to 0600.
+            sentinel = os.path.join(root, '注册卷.txt')
+            with open(sentinel, 'w', encoding='utf-8') as f:
+                f.write('[2026-11-13 00:00:00] [注册] [ag-newroot] [new-root]\n')
+            os.chmod(sentinel, 0o644)
+            sentinel_before = open(sentinel, encoding='utf-8').read()
+
             try:
                 hub.reg.register('p9_agent')
                 reg_err = ''
@@ -74,15 +84,29 @@ def run(seed=7, mode='const'):
             keys_old = os.path.join(moved, '.daybook_keys')
             keys_new = os.path.join(root, '.daybook_keys')
             reg_old = os.path.join(moved, '注册卷.txt')
-            reg_new = os.path.join(root, '注册卷.txt')
-            check('P9 Registry 换根后 mkdir/write 旧 inode',
-                  not reg_err
-                  and os.path.isdir(keys_old) and os.listdir(keys_old)
-                  and not os.path.exists(keys_new)
-                  and os.path.exists(reg_old) and not os.path.exists(reg_new),
-                  'err=%s keys old=%s new=%s reg old=%s new=%s'
-                  % (reg_err[:80], os.path.isdir(keys_old), os.path.exists(keys_new),
-                     os.path.exists(reg_old), os.path.exists(reg_new)))
+            keys_old_ok = os.path.isdir(keys_old) and bool(os.listdir(keys_old))
+            reg_old_ok = os.path.exists(reg_old)
+            sentinel_mode = stat.S_IMODE(os.stat(sentinel).st_mode)
+            sentinel_intact = open(sentinel, encoding='utf-8').read() == sentinel_before
+            # 三条独立断言：任一条不成立都能单独定位，不用 not reg_err 短路其它判据。
+            # Three independent assertions: each can fail on its own; `not reg_err` never
+            # short-circuits the others.
+            check('P9 Registry 换根后写旧 inode',
+                  not reg_err and keys_old_ok and reg_old_ok,
+                  'err=%s keys old=%s reg old=%s'
+                  % (reg_err[:80], keys_old_ok, reg_old_ok))
+            check('P9 Registry 换根后新根零写入（哨兵内容不变）',
+                  not os.path.exists(keys_new) and sentinel_intact,
+                  'keys new=%s sentinel intact=%s'
+                  % (os.path.exists(keys_new), sentinel_intact))
+            check('P9 Registry 换根后新根注册卷模式不变',
+                  sentinel_mode == 0o644,
+                  'mode=0o%o' % sentinel_mode)
+            reg_old_mode = stat.S_IMODE(os.stat(reg_old).st_mode) \
+                if os.path.exists(reg_old) else -1
+            check('P9 Registry 旧根注册卷收紧为 0600',
+                  reg_old_mode == 0o600,
+                  'mode=%s' % (('0o%o' % reg_old_mode) if reg_old_mode >= 0 else 'missing'))
         finally:
             hub.root_handle.close()
     return common.summary()

@@ -471,8 +471,11 @@ def _run_ops(ops, report=None, lr=None):
         if kind == 'purge':
             for p in op[1]:
                 try:
-                    os.remove(p)
-                except OSError:
+                    # 删派生件也是账本写：走同一凭证（dir_fd），换根后不会删到新根。
+                    # Deleting a derived artifact is a ledger write too: same credential
+                    # (dir_fd), so a renamed root cannot delete in the new root.
+                    lr.unlink(lr.root.rel_of(p, 'daybook._run_ops.purge'))
+                except RuntimeError:
                     pass
         elif kind == 'cursor':
             _write_cursor(op[1], op[2], lr)
@@ -1138,8 +1141,9 @@ def _backup_copy(src, dst, lr):
     lr.write(lr.root.rel_of(dst, 'daybook._backup_copy'), data, mode=WriteMode.REPLACE)
     try:
         st = os.stat(src)
-        os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
-    except OSError:
+        lr.utime(lr.root.rel_of(dst, 'daybook._backup_copy.utime'),
+                 (st.st_atime_ns, st.st_mtime_ns))
+    except (OSError, RuntimeError):
         pass
 
 

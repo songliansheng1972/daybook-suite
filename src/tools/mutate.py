@@ -281,33 +281,67 @@ def m13_build_makedirs(text):
     return ast.unparse(tree)
 
 
+def m14_registry_chmod_by_path(text):
+    """Registry 注册卷权限退回锁外 os.chmod(self.path)：换根后改到新根同名文件。"""
+    tree = _parse(text)
+    f = _func(tree, 'register', 'Registry')
+    hit = False
+    for node in ast.walk(f):
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call) \
+                and isinstance(node.value.func, ast.Attribute) \
+                and node.value.func.attr == 'chmod' \
+                and isinstance(node.value.func.value, ast.Name) \
+                and node.value.func.value.id == 'lr':
+            node.value = _expr('os.chmod(self.path, 0o600)')
+            hit = True
+    if not hit:
+        raise MutationError('M14 锚点消失：register 无 lr.chmod')
+    return ast.unparse(tree)
+
+
 MUTATIONS = [
     {'id': 'M1', 'file': 'safeio.py', 'expect': 'P1',
+     'check': 'P1 同一 dev_ino',
      'desc': '锁键改 label（同 inode 不再同一把锁）', 'apply': m1_lock_key_to_label},
     {'id': 'M2', 'file': 'safeio.py', 'expect': 'P2',
+     'check': 'P2 软链祖先',
      'desc': '去掉走查 O_NOFOLLOW（祖先软链逃逸）', 'apply': m2_drop_nofollow},
     {'id': 'M3', 'file': 'safeio.py', 'expect': 'P2',
+     'check': 'P2 link/../x',
      'desc': '归属判退回 abspath 词法折叠（link/.. 改道）', 'apply': m3_abspath_fold},
     {'id': 'M4', 'file': 'daybook_append.py', 'expect': 'P3',
+     'check': 'P3 append_one：根内写事件全部经 safeio',
      'desc': 'append_one 插 open(path, "ab") 旁路', 'apply': m4_append_bypass},
     {'id': 'M5', 'file': 'safeio.py', 'expect': 'P5',
+     'check': 'P5 取锁/释放链自洽',
      'desc': 'Root.lock 直接发凭证、不取锁', 'apply': m5_lock_bypass},
     {'id': 'M6', 'file': 'daybook.py', 'expect': 'P6',
+     'check': 'P6 基线后 index rc=0',
      'desc': '入口插 return 2（改退出码）', 'apply': m6_entry_return_2},
     {'id': 'M7', 'file': 'safeio.py', 'expect': 'P5',
+     'check': 'P5 REPLACE 后目录 fsync',
      'desc': '删 _replace 的 fsync(dfd)', 'apply': m7_drop_dir_fsync},
     {'id': 'M8', 'file': 'safeio.py', 'expect': 'P2',
+     'check': 'P2 直接构造 .. 段',
      'desc': 'Rel 只校验首段（.. 逃逸）', 'apply': m8_rel_first_segment},
     {'id': 'M9', 'file': 'safeio.py', 'expect': 'P8',
+     'check': 'P8 释放后旧凭证',
      'desc': '去掉写凭证的释放/线程校验', 'apply': m9_drop_liveness},
     {'id': 'M10', 'file': 'task_volume.py', 'expect': 'P9',
+     'check': 'P9 TaskVolume 换根后写旧 inode',
      'desc': 'TaskVolume 写时按路径重开 Root（换根改道）', 'apply': m10_task_reopen_by_path},
     {'id': 'M11', 'file': 'orchestrator.py', 'expect': 'P9',
+     'check': 'P9 三类 + Registry 共用 Hub 的同一个 Root 句柄',
      'desc': 'Hub 传路径而不是 Root 句柄', 'apply': m11_hub_pass_path},
     {'id': 'M12', 'file': 'agent_registry.py', 'expect': 'P9',
+     'check': 'P9 Registry 换根后写旧 inode',
      'desc': 'Registry 密钥目录按路径 os.makedirs', 'apply': m12_registry_mkdir_by_path},
     {'id': 'M13', 'file': 'daybook.py', 'expect': 'P10',
+     'check': 'P10 换根后 build 不往新根建「索引」',
      'desc': 'build 的索引目录退回 os.makedirs(outdir)', 'apply': m13_build_makedirs},
+    {'id': 'M14', 'file': 'agent_registry.py', 'expect': 'P9',
+     'check': 'P9 Registry 换根后新根注册卷模式不变',
+     'desc': '注册卷权限退回锁外 os.chmod(self.path)', 'apply': m14_registry_chmod_by_path},
 ]
 
 BY_ID = {m['id']: m for m in MUTATIONS}

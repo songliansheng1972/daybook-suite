@@ -29,6 +29,13 @@ created); Windows uses a named mutex keyed by the root's (dev, ino), abandoned a
 crash — also no lock artifact. Identity is the (st_dev, st_ino) fixed when the root was opened,
 so every spelling of one inode is the same lock.
 
+目录类原语（mkdir/mkdirs/mkdirs_path/chmod/unlink）目前只有 POSIX 的 dir_fd 实现：
+Windows 上显式 RuntimeError（无 dir_fd 分支），不静默退回按路径操作；追加/替换在
+Windows 有独立分支。这是已验证边界，不是「应该也行」。
+Directory primitives (mkdir/mkdirs/mkdirs_path/chmod/unlink) are POSIX-only (dir_fd):
+on Windows they raise RuntimeError explicitly instead of silently falling back to path-based
+calls. Append/replace have separate Windows branches. This is a tested boundary, not a guess.
+
 换根语义（由 fd 定义，不靠复核）：写永远落在 Root 打开时的那个 inode 上。根路径在运行中
 被换走，已持有的 LockedRoot 仍写旧 inode；要「路径现在还是我」的场合，入口显式调用
 root.revalidate()。没有「加锁后现算 inode 再比对」这类自证判据。
@@ -733,6 +740,8 @@ class LockedRoot:
         """在根内建一个目录（经 dir_fd 走查，不按 orig 路径重开）。已存在返回 False。
         Create one directory inside the root via dir_fd walking (never reopen by orig path).
         Returns False when it already exists."""
+        if _WINDOWS:                                    # pragma: no cover - Windows only
+            raise RuntimeError('safeio.mkdir: 仅 POSIX 实现（Windows 无 dir_fd 分支）·拒绝')
         self._ensure_live()
         if not isinstance(rel, Rel):
             raise TypeError('safeio.mkdir: 需要 Rel（先 root.rel/rel_of）')
@@ -763,6 +772,8 @@ class LockedRoot:
         """在根内改权限（dir_fd，不跟随末段软链）。升级旧目录时用它收紧 0700。
         Change permissions inside the root via dir_fd (no final symlink following), used to
         tighten legacy 0755 directories to 0700."""
+        if _WINDOWS:                                    # pragma: no cover - Windows only
+            raise RuntimeError('safeio.chmod: 仅 POSIX 实现（Windows 无 dir_fd 分支）·拒绝')
         self._ensure_live()
         if not isinstance(rel, Rel):
             raise TypeError('safeio.chmod: 需要 Rel（先 root.rel/rel_of）')
@@ -771,6 +782,39 @@ class LockedRoot:
             os.chmod(name, mode, dir_fd=dfd, follow_symlinks=False)
         except OSError as exc:
             raise RuntimeError('safeio.chmod(%s): %s' % ('/'.join(rel.parts), exc))
+        finally:
+            os.close(dfd)
+
+    def utime(self, rel, ns):
+        """在根内改时间戳（dir_fd，不跟随末段软链）。备份补时间戳走这里。
+        Set timestamps inside the root via dir_fd (no final symlink following)."""
+        if _WINDOWS:                                    # pragma: no cover - Windows only
+            raise RuntimeError('safeio.utime: 仅 POSIX 实现（Windows 无 dir_fd 分支）·拒绝')
+        self._ensure_live()
+        if not isinstance(rel, Rel):
+            raise TypeError('safeio.utime: 需要 Rel（先 root.rel/rel_of）')
+        dfd, name = _walk_parent(self.root._fd, rel.parts, 'safeio.utime')
+        try:
+            os.utime(name, ns=ns, dir_fd=dfd, follow_symlinks=False)
+        except OSError as exc:
+            raise RuntimeError('safeio.utime(%s): %s' % ('/'.join(rel.parts), exc))
+        finally:
+            os.close(dfd)
+
+    def unlink(self, rel):
+        """删掉根内的一个文件/空目录（dir_fd，不跟随末段软链）。派生件清理的唯一入口。
+        Remove one file/empty directory inside the root via dir_fd (no final symlink following).
+        The single entry for cleaning derived artifacts."""
+        if _WINDOWS:                                    # pragma: no cover - Windows only
+            raise RuntimeError('safeio.unlink: 仅 POSIX 实现（Windows 无 dir_fd 分支）·拒绝')
+        self._ensure_live()
+        if not isinstance(rel, Rel):
+            raise TypeError('safeio.unlink: 需要 Rel（先 root.rel/rel_of）')
+        dfd, name = _walk_parent(self.root._fd, rel.parts, 'safeio.unlink')
+        try:
+            os.unlink(name, dir_fd=dfd)
+        except OSError as exc:
+            raise RuntimeError('safeio.unlink(%s): %s' % ('/'.join(rel.parts), exc))
         finally:
             os.close(dfd)
 

@@ -4,10 +4,15 @@
 """P10 · build 换根不建新目录（属性层）
 P10 · build keeps the original root inode after a rename
 ================================================
-`daybook.build` 的索引 outdir 必须走 `LockedRoot.mkdirs_path`。根 rename 走后就地建同名
-空目录，再 build：新根不得长出「索引」。变异 M13（退回 os.makedirs(outdir)）必须让本件变红。
+`daybook.build` 的索引 outdir、`_backup_locked` 的 backup/、`daybook_record.record` 的
+「对话原件」都必须走 `LockedRoot`。根 rename 走后就地建同名空目录，再跑：新根不得长出
+任何目录。变异 M13（退回 os.makedirs(outdir)）必须让 build 那条变红。
 """
+import glob
+import importlib.util
 import os
+import shutil
+import types
 
 import common
 from common import check
@@ -54,8 +59,55 @@ def run(seed=7, mode='const'):
                   and os.path.exists(tsv)
                   and '第020条' in open(tsv, encoding='utf-8').read(),
                   'new_entries=%r tsv=%s' % (new_entries, os.path.exists(tsv)))
+
+            # backup：卷用绝对路径（旧 inode），backup/ 目录必须建在旧根
+            conf['_files'] = {'账': vol}
+            from safeio import locked as _locked
+            with _locked(rt) as lr:
+                daybook._backup_locked(conf, rt, lr)
+            backs = sorted(glob.glob(os.path.join(moved, 'backup', '*')))
+            check('P10 换根后 backup 写旧 inode',
+                  len(backs) == 1
+                  and os.path.exists(os.path.join(backs[0], '账卷.txt'))
+                  and sorted(os.listdir(root)) == [],
+                  'backs=%d new_entries=%r' % (len(backs), sorted(os.listdir(root))))
         finally:
             rt.close()
+
+    # record：模块副本的 HERE 就是临时根；换根后归档目录仍须落旧 inode
+    with common.tmpdir('p10rec_') as base:
+        rec_dir = os.path.join(base, 'root')
+        os.makedirs(rec_dir)
+        shutil.copy2(os.path.join(common.SRC, 'daybook_record.py'), rec_dir)
+        spec = importlib.util.spec_from_file_location(
+            'p10_record', os.path.join(rec_dir, 'daybook_record.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        class _Done(object):
+            returncode = 0
+            stdout = ''
+            stderr = ''
+
+        real_sub = mod.subprocess
+        mod.subprocess = types.SimpleNamespace(
+            run=lambda *a, **k: _Done(), PIPE=-1, DEVNULL=-3, STDOUT=-2)
+        rt2 = Root._from_dir_path(rec_dir)
+        try:
+            moved2 = os.path.join(base, 'root_moved')
+            os.rename(rec_dir, moved2)
+            os.makedirs(rec_dir)
+            mod.record('用户', 'P10', '换根归档正文'.encode('utf-8'),
+                       stamp='20260101_000000', update_index=False, root=rt2)
+            arc = os.path.join(moved2, '对话原件')
+            files = sorted(os.listdir(arc)) if os.path.isdir(arc) else []
+            check('P10 换根后 record 归档写旧 inode',
+                  bool(files) and files[0].endswith('.txt')
+                  and sorted(os.listdir(rec_dir)) == [],
+                  'files=%r new_entries=%r' % (files[:1], sorted(os.listdir(rec_dir))))
+        finally:
+            mod.subprocess = real_sub
+            rt2.close()
     return common.summary()
 
 

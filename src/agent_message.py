@@ -184,15 +184,21 @@ class AgentServer(socketserver.UnixStreamServer):
         self.inbox = inbox_path(root)
         self.sock_path = sock_path(agent_name)
         if os.path.exists(self.sock_path):
-            os.unlink(self.sock_path)
+            self._drop_socket()
         super().__init__(self.sock_path, _Handler)
 
-    def server_close(self):
-        super().server_close()
+    def _drop_socket(self):
+        """socket 在系统临时目录（SOCK_DIR），不是账本；删除只对这一处生效。
+        The socket lives in the system temp dir (SOCK_DIR), not the ledger; deletion is
+        scoped to this one path."""
         try:
             os.unlink(self.sock_path)
         except OSError:
             pass
+
+    def server_close(self):
+        super().server_close()
+        self._drop_socket()
 
 
 def send(from_name, to_name, mtype, content, root=None):

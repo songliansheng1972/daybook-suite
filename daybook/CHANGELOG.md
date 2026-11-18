@@ -59,6 +59,20 @@
 - 读数：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
   属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 verify rc=0。
 
+### 复签补轮三：权限/删除/时间戳同属一个写能力（2026-11-18）
+
+- `Registry.register` 的 `os.chmod(self.path, 0o600)` 移进 `with locked(self.root)`，
+  改 `lr.chmod(lr.root.rel_of(...))`：换根后不会再改新根同名 `注册卷.txt`（实测新根
+  哨兵仍 0644、旧根 0600）。
+- `_run_ops` 的 `os.remove` → `lr.unlink`；`_backup_copy` 的 `os.utime` → `lr.utime`；
+  safeio 新增 `unlink`/`utime`（dir_fd）。socket 清理收进无路径参数的 `_drop_socket`。
+- AH 增加系统调用类别声明表：mkdir/chmod/utime/unlink/chown/link/truncate/xattr 等
+  必须有唯一归属；未登记类别、账本桶裸调、产品件 impossible 类别、未归类 `os.*` 均红。
+- 记分板校验预期断言名，死于别的断言/崩溃不算 killed；P9 独立断言、P5 释放链前置；
+  P10 扩到 build/backup/record；新增 M14。`--self-check` 同时验属性错与断言错。
+- Windows：目录/权限/删除/时间戳原语仅 POSIX dir_fd，调用显式 RuntimeError，不回退。
+- 读数：源树 511/22、盒 391/45、P1–P10 全绿、14/14、verify 0、mcp 23/23、orch 全绿。
+
 ### 复签补轮二：目录创建收进唯一写能力（2026-11-18）
 
 - 产品件里剩余 9 处 `os.makedirs/os.mkdir` 全部改走 `LockedRoot.mkdirs_path`：

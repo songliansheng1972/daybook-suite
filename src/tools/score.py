@@ -5,14 +5,15 @@
 Mutation scoreboard: properties × mutations (step 5)
 ================================================
 每条变异在临时树里按 AST 改一处，只跑它声明的期望属性：
-  红            ⇒ 杀死
+  红且命中预期断言 ⇒ 杀死
+  红但没死在预期断言 / 只有运行异常 ⇒ 死变异
   绿、但别的属性红 ⇒ 死变异（未被对应属性杀死）
   绿、全量也全绿   ⇒ 存活
 锚点消失 / 无法编译 ⇒ 死变异。健康指标：存活 0 且 死变异 0。
 跑法 / Run:
   python3 tools/score.py                 # 全矩阵
   python3 tools/score.py --only M2       # 只跑一条
-  python3 tools/score.py --self-check    # 故意错映射（M2→P1），必须报「未被对应属性杀死」
+  python3 tools/score.py --self-check    # 故意错映射（M2→P1、M13→错断言），必须报死变异
 退出码：0=全杀死且无死变异 1=有存活/死变异 2=参数错。
 """
 import argparse
@@ -47,10 +48,23 @@ def _run_props(tree, only=''):
     return r.returncode, props, (r.stdout + r.stderr)
 
 
-def _score_one(mut_id, expect_override=None):
+def _fail_names(out):
+    """从属性输出里取失败断言名（`[FAIL] 名称 · 详情` → 名称）。
+    Extract failing assertion names from the property output."""
+    names = []
+    for line in out.splitlines():
+        if '[FAIL]' not in line:
+            continue
+        body = line.split('[FAIL]', 1)[1].strip()
+        names.append(body.split(' · ', 1)[0].strip())
+    return names
+
+
+def _score_one(mut_id, expect_override=None, check_override=None):
     """返回 (verdict, detail)：verdict ∈ killed / survivor / dead。"""
     mut = mutate.BY_ID[mut_id]
     expect = expect_override or mut['expect']
+    expect_check = check_override if check_override is not None else mut.get('check', '')
     tmp = tempfile.mkdtemp(prefix='daybook_mut_')
     try:
         tree = os.path.join(tmp, 'src')
@@ -62,14 +76,21 @@ def _score_one(mut_id, expect_override=None):
         t0 = time.time()
         rc, props, out = _run_props(tree, only=expect)
         if props.get(expect) == 'FAIL':
-            fails = [ln.strip() for ln in out.splitlines() if '[FAIL]' in ln]
-            crash = [ln for ln in fails if '运行异常' in ln]
-            normal = [ln for ln in fails if '运行异常' not in ln]
-            if crash and not normal:
+            names = _fail_names(out)
+            crash = [n for n in names if '运行异常' in n]
+            normal = [n for n in names if '运行异常' not in n]
+            hit = [n for n in normal if expect_check and expect_check in n]
+            if hit:
+                return 'killed', '期望属性 %s 红，命中预期断言「%s」（rc=%d）' % (
+                    expect, hit[0][:100], rc)
+            if normal:
+                return 'dead', ('期望属性 %s 红，但没死在预期断言上'
+                                '（预期「%s」；实际「%s」）') % (
+                    expect, expect_check or '未声明', normal[0][:100])
+            if crash:
                 return 'dead', '崩溃死（只有 %s 运行异常，未落在断言上）：%s' % (
                     expect, crash[0][:120])
-            return 'killed', '期望属性 %s 红（rc=%d，断言：%s）' % (
-                expect, rc, (normal[0][:100] if normal else '见输出'))
+            return 'dead', '期望属性 %s 红但未解析到断言名' % expect
         if rc != 0 and not props:
             return 'dead', '属性入口崩溃（rc=%d）' % rc
         # 期望属性绿：再跑全量，看是否被别的属性杀死（错映射/声明不符）
@@ -86,11 +107,18 @@ def _score_one(mut_id, expect_override=None):
 
 
 def self_check():
-    """错映射红证：M2 声明期望 P1（实际只该由 P2 杀）⇒ 必须被报为死变异。"""
+    """错映射红证：属性错、断言错都不得被静默通过。
+    Red proof for wrong mappings: neither a wrong property nor a wrong assertion name may pass."""
     print('== 自检：故意把 M2 的期望属性写成 P1 ==')
     verdict, detail = _score_one('M2', expect_override='P1')
     ok = verdict == 'dead' and '未被对应属性杀死' in detail
     print('  M2 → P1：%s · %s' % (verdict, detail))
+    print('== 自检：故意把 M13 的预期断言写成 record 那条 ==')
+    verdict2, detail2 = _score_one(
+        'M13', check_override='P10 换根后 record 归档写旧 inode')
+    ok2 = verdict2 == 'dead' and '没死在预期断言' in detail2
+    print('  M13 → record 断言：%s · %s' % (verdict2, detail2))
+    ok = ok and ok2
     print('  自检%s：错映射没有被静默通过' % ('通过' if ok else '失败'))
     return 0 if ok else 1
 

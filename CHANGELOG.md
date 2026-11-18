@@ -71,6 +71,36 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
    mcp 23/23、orch 全绿。
 
+### 复签补轮三：权限/删除/时间戳同属一个写能力，记分板校验断言名（2026-11-18）
+
+1. **`Registry.register` 的权限收紧回到凭证内**：`agent_registry.py` 原在锁外用
+   `os.chmod(self.path, 0o600)`，根 rename 后会把新根同名 `注册卷.txt` 从 0644 改成 0600。
+   现在与追加写在同一个 `with locked(self.root)` 里走 `lr.chmod(lr.root.rel_of(...), 0o600)`，
+   失败按 best-effort 捕获 `RuntimeError`。实测原场景：新根哨兵仍 `0o644`、内容未变；
+   旧根注册卷 `0o600` 且含 `probe`。
+2. **同一根因的其余名字一并收口**：`daybook._run_ops` 的 `os.remove` 改 `lr.unlink`；
+   `_backup_copy` 的 `os.utime` 改 `lr.utime`；`safeio` 新增 `unlink`/`utime`（dir_fd）。
+   `agent_message` 的 socket 清理收进无路径参数的 `_drop_socket`（socket 在系统临时目录）。
+3. **AH 改为按系统调用类别穷举**：新增声明表 `_MUTATOR_OWNER`，覆盖
+   `open/os.open/replace/mkdir/chmod/utime/unlink/fsync/temp/subproc` 及
+   `chown/link/truncate/xattr`（后四类声明为 `impossible`）。每类只能归
+   `LockedRoot`、`safeio` 实现、随包测试或 `impossible`；未登记类别、账本桶裸调、
+   产品件出现 `impossible` 类别、账本桶出现未归类的 `os.*` 一律红。`os.setxattr`
+   自证新类别可被识别 ⇒ 新增名字不登记就红，不再以「第五种名字」复活。
+4. **记分板校验「死在哪个断言」**：每条变异声明预期断言名，`score.py` 只有命中该名字
+   才算 killed；死在别的断言或只有运行异常都记 dead。P9 拆成独立断言（写旧 inode /
+   新根零写入 / 新根哨兵模式 / 旧根 0600），P5 把取锁/释放链检查前置。
+   `--self-check` 同时验证「属性错」与「断言错」都不会被静默通过。
+5. **P10 覆盖面扩到三条换根路径**：`build` 索引、`_backup_locked` 的 `backup/`、
+   `daybook_record.record` 的「对话原件」；新增 M14（注册卷权限退回锁外 `os.chmod`），
+   死在 `P9 Registry 换根后新根注册卷模式不变`。
+6. **Windows 边界写死**：`mkdir/mkdirs/mkdirs_path/chmod/unlink/utime` 只有 POSIX
+   `dir_fd` 实现，Windows 调用显式 `RuntimeError`，不静默回退按路径；追加/替换另有
+   Windows 分支。`safeio` 模块 docstring 与 README 同步说明。
+7. **本轮读数**：源树 `0 红 / 511 项（跳过 22）`；`daybook/` 盒 `0 红 / 391 项（跳过 45）`；
+   属性 P1–P10 全绿；`变异 14 / 杀死 14 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
+   mcp 23/23、orch 全绿。
+
 ### 复签补轮二：目录创建收进唯一写能力、M12 落在断言、P3 收口（2026-11-18）
 
 1. **目录创建不再是第二套写路径**：此前 `LockedRoot` 是唯一写能力，但建目录仍散落在产品件里

@@ -165,10 +165,15 @@ class Registry:
         with locked(self.root) as lr:
             lr.write(lr.root.rel_of(self.path, 'agent_registry.register'), rec,
                      mode=WriteMode.APPEND_CREATE)
-        try:
-            os.chmod(self.path, 0o600)            # 旧卷可能含内联密钥·一并收紧 / legacy volumes may hold inline secrets · tighten too
-        except OSError:
-            pass
+            try:
+                # 旧卷可能含内联密钥·一并收紧；同一把锁、同一个根句柄，换根后不会把
+                # 新根里的同名文件改成 0600。best-effort：改权限失败不挡注册。
+                # Legacy volumes may hold inline secrets · tighten too; same lock and root
+                # handle, so a renamed root cannot chmod the new root's same-named file.
+                # Best-effort: a failed chmod does not block registration.
+                lr.chmod(lr.root.rel_of(self.path, 'agent_registry.register.chmod'), 0o600)
+            except RuntimeError:
+                pass
         self._agents[agent_id] = Agent(agent_id, name, secret, _now(), False)
         return agent_id, secret
 

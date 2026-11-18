@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
-"""属性层入口：P1–P7（步骤 5）
-Property-layer entry: P1–P7 (step 5)
+"""属性层入口：P1–P10（步骤 5）
+Property-layer entry: P1–P10 (step 5)
 ================================================
 跑法 / Run:
   python3 tests/prop/run_all.py                    # 全部属性（默认 seed=7 mode=const）

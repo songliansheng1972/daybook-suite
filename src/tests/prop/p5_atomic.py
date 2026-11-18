@@ -50,6 +50,18 @@ def run(seed=7, mode='const'):
         os.makedirs(root)
         rt = Root._from_dir_path(root)
         try:
+            # 0) 先验取锁/释放链：不取锁的凭证在退出时会炸，必须死在断言而不是运行异常。
+            #    放在最前，变异 M5 的第一条 FAIL 就落在这一条，不会伪装成 fsync 失败。
+            # 0) Check the lock/release chain first: a credential that never took the lock
+            #    blows up on exit; M5's first FAIL must land here, not masquerade as fsync.
+            release_ok = True
+            try:
+                with rt.lock(timeout=2.0):
+                    pass
+            except RuntimeError:
+                release_ok = False
+            check('P5 取锁/释放链自洽（释放不得炸）', release_ok)
+
             # 1) 替换：目录 fsync 至少一次（崩溃后名字不再指旧 inode）
             seen, restore = _dir_fsync_count()
             try:
@@ -59,15 +71,6 @@ def run(seed=7, mode='const'):
                 restore()
             check('P5 REPLACE 后目录 fsync ≥ 1', not err and seen['dir'] >= 1,
                   'err=%s dir=%d all=%d' % (err, seen['dir'], seen['all']))
-
-            # 取锁/释放链自洽：不取锁的凭证在退出时会炸，必须落在断言而不是运行异常
-            release_ok = True
-            try:
-                with rt.lock(timeout=2.0):
-                    pass
-            except RuntimeError:
-                release_ok = False
-            check('P5 取锁/释放链自洽（释放不得炸）', release_ok)
 
             # 2) 互斥：主线程持锁时，另一线程必须超时而不是拿到凭证
             got = {}
