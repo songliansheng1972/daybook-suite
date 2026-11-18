@@ -1,0 +1,34 @@
+# 单点中文名基线（不计红，只计增长）· baseline of single-token Chinese names
+# 行格式：file:line<TAB>中文名<TAB>一句用途
+# 匹配按 (文件, 中文名) 计数；行号仅作定位，代码移动导致的漂移不算新增。
+# 基线覆盖源树全部 .py（不含 tests/ 与 conf_norm.py）。盒内只带产物件，
+# 所以盒内跑 guard 会看到「消失」——那是产物边界，不是漏签。
+# 判据：超基线即红（打印 file:line）；基线内条目消失不红，但必须报「消失 Y」。
+cross_ref.py:232	行号	CLI 位置参数标签（行号解析错误提示）
+cross_ref.py:234	行号	CLI 位置参数标签（行号解析错误提示）
+cross_ref.py:246	行号	CLI 位置参数标签（行号解析错误提示）
+cross_ref.py:253	行号	CLI 位置参数标签（行号解析错误提示）
+daybook.py:345	标题	附头正则无捕获时的回退取值标记
+daybook.py:1546	多级索引	CLI 子命令别名（multiindex）
+daybook.py:1667	多级索引	CLI 子命令别名（multiindex）
+daybook_append.py:77	作者	条目头必填字段名（REQUIRED_FIELDS/缺失报告）
+daybook_append.py:77	时间	条目头必填字段名（REQUIRED_FIELDS/缺失报告）
+daybook_append.py:77	标题	条目头必填字段名（REQUIRED_FIELDS/缺失报告）
+daybook_append.py:96	时间	条目头必填字段名（REQUIRED_FIELDS/缺失报告）
+daybook_append.py:97	作者	条目头必填字段名（REQUIRED_FIELDS/缺失报告）
+daybook_append.py:97	标题	条目头必填字段名（REQUIRED_FIELDS/缺失报告）
+daybook_fix_test.py:330	标题	测试样本的条目头字段名
+daybook_fix_test.py:336	标题	测试样本的条目头字段名
+daybook_fix_test.py:342	标题	测试样本的条目头字段名
+daybook_fix_test.py:357	标题	测试样本的条目头字段名
+mcp_p0_regression.py:121	索引	测试断言里的索引节名
+mcp_p0_regression.py:206	索引	测试断言里的索引节名
+mcp_prompts.py:27	作者	prompt 参数说明文字
+mcp_test.py:237	索引	测试断言里的索引节名
+mcp_test.py:257	索引	测试断言里的索引节名
+mcp_test.py:299	索引	测试断言里的索引节名
+orch_perf_bench.py:33	索引	压测脚本里的索引产物名
+pack.py:387	多级	发行/帮助文案里的子命令名
+pack.py:387	索引	发行/帮助文案里的子命令名
+pack.py:461	多级	发行/帮助文案里的子命令名
+pack.py:461	索引	发行/帮助文案里的子命令名

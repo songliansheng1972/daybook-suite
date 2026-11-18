@@ -160,6 +160,9 @@ PACKAGES = {
         # (otherwise the "self-contained" promise breaks · dangling link); CHANGELOG.md is likewise user-facing · shipped too.
         'doc': ['LICENSE', 'README.md', 'README.en.md', 'LICENSING.md',
                 'volume_format_spec.md', 'CLA.md', 'I18N.md', 'CHANGELOG.md',
+                # 单点中文名基线：guard 计数用；随包比对，源与盒不许各一份
+                # Single-token Chinese-name baseline for the guard; shipped and byte-compared
+                'alias_name_baseline.txt',
                 # 名之正本（商标口径·含发行名申请范围）·与 LICENSING.md §五 互指·须随包
                 # Trademark statement (the "name" source of truth, incl. distribution-name filing scope);
                 # cross-referenced by LICENSING.md §5 · must ship
@@ -200,7 +203,8 @@ PACKAGES = {
         # I18N.md / CHANGELOG.md 随包（与本包 conf 注释「见 I18N.md」对齐）
         # I18N.md / CHANGELOG.md ship with the package (aligned with this package's conf comment "see I18N.md")
         'doc': ['LICENSE', 'LICENSING.md', 'volume_format_spec.md',
-                'CLA.md', 'I18N.md', 'CHANGELOG.md', 'TRADEMARK.md'],
+                'CLA.md', 'I18N.md', 'CHANGELOG.md', 'TRADEMARK.md',
+                'alias_name_baseline.txt'],
         'doc_rename': [
             (['README.mcp.md'], 'README.md'),
             (['README.mcp.en.md'], 'README.en.md'),
@@ -247,7 +251,8 @@ PACKAGES = {
         # 三包同源同发一致：I18N.md / CHANGELOG.md 亦随本包
         # Consistent across the three packages (one source, released together): I18N.md / CHANGELOG.md ship here too
         'doc': ['LICENSING.md', 'volume_format_spec.md', 'CLA.md',
-                'I18N.md', 'CHANGELOG.md', 'TRADEMARK.md'],
+                'I18N.md', 'CHANGELOG.md', 'TRADEMARK.md',
+                'alias_name_baseline.txt'],
         'sub': SAMPLE,
     },
 }
