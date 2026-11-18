@@ -433,7 +433,7 @@ def _criterion_gate(conf, outdir, vols, prefix, report, old):
                        % (prev_fmt if prev_fmt is not None else '无标记', INDEX_FMT)))
         return True, purge
     if prev is None:
-        report.append(('口径闸', '存量索引无口径戳·本轮补戳（口径未溯源）·legacy index, stamp added'))
+        report.append(('口径闸', '存量索引无口径戳·本轮将补戳（口径未溯源·rc=0 才落地）·legacy index, stamp added on rc=0'))
         return False, []
     if prev == now_stamp:
         return False, []
@@ -653,13 +653,27 @@ def build(conf, root='.', baseline=False, dry=False, authors=None):
                 new_seals = {}
                 ops.append(('purge', purged))
 
+        # 配置缺失的卷：已记配置错（2），作者口径不重复报红（否则 4 会盖掉 2）。
+        # Volumes missing from the config: already a config error (2); the author check must
+        # not also flag them (an author red 4 would outrank the config error 2).
+        missing_vols = set()
         for vol, path in vols.items():
             p = path if os.path.isabs(path) else os.path.join(root, path)
             idf = os.path.join(outdir, '%s%s.tsv' % (prefix, vol))
             idf_legacy = os.path.join(outdir, '%s%s卷.tsv' % (prefix, vol))
             cp = _cursor_path(outdir, vol)
             cp_legacy = _legacy_cursor_path(outdir, vol)
-            if not os.path.exists(p): per[vol] = 0; continue
+            if not os.path.exists(p):
+                # ★ 配置指向不存在的文件 ⇒ 配置错（2），不是「空卷」；与 record 的前置阻断同码。
+                # ★ A configured volume that does not exist is a config error (2), not an empty
+                #   volume — the same code record's pre-check returns for the same fault.
+                msg = ('★ 卷配置指向不存在的文件（%s）·不是空卷'
+                       % (path if not os.path.isabs(path) else p))
+                report.append((vol, msg))
+                CONFIG_ERRORS.append((vol, msg))
+                missing_vols.add(vol)
+                per[vol] = 0
+                continue
             # ★ 目录型条目：配置写成了目录（漏过滤）⇒ 明确报错，不崩溃
             # ★ Directory entry: a config value points at a directory (e.g. an unfiltered
             #   ⇒ report it explicitly instead of crashing with IsADirectoryError.
@@ -1005,7 +1019,8 @@ def build(conf, root='.', baseline=False, dry=False, authors=None):
         if VIOLATIONS: errs.append(errors.LedgerViolation('违例'))
         if EVIDENCE_MISSING: errs.append(errors.EvidenceMissing('证据缺失'))
         AUTHOR_RED = _report_authors(conf, root, quiet_green=True,
-                                     cache=author_cache, verified=author_verified) \
+                                     cache=author_cache, verified=author_verified,
+                                     skip=missing_vols) \
             if (authors if authors is not None else not dry) else False
         if AUTHOR_RED and not baseline:
             errs.append(errors.AuthorConvention('作者口径红'))
@@ -1426,7 +1441,7 @@ def query(conf, root, args):
     return '\n'.join(out)
 
 
-def check_authors(conf, root='.', cache=None, verified=None):
+def check_authors(conf, root='.', cache=None, verified=None, skip=()):
     """机检：作者位必须是显示名；机器 id 或同卷混两种形态即红；配置卷不存在也红。
     Machine check: the author slot must hold a display name; a machine id, mixed conventions,
     or a missing configured volume is red.
@@ -1443,6 +1458,8 @@ def check_authors(conf, root='.', cache=None, verified=None):
     verified = verified if isinstance(verified, dict) else {}
     rows = []
     for vol, path in conf.get('volumes', {}).items():
+        if vol in skip:
+            continue      # 卷配置错已由 build 记 2，作者口径不重复报（不盖掉配置错的码）
         p = path if os.path.isabs(path) else os.path.join(root, path)
         if os.path.isdir(p):
             continue      # 目录型条目已由 build 记为卷配置错误，不重复报「卷缺失」
@@ -1469,14 +1486,15 @@ def check_authors(conf, root='.', cache=None, verified=None):
     return rows
 
 
-def _report_authors(conf, root, quiet_green=False, cache=None, verified=None):
+def _report_authors(conf, root, quiet_green=False, cache=None, verified=None, skip=()):
     """打印作者口径机检结果；返 True=有卷报红。
     给出 cache/verified（build 本轮增量扫描与其已验哈希）时复用，避免单条追加后全卷重解析。
     Print the author-convention check; returns True when any volume is red.
     With `cache`/`verified` (this build's incremental scan and its verified hashes) the
     verdict is reused, so a single append never re-parses the whole volume."""
     red = False
-    for vol, p, ok, detail in check_authors(conf, root, cache=cache, verified=verified):
+    for vol, p, ok, detail in check_authors(conf, root, cache=cache, verified=verified,
+                                            skip=skip):
         if ok:
             if not quiet_green:
                 print('  作者口径 %s: 一致（%s）' % (vol, detail.get('summary', '')), flush=True)
@@ -1585,7 +1603,10 @@ def _main():
         per, total, rep = build(conf, root)
         for v, w in rep: print('  %s: %s' % (v, w), flush=True)
         for w in RULE_WARN: sys.stderr.write('  ★ 规则告警：%s\n' % w)
-        if EVIDENCE_MISSING:
+        if CONFIG_ERRORS:
+            print('索引未写回（卷配置错误·零落盘）：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
+                  + '｜合计 %d 条' % total, flush=True)
+        elif EVIDENCE_MISSING:
             print('索引未写回（证据缺失·请先认基线）：' + '｜'.join('%s %d' % (k, v) for k, v in per.items())
                   + '｜合计 %d 条' % total, flush=True)
         else:

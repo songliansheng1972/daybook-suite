@@ -59,6 +59,32 @@
 - 读数：源树 `0 红 / 506 项（跳过 22）`；`daybook/` 盒 `0 红 / 386 项（跳过 45）`；
   属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 verify rc=0。
 
+### 复签补轮五：写面默认值反转（2026-11-18）
+
+- **判据反转**：写面按「能力」定义，不按 callee 名字清单。模块面（os/shutil/subprocess/
+  ctypes/io/pathlib/tempfile/mmap/sqlite3/socket/zipfile/tarfile/logging）上的调用默认写、
+  未知名字也写；任意接收者的写动词（write/mkdir/unlink/rename/replace/chmod/chown/utime/
+  truncate/symlink/link/touch/write_text/write_bytes）一律写；`open` 与 `os.open` 的模式
+  判不出即写（`os.open` 只有 flags 字面量 0 才只读）。纯计算按模块类别给；只读只签 site
+  （文件/函数/callee 三元组），不逐 callee 签。
+- **发现面**：扩到模块体/类体/lambda/推导式/装饰器；`Path` 接收者不再要求字面量
+  （形参注解、`Path(p)/'x'`、变量都算）；新增 `unclassified` 默认写红池。
+- **桶名只作预期**：产品件写类别必须是 ledger（safeio 自身 impl），`dispatch` 桶只能带
+  subproc/temp，夹带其它写 ⇒ 红。新增自证：dispatch 桶夹带 chmod 必须红。
+- **非账本根写逐点人签**：`_OFFROOT_WRITE_SITES` 只覆盖列出的 (文件, 函数, 类别)，签名目标
+  由 tempfile 生成；同函数新增写类别仍红。
+- **兜底读数**：`guard.py --audit-calls` 打印写面调用点 / 判为纯计算调用点 / 纯计算 callee
+  去重列表（只报告，不当绿证）。
+- **卷配置指向不存在的文件 = 配置错 2**：`index` 与 `record` 同码且零落盘；作者口径检查
+  跳过该卷，避免 4 盖掉 2。`daybook_append.py` 不解析 conf 的边界写进 README 与模块 docstring。
+- **record 索引腿声明收窄**：换根后 `update_index=True` 失败关闭（2/5，零落盘），换根保证
+  只覆盖归档与登记；P10 docstring 写明覆盖面。
+- **P7 口径改为采样**：列出已采样/未采样入口（orchestrator join/open/log、daybook_multidx、
+  mcp_server 未采样及理由）；新增 M15（record 锁退回 `str(rt)` 路径重开）⇒ 死在 P10 dev_ino。
+- 删除盒内 `tools/score.py` 悬空自指与 `_unclassified_os` 死代码。
+- **读数**：源树 0 红 / 555（跳过 16）；盒 0 红 / 434（跳过 39）；P1–P10 全绿；
+  变异 15/15；三包 verify rc=0；mcp 23/23 + 13/13；orch 自检与 fixes 全绿。
+
 ### 终裁轮：写路径禁派发、record 单根单凭证、P6 适用性派生（2026-11-18）
 
 1. **写路径禁止 subprocess**：AH 把每个 `subprocess.*`（含 `stdout=PIPE`）都当派发点，产品件

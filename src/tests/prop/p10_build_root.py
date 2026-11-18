@@ -7,6 +7,14 @@ P10 · build keeps the original root inode after a rename
 `daybook.build` 的索引 outdir、`_backup_locked` 的 backup/、`daybook_record.record` 的
 「对话原件」都必须走 `LockedRoot`。根 rename 走后就地建同名空目录，再跑：新根不得长出
 任何目录。变异 M13（退回 os.makedirs(outdir)）必须让 build 那条变红。
+
+覆盖面（声明，不夸大）：record 的换根用例只覆盖 `update_index=False`（归档与登记）。
+换根后索引腿按路径读证据，属于**失败关闭**（`update_index=True` ⇒ 2/5，零落盘），
+不是「索引仍可用」；该腿不在本属性承诺内。
+Coverage (declared, not overstated): the record rename case covers `update_index=False`
+(archive + register) only. After a rename the index leg reads evidence by path and fails
+closed (`update_index=True` ⇒ 2/5, zero writes); it is not "index still works" and is
+outside this property's promise.
 """
 import glob
 import os

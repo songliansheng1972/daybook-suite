@@ -5,14 +5,25 @@
 """保存一条逐字消息/代码原件，并把其路径与摘要登记到 DAYBOOK。
 Save one verbatim message/code original and register its path and digest into DAYBOOK.
 
-单根单凭证（P0）：归档、登记、索引全部在**同一把账本根锁、同一个 Root 句柄**内完成，
+单根单凭证（P0）：**归档与登记**在**同一把账本根锁、同一个 Root 句柄**内完成，
 不再派发任何子进程。写路径禁止 subprocess：派发出去的子进程会按路径重新解析账本根，
-根被 rename 后会改道新 inode；改进程内以后 `append_one(..., root=rt)` 与
-`daybook.build(conf, rt)` 复用同一句柄（`held(rt)`），换根不可能改道。
-Single root, one credential (P0): archiving, registration and indexing all happen inside one
-lock on one Root handle, with no subprocess dispatch. A child re-resolves the root by path and
-would follow a renamed directory to a new inode; in-process `append_one(..., root=rt)` and
-`daybook.build(conf, rt)` reuse the same handle (`held(rt)`), so a rename cannot reroute it.
+根被 rename 后会改道新 inode；改进程内以后 `append_one(..., root=rt)` 复用同一句柄
+（`held(rt)`），换根不可能改道。
+Single root, one credential (P0): archiving and registration happen inside one lock on one
+Root handle, with no subprocess dispatch. A child re-resolves the root by path and would follow
+a renamed directory to a new inode; in-process `append_one(..., root=rt)` reuses the same
+handle (`held(rt)`), so a rename cannot reroute it.
+
+索引腿的边界（P0 声明，不夸大）：`update_index=True` 时 `build` 的**证据读取**仍按路径
+（游标/封存/卷都按 conf 里的路径定位），换根后按路径找不到卷或派生件，因此该腿
+**失败关闭**：`update_index=True` + 换根 ⇒ 配置错(2) 或证据缺失(5)，零落盘，绝不改道新根。
+record 的换根保证只覆盖「归档与登记」（`update_index=False`）；P10 的 record 用例也只覆盖
+这条腿。要换根又能更新索引，只能在换根前/后重新用路径打开新根，不在本函数的承诺内。
+Index-leg boundary (declared, not overstated): with `update_index=True`, `build` still locates
+evidence (cursor/seal/volumes) **by path** from conf, so after a root rename the index leg
+fails closed — config error (2) or missing evidence (5), landing nothing, never rerouting to
+the new root. record's rename guarantee covers "archive + register" (`update_index=False`) only,
+and P10's record case covers exactly that leg.
 
 先判后写（P0）：写任何字节之前先跑一次 `build(..., dry=True, authors=True)`，把
 配置错(2)/违例(3)/证据缺失(5)/作者红(4) 一次判掉；非零退出必须零落盘。

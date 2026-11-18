@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # SPDX-License-Identifier: MIT
-"""P7 · 非零退出零落盘（属性层·逐入口）
-P7 · zero writes on a non-zero exit (property layer, per entry)
+"""P7 · 非零退出零落盘（属性层·**采样**）
+P7 · zero writes on a non-zero exit (property layer, **sampling**)
 ================================================
 rc=2（配置错）、3（违例）、5（证据缺失）都不得改动账本目录：递归内容、inode、mtime
-全不变。**每个可写入口**都要各测一次，不能只测 `daybook.py index`：
-  daybook.py index / daybook_record.record / daybook_append.append_one /
-  daybook_session_hook watch / daybook_hook / orchestrator alarm
-`cross_ref.py` 无写原语、`mcp_server.py` 是协议型长驻入口（单次故障映射为响应），
-不在此层，由 P6 的代码路径推导给出不适用理由。
-Every writable entry is exercised — not just `daybook.py index`. `cross_ref.py` has no write
-primitive and `mcp_server.py` is a protocol server; P6 derives those as not-applicable.
+全不变。本层是**采样**，不是「每个可写入口各测一次」的全覆盖声明：
+  已采样：daybook.py index（2/3）、daybook_record.record（3/5）、
+          daybook_append.append_one（2）、daybook_session_hook watch（3）、
+          daybook_hook（6）、orchestrator alarm（3）
+  未采样：orchestrator join/open/log、daybook_multidx、mcp_server。
+          join/open 的失败面是参数/锁而非账本判据；multidx 是从卷重算的派生视图，
+          不跑 append-only 闸（同一份被改写卷它仍 rc=0 重建 multilevel/），本层不替它声明；
+          mcp_server 是协议型长驻入口（单次故障映射为响应），由 P6 的代码路径推导。
+The layer **samples**; it does not claim "one test per writable entry". It covers index (2/3),
+record (3/5), append (2), session-hook (3), daybook_hook (6), orchestrator alarm (3). It does not
+sample orchestrator join/open/log (their failure surface is args/locks, not the ledger predicate),
+daybook_multidx (a derived-view rebuild that does not run the append-only gate), or mcp_server
+(protocol server; P6 derives its mapping). `cross_ref.py` has no write primitive.
 """
 import io
 import json
@@ -34,7 +40,7 @@ def _same(name, tmp, before, r, expect):
 
 
 def run(seed=7, mode='const'):
-    print('  -- P7 非零退出零落盘（逐入口·seed=%d mode=%s） --' % (seed, mode))
+    print('  -- P7 非零退出零落盘（采样·seed=%d mode=%s） --' % (seed, mode))
     # 1) daybook.py index：rc=2（卷配成目录）
     with common.tmpdir('p7a_') as tmp:
         common.make_ledger(tmp)

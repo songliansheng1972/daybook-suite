@@ -30,6 +30,13 @@ Author ID iron rule: every entry must carry an author, auditable, verifiable and
 ★ 同卷口径机检：check_author_consistency() 只按 head_regex 锚定条目头，抓机器 id 与混用。
 ★ Per-volume convention check: check_author_consistency() anchors entry heads by head_regex only,
   and flags machine ids / mixed conventions.
+★ conf 边界（设计如此）：本件不解析 daybook.conf，只认账本根与目标卷文件。conf 写坏时
+  本件仍可能 rc=0 并追加成功；配置体检由 daybook.py index / daybook_record.py 负责
+  （它们对同一份坏 conf 按配置错 2 拒绝且零落盘）。
+★ conf boundary (by design): this file does not parse daybook.conf — it only knows the ledger
+  root and the target volume. A broken conf can therefore still append with rc=0; conf health is
+  owned by `daybook.py index` / `daybook_record.py` (both refuse a broken conf with code 2 and
+  land nothing).
 """
 import io, os, re, sys, time
 

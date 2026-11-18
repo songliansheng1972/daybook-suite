@@ -41,7 +41,7 @@ _WRITE_ENTRIES = {
     'safeio.py': 'safeio 根句柄/唯一写链（所有入口共用）',
     'daybook.py': 'daybook.py index/baseline/backup/build',
     'daybook_append.py': 'daybook_append.append_one',
-    'daybook_record.py': 'daybook_record.record（归档+登记+索引）',
+    'daybook_record.py': 'daybook_record.record（归档+登记；索引腿换根后失败关闭）',
     'daybook_hook.py': 'daybook_hook 关键词落卷',
     'daybook_session_hook.py': 'daybook_session_hook 会话归档',
     'orchestrator.py': 'orchestrator join/claim/log/alarm',

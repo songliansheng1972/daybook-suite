@@ -71,6 +71,22 @@ hook 条头统一解析、pack 排除运行时残留与系统垃圾、`backup` �
    属性 P1–P9 全绿；`变异 12 / 杀死 12 / 存活 0 / 死变异 0`；两套 `--verify` rc=0；
    mcp 23/23、orch 全绿。
 
+### 复签补轮五：写面默认值反转（2026-11-18）
+
+- **判据反转**：写面按「能力」定义，不按 callee 名字清单。模块面（os/shutil/subprocess/
+  ctypes/io/pathlib/tempfile/mmap/sqlite3/socket/zipfile/tarfile/logging）上的调用默认写、
+  未知名字也写；任意接收者的写动词一律写；`open`/`os.open` 的模式判不出即写
+  （`os.open` 只有 flags 字面量 0 才只读）。纯计算按模块类别给；只读只签 site，不逐 callee 签。
+- **发现面**扩到模块体/类体/lambda/推导式/装饰器；`Path` 接收者不再要求字面量；新增
+  `unclassified` 默认写红池。**桶名只作预期**：产品件写类别必须 ledger；`dispatch` 桶夹带
+  其它写 ⇒ 红（补反向自证）。非账本根写逐点人签 `_OFFROOT_WRITE_SITES`。
+- **兜底读数** `--audit-calls`：写面调用点 / 判为纯计算调用点 / 纯计算 callee 去重列表。
+- **卷配置指向不存在的文件 = 2**：`index`/`record` 同码、零落盘（作者口径不再用 4 盖住 2）；
+  `daybook_append` 不解析 conf 的边界写进 README 与 docstring。
+- **record 索引腿**：换根后 `update_index=True` 失败关闭（2/5，零落盘），换根保证只覆盖
+  归档与登记；P10 写明覆盖面。**P7 改为采样口径**；新增 M15 ⇒ 死在 P10 dev_ino 断言。
+- 读数：源树 555 项 0 红；盒 434 项 0 红；P1–P10 全绿；变异 15/15。
+
 ### 终裁轮：写路径禁派发、record 单根单凭证、P6 适用性派生（2026-11-18）
 
 **口径（先立后用）**

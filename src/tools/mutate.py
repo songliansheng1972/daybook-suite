@@ -299,6 +299,28 @@ def m14_registry_chmod_by_path(text):
     return ast.unparse(tree)
 
 
+def m15_record_reopen_by_path(text):
+    """record 的锁退回 str(rt) 按路径重开：换根后归档/登记改道新 inode。
+    record locks by reopening the path: after a rename the archive/registration reroute."""
+    tree = _parse(text)
+    f = _func(tree, 'record')
+    hit = False
+    for node in ast.walk(f):
+        if isinstance(node, ast.With):
+            for item in node.items:
+                call = item.context_expr
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) \
+                        and call.func.id == 'locked' and call.args \
+                        and isinstance(call.args[0], ast.Name) \
+                        and call.args[0].id == 'rt':
+                    call.args[0] = ast.Call(func=ast.Name(id='str', ctx=ast.Load()),
+                                            args=[call.args[0]], keywords=[])
+                    hit = True
+    if not hit:
+        raise MutationError('M15 锚点消失：record 无 locked(rt)')
+    return ast.unparse(tree)
+
+
 MUTATIONS = [
     {'id': 'M1', 'file': 'safeio.py', 'expect': 'P1',
      'check': 'P1 同一 dev_ino / 不同 label ⇒ 同一把锁（同线程立即 RuntimeError）',
@@ -342,6 +364,10 @@ MUTATIONS = [
     {'id': 'M14', 'file': 'agent_registry.py', 'expect': 'P9',
      'check': 'P9 Registry 换根后新根注册卷模式不变',
      'desc': '注册卷权限退回锁外 os.chmod(self.path)', 'apply': m14_registry_chmod_by_path},
+    {'id': 'M15', 'file': 'daybook_record.py', 'expect': 'P10',
+     'check': 'P10 换根后 record 登记写旧 inode 且原件/登记同一 dev_ino',
+     'desc': 'record 的锁退回 str(rt) 按路径重开（换根改道）',
+     'apply': m15_record_reopen_by_path},
 ]
 
 BY_ID = {m['id']: m for m in MUTATIONS}

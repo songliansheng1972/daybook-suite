@@ -253,7 +253,7 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
 | 码 | 含义 | 说明 |
 | --- | --- | --- |
 | 0 | 干净 | 含「未变」；本轮正常落盘 |
-| 2 | 卷配置错 | 目录型条目等；解析层不崩，CLI 报错非零退出 |
+| 2 | 卷配置错 | 目录型条目、配置指向不存在的文件等；解析层不崩，CLI 报错非零退出，**零落盘** |
 | 3 | append-only 违例 | 账本被改写 |
 | 4 | 作者口径 | 作者位出现机器 id 或两种形态混用 |
 | 5 | 派生件证据缺失 | 索引/游标/封存丢失或不可解析；**不写回**，用 `baseline` 认基线 |
@@ -275,6 +275,12 @@ MCP 请求期的 `RuntimeError` 走 RPC 的 `ERR_INTERNAL_ERROR`，不映射为�
   一律按「可能不在系统临时目录内」拒绝，宁可判红；②`fork` 出的子进程**继承**父进程已持有的
   锁（内核 fd 语义），子进程不得再取同一把锁；③`exec` 后锁随 fd 关闭自动清零，新程序必须
   重新取锁。三者都是安全侧行为，不提供开关改变。
+- **`daybook_append.py` 不解析 conf（设计边界）**：它只认账本根与目标卷文件，因此 `daybook.conf`
+  写坏时它仍可能 rc=0 并追加成功。这不代表「conf 坏了也能写」——`daybook.py index` 与
+  `daybook_record.py` 都会按配置错（2）拒绝并零落盘；append 是单条落盘的唯一入口，不承担配置体检。
+  `daybook_append.py` does not parse conf (by design): it only knows the ledger root and the target
+  volume, so a broken conf does not stop it. That never means "broken conf is writable": `index` and
+  `record` refuse with code 2 and land nothing; append is the single-entry writer, not a conf checker.
 
 ## 许可
 
