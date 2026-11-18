@@ -1,6 +1,15 @@
 # CHANGELOG
 
-## v4.0.6 · 2026-11-14
+## v4.0.6 · 2026-11-18
+
+### 定版（2026-11-18）：4.0.6 发布读数
+
+- 判据条目：源树 688 条（0 红，跳过 18）；`daybook` 盒 503 条（0 红，跳过 42）。
+- 闭包覆盖 936/2160 = 43%｜可能写缺口 318｜未登记 0｜同名红 0（参考项，不参与收口）。
+- 变异 15/15 杀死、0 存活、0 死变异；属性层全绿。
+- 两套 verify：`pack.py --pkg all --verify` EXIT=0；`pack_pypi.py --pkg all --verify` EXIT=0。
+- 逐件：daybook 36／daybook-mcp 38／daybook-orch 36，缺件 0、不同 0。
+- 本条之后未再改产品件；定版只动 CHANGELOG 与发行产物。
 
 > ### ⚠ 升级前必读：三处行为变更 / Read before upgrading: three behaviour changes
 >
