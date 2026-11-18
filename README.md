@@ -176,7 +176,9 @@ External contributions require signing the **CLA** first (`src/CLA.md`; also bun
 
 - **账本＝纯文本** —— `cat` 就能读；不挑环境、不挑模型。
 - **零依赖 · 跨平台** —— 只 Python 3 标准库；不联网。macOS / Linux / 树莓派拷到即跑；Windows 走命名互斥量 + `realpath` 归属判的真实写路径（语义契约与 POSIX 相同）。
-- **只增不改** —— append-only，写不坏历史；索引是目录，可随时从原文重算。
+- **只增不改** —— append-only，写不坏历史；索引是目录，可随时从原文重算。**派生视图不在此列**：
+  `daybook_multidx` 对已改写卷会以 rc=0 重建派生视图，这是**明示豁免**——append-only 是账本卷级
+  不变量，只覆盖账本卷，不覆盖派生视图。
 - **三件同底座** —— 同一批卷、同一份真相；**别人可自造合规之账，我们不必在场**。
 
 > **完整特点见旗舰包 README** —— [`daybook/README.md`](daybook/README.md)（「## 特点」段·十三条）。本仓根 README 只作**指路**，不复制正文 —— 两处不各自漂移。
@@ -225,7 +227,9 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   盒内没有自带判据，它们与源树同源只由 `pack --verify` 逐字节保证；不要把「盒内可自证」
   读成三包都成立。
 - **判据健康度**不看条数：属性层 P1–P10 全绿（`python3 src/tests/prop/run_all.py --seed 7`），
-  变异记分 `python3 src/tools/score.py` 打印 `变异 14 / 杀死 14 / 存活 0 / 死变异 0`。杀死的判据不是「有 FAIL 就算」，而是**命中该变异声明的预期断言名**；
+  变异记分 `python3 src/tools/score.py` 打印 `变异 14 / 杀死 14 / 存活 0 / 死变异 0`，同一汇总行
+  紧跟 `闭包覆盖 927/2154 = 43%｜可能写缺口 305｜未登记 0｜同名红 0`，读「未登记 0」时必须
+  同时读覆盖率。杀死的判据不是「有 FAIL 就算」，而是**命中该变异声明的预期断言名**；
   死在别的断言、或只有运行异常，都记死变异，不算杀死。
   健康＝**属性全绿 + 存活变异 0 + 死变异 0**；三者缺一即未收口。场景层源件在
   `src/tests/scenarios/guard.py`（盒内仍叫 `ledger_guard_test.py`，命令不变）。
@@ -238,6 +242,21 @@ cd daybook-orch  && python3 orchestrator.py selftest  # 司南：端到端自检
   `__import__`、含写原语的字典派发、`o = os` 别名）与 `open` 模式变量，AH 一律判红。
   产品件还禁止第三方库 import。新增一种名字而不登记，下一次跑判据就会红。P10 同时覆盖
   `build`、`backup`、`record` 三条换根路径。
+- **闭包面与覆盖率的诚实边界**：写能力函数＝传递地调用到账本写类别的第一方函数；源头是
+  **所有已登记 `ledger`/`impl` 的函数本身**（签了这次写就等于承认有写能力），再加原语类别
+  命中，不按结果 kind（`safe`）分层。`--audit-closure` 与本句同框打印
+  `闭包覆盖 927/2154 = 43%｜可能写缺口 305`；`tools/score.py` 的汇总行也带同一口径。
+  **43% 是解析率，不是写表面闭合率**，残余三类必须在读数字时一起看：
+  1. **属性/实例方法派发**：`obj.method()` 的接收者类型解析不到（属性类型、跨文件实例、
+     容器里的实例），这些边进「未解析」，靠同名红兜底；
+  2. **第一方函数别名**：`f = _write_cursor`、`Thread(target=lr.write)`、`map(fn, xs)`、
+     进容器/返回值/装饰器/`getattr` 取名字面量都判红（写能力只许直接调用或进登记表），
+     所以别名派发不再有合法的可绕过形状；
+  3. **新方法名不在写能力名集合**：既不是写原语、也没登记成写能力的新名字，同名红覆盖不到，
+     必须由人复查并登记。
+  入口免签是「入口名 ∩ `_ENTRY_FILES`」双重限定：**新入口必须同时进 `_ENTRY_FILES`**，
+  否则它的 `main` 按产品内部件处理、必须登记。未解析边的逐点豁免键**带行号**
+  `(文件, 函数, callee, 行号)`：重构换行即失效重判，这是刻意设计，不要为了少改几行去放宽。
 - **统一退出码入口只有 8 个**：`daybook.py`、`daybook_append.py`、`daybook_hook.py`、
   `daybook_session_hook.py`、`daybook_record.py`、`orchestrator.py`、`mcp_server.py`、
   `cross_ref.py`；P6 的 8×7 矩阵只对这张清单负责。`agent_*`、`task_volume.py`、

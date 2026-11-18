@@ -1811,6 +1811,111 @@ def _closure_missing(trees, sites, reg, product):
     return missing, cap, edges, unresolved
 
 
+def _capability_names(reg, sites):
+    """写能力函数名（按文件）：ledger/impl 登记 + 原语类别命中。
+    Write-capable function names per file: ledger/impl registrations plus primitive-kind hits."""
+    out = {}
+    for (f, fn), (b, _r) in reg.items():
+        if b in ('ledger', 'impl'):
+            out.setdefault(f, set()).add(fn)
+    for (f, fn), kinds in sites.items():
+        if kinds & _LEDGER_KINDS:
+            out.setdefault(f, set()).add(fn)
+    return out
+
+
+# 「能力当值传」：写能力函数（已登记 ledger/impl 或原语类别命中）与写原语的引用，只允许
+# 出现在两个位置——**直接调用**（Call.func），或**登记表本身**（guard.py 不在被扫文件里）。
+# 其余位置一律红：赋值（`f = X`、`self.f = X`）、作实参（`Thread(target=lr.write)`、
+# `map(_write_cursor, xs)`、回调注册）、作返回值、进容器（列表/字典/元组）、当装饰器、
+# `getattr(obj, 'write')`。理由：这些位置都是「把写能力当值传」，下一种形状不用去想象。
+# errors.run_entry(fn) 不是白名单：它就是「唯一出口」，内部立即 `fn()`，等价直接调用。
+# References to write-capable functions/primitives are allowed only as a direct call or in the
+# registry itself. Assignment, argument, return value, container, decorator, getattr are red:
+# each one passes the capability around as a value. `errors.run_entry(fn)` executes `fn()`
+# immediately (the single boundary), so its first argument counts as a direct call — a rule,
+# not a whitelist.
+_CAP_VALUE_SKIP_CALLS = frozenset({'errors.run_entry', 'run_entry'})
+
+
+def _capability_value_refs(trees, product, reg, sites):
+    """写能力/写原语出现在非直接调用位置 ⇒ (file, fn, line, expr, target)。
+    Write-capable/primitives referenced outside a direct call or the registry."""
+    cap = _capability_names(reg, sites)
+    prim = {t.split('.')[-1] for t in _MUTATOR_CALLS} | set(_MUTATOR_ATTRS)
+    names = set().union(*cap.values()) if cap else set()
+    mod2file = {os.path.splitext(f)[0]: f for f in trees}
+    out = []
+    for f, tree in trees.items():
+        if f not in product:
+            continue
+        al = _write_aliases(tree)
+        parent = {}
+        for n in ast.walk(tree):
+            for c in ast.iter_child_nodes(n):
+                parent[c] = n
+
+        def owner(node):
+            x = parent.get(node)
+            while x is not None:
+                if isinstance(x, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return x.name
+                x = parent.get(x)
+            return '<module>'
+
+        def target_of(node):
+            if isinstance(node, ast.Name):
+                o = al.get(node.id)
+                if o and o[0] == 'from':
+                    mod, _, nm = o[1].partition('.')
+                    tgt = mod2file.get(mod)
+                    if tgt and nm in cap.get(tgt, ()):
+                        return '%s.%s' % (tgt, nm)
+                    return o[1] if nm in prim else None
+                return '%s.%s' % (f, node.id) if node.id in cap.get(f, ()) else None
+            if isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name):
+                    o = al.get(node.value.id)
+                    if o and o[0] == 'mod':
+                        tgt = mod2file.get(o[1].split('.')[0])
+                        if tgt and node.attr in cap.get(tgt, ()):
+                            return '%s.%s' % (tgt, node.attr)
+                if node.attr in names or node.attr in prim:
+                    return ast.unparse(node)
+            return None
+
+        allowed, extras = set(), []
+        for call in [x for x in ast.walk(tree) if isinstance(x, ast.Call)]:
+            allowed.add(id(call.func))
+            t = _resolve_callee(call.func, al)
+            if t in _CAP_VALUE_SKIP_CALLS and call.args:
+                allowed.add(id(call.args[0]))
+            if t.split('.')[-1] == 'getattr' and len(call.args) >= 2 \
+                    and isinstance(call.args[1], ast.Constant) \
+                    and isinstance(call.args[1].value, str) \
+                    and (call.args[1].value in names or call.args[1].value in prim):
+                extras.append({'file': f, 'fn': owner(call), 'line': call.lineno,
+                               'expr': ast.unparse(call)[:60],
+                               'target': 'getattr:' + call.args[1].value})
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Name, ast.Attribute)):
+                continue
+            if not isinstance(node.ctx, ast.Load) or id(node) in allowed:
+                continue
+            tgt = target_of(node)
+            if tgt:
+                out.append({'file': f, 'fn': owner(node), 'line': node.lineno,
+                            'expr': ast.unparse(node)[:60], 'target': tgt})
+        out.extend(extras)
+    uniq, seen = [], set()
+    for r in out:
+        k = (r['file'], r['line'], r['expr'])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(r)
+    return sorted(uniq, key=lambda r: (r['file'], r['line']))
+
+
 def _module_alias_binds(node, al):
     """`o = os` / `f = os.mknod` 这类间接绑定（产品件禁用）。
     Indirect bindings such as `o = os` / `f = os.mknod` (banned in product code)."""
@@ -2138,7 +2243,8 @@ def _case_write_paths(tmp):
     _diff = _closure_diff_text(_cminus, _rminus, product, reg)
     print('[数据] 闭包覆盖 已解析/总边 = %d/%d = %d%%｜可能写缺口 %d｜内建/容器方法面 %d｜%s'
           % (_nedges, _total, _cov, len(_cgap), len(_cunres) - len(_cgap), _diff))
-    _ok('闭包面：产品内部件写能力函数必须登记（入口/测试不签；temp/派发不进闭包）',
+    _ok('闭包面：产品内部件写能力函数必须登记（入口/测试不签；temp/派发不进闭包；'
+        '闭包面为参考项，不参与收口）',
         not _cmiss, '未登记=%s｜闭包覆盖 %d/%d=%d%%｜可能写缺口 %d｜%s'
         % (_cmiss[:8], _nedges, _total, _cov, len(_cgap), _diff))
     _ok('闭包面：未解析边的 callee 与本仓写能力函数同名 ⇒ 红（宁红勿漏）',
@@ -2158,6 +2264,29 @@ def _case_write_paths(tmp):
     _ok('P0 自证：包装「只带 safe 的已登记 helper」的 wrapper ⇒ 写能力面未登记红',
         _self_miss == [('a.py', '_evil_wrap_cursor')],
         'cap=%s miss=%s' % (sorted(_self_cap), _self_miss))
+    # ★ 能力当值传：写能力函数/写原语的引用只允许两种位置——直接调用、登记表本身。
+    _vrefs = _capability_value_refs(trees, product, reg, sites)
+    _ok('AH 写能力/写原语当值传 ⇒ 红（只许直接调用或进登记表）', not _vrefs,
+        '当值传=%s' % [(r['file'], r['fn'], r['line'], r['expr']) for r in _vrefs[:6]])
+    # 反向自证三条（别名赋值 / 当实参 / 进容器）＋一条直接调用必须不红。
+    _v_src = ('def _write_cursor(*a, **k):\n    return _raw(*a, **k)\n'
+              'def alias_assign(*a, **k):\n    f = _write_cursor\n    return f(*a, **k)\n'
+              'def as_arg(*a, **k):\n    return map(_write_cursor, a)\n'
+              'def into_container(*a, **k):\n    return [_write_cursor]\n'
+              'def direct(*a, **k):\n    return _write_cursor(*a, **k)\n')
+    _v_trees = {'a.py': ast.parse(_v_src)}
+    _v_reg = {('a.py', '_write_cursor'): ('ledger', '签过')}
+    _v_sites = {('a.py', '_write_cursor'): {'safe'}}
+    _vr = _capability_value_refs(_v_trees, {'a.py'}, _v_reg, _v_sites)
+    _vr_fns = {r['fn'] for r in _vr}
+    _ok('P0 自证：写能力别名赋值（f = X）⇒ 红', 'alias_assign' in _vr_fns,
+        'fns=%s' % sorted(_vr_fns))
+    _ok('P0 自证：写能力当实参（map(X, xs)）⇒ 红', 'as_arg' in _vr_fns,
+        'fns=%s' % sorted(_vr_fns))
+    _ok('P0 自证：写能力进容器（[X]）⇒ 红', 'into_container' in _vr_fns,
+        'fns=%s' % sorted(_vr_fns))
+    _ok('P0 自证：写能力直接调用（X()）不红', 'direct' not in _vr_fns,
+        'fns=%s' % sorted(_vr_fns))
     # 类别表不替具体调用点背书：产品件每一处 subprocess 都必须出现在登记表里。
     # The category table never vouches for a call site: every product subprocess must be listed.
     offsite = sorted((f, fn) for (f, fn), kinds in sites.items()
@@ -5865,6 +5994,75 @@ def _case_error_table(tmp):
         probe('cross_ref.py', 'CONFIG',
               [os.path.join(here, 'cross_ref.py')], d)
 
+        # CONFIG 第二支：conf 存在但整份不可解析。8 个入口各实跑一格（只报告读数；
+        # 断言各自码轴的预期：conf 绑定 ⇒ 2，未绑定 ⇒ 各自设计码 + 理由）。
+        # Second CONFIG shape: conf exists but is wholly unparsable. One real run per entry;
+        # each asserts its own axis (conf-bound ⇒ 2; not bound ⇒ its designed code + reason).
+        d_bc = tempfile.mkdtemp(prefix='p6bc_', dir=tmp)
+        try:
+            _prepare(d_bc)
+            io.open(os.path.join(d_bc, 'daybook.conf'), 'w', encoding='utf-8').write('garbage\n')
+            os.makedirs(os.path.join(d_bc, '对话原件'))
+            io.open(os.path.join(d_bc, '对话原件', 'a.txt'), 'w',
+                    encoding='utf-8').write('关键词 命中\n')
+            io.open(os.path.join(d_bc, '对话卷.txt'), 'w', encoding='utf-8').write(
+                '[2026-11-13 10:00:00] [测试] [第001条] [皮特] 对话原件/a.txt\nSHA256: x\n')
+            io.open(os.path.join(d_bc, 'hook_a_关键词.txt'), 'w',
+                    encoding='utf-8').write('[协作卷] [记录] 关键词\n')
+            sess_bc = os.path.join(d_bc, 'sess')
+            os.makedirs(os.path.join(sess_bc, 'events'))
+            for nm in sorted(os.listdir(here)):
+                if nm.endswith('.py'):
+                    shutil.copy2(os.path.join(here, nm), os.path.join(sess_bc, nm))
+            io.open(os.path.join(sess_bc, 'daybook.conf'), 'w',
+                    encoding='utf-8').write('garbage\n')
+            bc_rows = []
+
+            def badconf(entry, argv, cwd, want, why, input=None):
+                ap = argv[0]
+                full = ap if os.path.isabs(ap) else os.path.join(cwd, ap)
+                if os.path.basename(ap) in _ENTRIES and not os.path.exists(full):
+                    na(entry, 'CONFIG', '当前盒无 %s' % os.path.basename(ap))
+                    return
+                r = subprocess.run([py, '-B'] + argv, cwd=cwd, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, universal_newlines=True,
+                                   input=input)
+                out = r.stdout + r.stderr
+                bc_rows.append((entry, r.returncode))
+                _ok('P6 %s × CONFIG(坏 conf 实跑) ⇒ rc=%d（%s）' % (entry, want, why),
+                    r.returncode == want and 'Traceback' not in out,
+                    'rc=%d out=%s' % (r.returncode, out[-160:].replace('\n', ' ')))
+
+            badconf('daybook.py', ['daybook.py', 'index'], d_bc, 2, 'conf 绑定：整份不可解析')
+            badconf('daybook_append.py',
+                    [os.path.join(here, 'daybook_append.py'),
+                     '账卷.txt', '测试', '标题', '皮特', '正文'],
+                    d_bc, 0, '不与 conf 绑定：按显式路径写')
+            badconf('daybook_hook.py',
+                    [os.path.join(here, 'daybook_hook.py'), '--home', d_bc],
+                    d_bc, 0, '不读 conf：卷由 --home 显式定位')
+            badconf('daybook_session_hook.py',
+                    [os.path.join(sess_bc, 'daybook_session_hook.py'), 'watch', '--once',
+                     '--events-root', os.path.join(sess_bc, 'events'),
+                     '--state', os.path.join(sess_bc, 'st.json'), '--workspace', sess_bc],
+                    sess_bc, 0, '不读 conf：根固定为脚本目录')
+            badconf('daybook_record.py',
+                    [os.path.join(here, 'daybook_record.py'), '--home', d_bc,
+                     '--role', '用户', '--no-index'],
+                    d_bc, 2, 'conf 绑定：整份不可解析', input='正文一行\n')
+            badconf('orchestrator.py',
+                    [os.path.join(here, 'orchestrator.py'), 'alarm'],
+                    d_bc, 2, 'conf 绑定：体检遇到坏 conf 归 2，不是 6')
+            badconf('mcp_server.py', [os.path.join(here, 'mcp_server.py')], d_bc, 2,
+                    'conf 绑定：整份不可解析')
+            badconf('cross_ref.py',
+                    [os.path.join(here, 'cross_ref.py'), 'resolve', '协作卷', '1'],
+                    d_bc, 0, '不读 conf：按卷名解析')
+            print('    [读数] CONFIG 坏 conf 八格：' + '；'.join(
+                '%s=%d' % (e, rc) for e, rc in bc_rows))
+        finally:
+            shutil.rmtree(d_bc, ignore_errors=True)
+
         # EVIDENCE：daybook（无封存）/ hook（缺对话卷）/ session（坏游标）同为 5
         d_ev = tempfile.mkdtemp(prefix='p6ev_', dir=tmp)
         try:
@@ -6572,6 +6770,11 @@ def _audit_closure():
     print('  未解析边同名写能力函数（红，除非已豁免）共 %d 条' % len(hits))
     for f, fn, callee, line in hits:
         print('    %s:%d %s() callee=%s' % (f, line, fn, callee))
+    vrefs = _capability_value_refs(trees, product, reg, sites)
+    print('  写能力/写原语当值传（只许直接调用或登记表）共 %d 条' % len(vrefs))
+    for r in vrefs:
+        print('    %s:%d %s()  %s → %s'
+              % (r['file'], r['line'], r['fn'], r['expr'], r['target']))
     print('  已签豁免 %d 条' % len(_CLOSURE_EXEMPT))
     for (f, fn, callee, line), why in sorted(_CLOSURE_EXEMPT.items()):
         print('    豁免 %s:%d %s.%s  %s' % (f, line, fn, callee, why))

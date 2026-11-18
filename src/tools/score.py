@@ -66,6 +66,26 @@ def _coverage_lines():
     return lines
 
 
+def _closure_opening():
+    """闭包面同框读数：直接复用 guard 的实现，不另写第二套口径。
+    Closure reading computed by guard itself, so the board cannot drift from the gate."""
+    path = os.path.join(SRC, 'tests', 'scenarios')
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    import guard
+    d = os.path.dirname(os.path.abspath(guard.SRC_BIN))
+    _files, sites, trees, product = guard._scan_write_sites(d)
+    reg = {(f, fn): (b, r) for f, fn, b, r in guard.WRITE_PATHS}
+    cap, edges, unresolved, missing, hits, gap, _cm, _rm = guard._closure_parts(
+        trees, sites, product, reg)
+    nedges = sum(len(v) for v in edges.values())
+    total = nedges + len(unresolved)
+    cov = (100 * nedges // total) if total else 100
+    return ('闭包覆盖 %d/%d=%d%%｜可能写缺口 %d｜未登记 %d｜同名红 %d'
+            '（闭包面为参考项，不参与收口）'
+            % (nedges, total, cov, len(gap), len(missing), len(hits)))
+
+
 def _run_props(tree, only=''):
     """在临时 src 树里跑属性；返回 (rc, {P#: 'PASS'|'FAIL'}, stdout)。"""
     cmd = [sys.executable, '-B',
@@ -200,6 +220,7 @@ def main(argv):
     total = len(ids)
     print('\n变异 %d / 杀死 %d / 存活 %d / 死变异 %d'
           % (total, killed, survivors, dead))
+    print(_closure_opening())
     for row in rows:
         print('  ' + row)
     ok = (survivors == 0 and dead == 0 and killed == total)

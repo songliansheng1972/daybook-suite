@@ -42,6 +42,41 @@
 > **Other numbers are unchanged**; only the source is unified into one table. Any wrapper that
 > hard-codes the old 1/3 meanings must be updated as above.
 
+### 复签不签（终）：坏 conf 同码 2、P6 坏 conf 八格、裁决表落字（2026-11-18）
+
+- **P0（本轮唯一产品改动）`orchestrator.py` 体检吞 `ConfigError`**：`_ledger_alarms` 的
+  `except (OSError, ValueError, RuntimeError)` 不含 `ConfigError`（它继承 `DaybookError`，
+  不是 `ValueError`），坏 conf 穿出后被 `alarm` 命令的 `except Exception` 包成
+  `RuntimeFailure` → 6。现在两处都让 `errors.ConfigError` 原样穿透，顶层按 kind 归 2。
+  实测坏 conf 下 `daybook.py index` / `mcp_server.py` / `orchestrator.py alarm` 三入口
+  rc 同为 2、文案同句（「整份无法解析…坏 conf 不等于空账本」）。
+- **P1 P6 补「conf 存在但整份不可解析」八格实跑**：conf 绑定入口（daybook / record /
+  orchestrator / mcp_server）断言 2；不绑定入口按各自码轴断言并写明理由（append 0：
+  不与 conf 绑定；hook 0：卷由 `--home` 显式定位；session 0：根固定为脚本目录；
+  cross_ref 0：按卷名解析）。原有「无 conf/无根」格保留。
+- **P2 裁决表**（`errors.py` 文档）：alarm 的码轴是**体检结论**（0 干净 / 3 有硬警；只有
+  体检无法执行才退 2/6）；「卷配成目录」index/append 2 与 alarm 3 是两种码轴，不是同故障
+  异码；`daybook_append` 不读 conf（坏 conf 下 0 是设计）；`daybook_multidx` 对已改写卷
+  rc=0 重建派生视图是**明示豁免**（append-only 是账本卷级不变量，不覆盖派生视图）。
+- **P2 闭包为参考项**：闭包 PASS 行与 `tools/score.py` 汇总行都明写「闭包面为参考项，
+  不参与收口」；43% 不设阈值——没有正确阈值，硬编一个就是假精确。
+- **读数**：源树 0 红 / 571 项；`daybook/` 盒 0 红 / 447 项；P1–P10 全绿；变异 15/15；
+  三包 `--verify` 全同；mcp 23/23；orch 全绿。
+
+### 复签不签（续）：能力当值传一律红、记分板印覆盖率（2026-11-18）
+
+- **P0 别名派发**：写能力函数（登记 `ledger`/`impl` 或原语类别命中）与写原语的引用只允许
+  两个位置——**直接调用**、**登记表本身**。赋值（`f = X`、`self.f = X`）、作实参
+  （`Thread(target=lr.write)`、`map(_write_cursor, xs)`、回调注册）、作返回值、进容器
+  （列表/字典/元组）、当装饰器、`getattr(obj,'write')` 全部判红。反向自证三条
+  （别名赋值 / 当实参 / 进容器）必须红，直接调用必须不红。`errors.run_entry(fn)` 按规则
+  处理（内部立即 `fn()`，等价直接调用），不是白名单。
+- **P1 记分板**：`tools/score.py` 汇总行紧跟 `闭包覆盖 927/2154=43%｜可能写缺口 305｜
+  未登记 0｜同名红 0`，与 guard 共用 `_closure_parts`，不写第二套口径。
+- **P2 README**：点名 43% 残余三类（属性/实例方法派发、第一方函数别名、新方法名不在写能力
+  名集合）；写明新入口必须同时进 `_ENTRY_FILES`；豁免键含行号、重构即红是刻意设计。
+- **读数**：源树 0 红 / 571 项；`daybook/` 盒 0 红 / 447 项；P1–P10 全绿；变异 15/15。
+
 ### 复签不签：闭包种子＝登记本身、差额报集合差、免签双限定（2026-11-18）
 
 - **P0 闭包种子口径**：源头改为「所有签为 `ledger`/`impl` 的函数」＋原语类别命中，不再按 kind

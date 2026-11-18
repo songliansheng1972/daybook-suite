@@ -884,6 +884,11 @@ class Hub:
         try:
             conf = daybook.load_conf(self.conf_path)
             daybook.build(conf, self.root_handle, dry=True)
+        except errors.ConfigError:
+            # 坏 conf 是配置错（2），必须原样穿透给顶层收口；不能被下面的体检失败包成 6。
+            # A bad conf is a config error (2) and must pass through to the top-level boundary;
+            # it must not be wrapped into a runtime failure (6) by the check below.
+            raise
         except (OSError, ValueError, RuntimeError) as exc:
             return [Alarm('ledger_unreadable', True, '账本体检无法完成：%s' % exc)]
         out = []
@@ -1089,6 +1094,10 @@ def _main(argv=None):
     elif args.cmd == 'alarm':
         try:
             issues = hub.alarm()
+        except errors.ConfigError:
+            # 体检遇到坏 conf：同样按配置错 2 原样穿透，不归「体检执行失败 6」。
+            # A bad conf inside the check is likewise a config error (2), not execution failure 6.
+            raise
         except Exception as exc:  # 执行异常（6）与硬警（3）必须分开
             raise errors.RuntimeFailure('体检执行失败：%s: %s'
                                         % (type(exc).__name__, exc))
