@@ -11,7 +11,9 @@
 >    `daybook_list`、`daybook_append`、`cross_ref_verify`。原 `daybook_unread` /
 >    `daybook_mark_read` / `daybook_heartbeat` / `daybook_alive` 移到司南 CLI；
 >    `daybook_index` / `cross_ref_make` 归维护面（`daybook.py index`、`cross_ref.py make`）。
->    **能力没删，只换出口**：`orchestrator.py unread|mark_read|heartbeat|alive`。
+>    **MCP 面净减 4 项**：这四项不再经 MCP 暴露；替代品是
+>    `orchestrator.py unread|mark_read|heartbeat|alive`。**纯 MCP 客户端会失去这四项**
+>    （必须走 CLI 或外壳才能调用）。
 > 2. **随包签名代理**：`setup/daybook-setup install` 一条命令完成运行副本、密钥、代理与三家
 >    客户端配置；密钥本机生成、只落 `.daybook_keys/` 600，用户不需要手算 HMAC。
 > 3. **写权限口径**：本机同 uid 可信 + 本机签名代理留痕；不是「持有密钥才能写」，

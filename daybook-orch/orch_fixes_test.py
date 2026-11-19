@@ -696,13 +696,41 @@ def test_author_head_parse():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_legacy_minute_heartbeat():
+    """4.0.6 分钟级心跳 [YYYY-MM-DD HH:MM] 必须继续可解析；秒级格式不回归。
+    Minute-precision heartbeats from 4.0.6 must still parse; second-precision must not regress."""
+    print('== 14. alive：兼容 4.0.6 分钟级心跳（%H:%M）==')
+    from agent_heartbeat import Heartbeat
+    root = _fresh_root('hbmin')
+    try:
+        p = os.path.join(root, '心跳卷.txt')
+        sec = '2026-11-19 10:00:00'
+        minute = '2026-11-19 10:05'
+        _append_fixture(p, '[%s] [心跳] [ag-sec] alive\n' % sec, root)
+        _append_fixture(p, '[%s] [心跳] [ag-min] alive\n' % minute, root)
+        _append_fixture(p, '[%s] [心跳] [ag-both] alive\n' % sec, root)
+        _append_fixture(p, '[%s] [心跳] [ag-both] alive\n' % minute, root)
+        hb = Heartbeat(p, period=10, dead_after=3, root=root, materialize=False)
+        t_sec = time.mktime(time.strptime(sec, '%Y-%m-%d %H:%M:%S'))
+        t_min = time.mktime(time.strptime(minute, '%Y-%m-%d %H:%M'))
+        got_min = hb._last_beat('ag-min')
+        check('分钟级心跳解析非 None', got_min is not None, repr(got_min))
+        check('分钟级心跳时间正确（秒按 0）', got_min == t_min, '%r == %r' % (got_min, t_min))
+        check('秒级心跳仍解析正确', hb._last_beat('ag-sec') == t_sec)
+        check('同 agent 两种格式共存 ⇒ 取较晚的分钟级',
+              hb._last_beat('ag-both') == t_min, '%r == %r' % (hb._last_beat('ag-both'), t_min))
+        return all(_results)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 TESTS = {1: test_pull_reply, 2: test_identity_signature,
          3: test_root_resolution, 4: test_read_locking,
          5: test_route, 6: test_digest_visibility_and_limit,
          7: test_alarm_structure_and_exit_codes, 8: test_cli_limit_semantics,
          9: test_cross_process_lock, 10: test_verify_requires_baseline,
          11: test_sock_and_dead_code, 12: test_single_pass_reads,
-         13: test_author_head_parse}
+         13: test_author_head_parse, 14: test_legacy_minute_heartbeat}
 
 
 def main(argv):

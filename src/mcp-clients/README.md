@@ -81,7 +81,8 @@ printf '%s\n' \
 
 ## 5. 调度语义的出口（4.0.7 移出 MCP）
 
-收件与在场语义没有删，移到司南 CLI：
+4.0.7 起这四项不再经 MCP 暴露（**MCP 面净减 4 项**）：**纯 MCP 客户端会失去**
+`unread` / `mark_read` / `heartbeat` / `alive`；替代品是司南 CLI：
 
 ```sh
 python3 daybook-orch/orchestrator.py --home /path/to/ledger unread  <agent_id> <卷>

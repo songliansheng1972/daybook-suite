@@ -2,13 +2,13 @@
   "mcpServers": {
     "daybook": {
       "type": "stdio",
-      "command": "/Users/YOU/.daybook-mailroom/signer/daybook-signer",
+      "command": "~/.daybook-mailroom/signer/daybook-signer",
       "args": ["deepseek-harness"],
       "env": {
-        "DAYBOOK_BASE": "/Users/YOU/.daybook-mailroom",
-        "DAYBOOK_ROOT": "/Users/YOU/.daybook-mailroom/ledger",
-        "DAYBOOK_SERVER": "/Users/YOU/.daybook-mailroom/runtime/daybook-suite/daybook-mcp/mcp_server.py",
-        "DAYBOOK_AUDIT_BASE": "/Users/YOU/.daybook-mailroom"
+        "DAYBOOK_BASE": "~/.daybook-mailroom",
+        "DAYBOOK_ROOT": "~/.daybook-mailroom/ledger",
+        "DAYBOOK_SERVER": "~/.daybook-mailroom/runtime/daybook-suite/daybook-mcp/mcp_server.py",
+        "DAYBOOK_AUDIT_BASE": "~/.daybook-mailroom"
       }
     }
   }

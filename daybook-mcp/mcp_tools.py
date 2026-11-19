@@ -622,7 +622,7 @@ TOOLS = [
     },
     {
         'name': 'daybook_append',
-        'description': '向卷追加一条日志·append-only·原子写·作者 ID 红线强制：author 必须等于已注册的 agent_id·并附 signature 验签。to 字段为收件人 ID 列表（逗号分隔）·不填即广播',
+        'description': '向卷追加一条日志·append-only·原子写·作者 ID 红线强制：author 必须等于已注册的 agent_id·并附 signature 验签。签名三件（agent_id/signature/ts）由本机签名代理自动填入，客户端可省略；绕过代理直连的未签名调用会被拒绝。to 字段为收件人 ID 列表（逗号分隔）·不填即广播',
         'inputSchema': {
             'type': 'object',
             'properties': {
@@ -632,10 +632,10 @@ TOOLS = [
                 'author': {'type': 'string', 'description': '作者 ID·必须等于已注册的 agent_id'},
                 'content': {'type': 'string', 'description': '正文'},
                 'to': {'type': 'string', 'description': '收件人 ID·逗号分隔多收件人·不填即广播（F1 收件人寻址）'},
-                'agent_id': {'type': 'string', 'description': '必填·G3 注册的 agent_id'},
+                'agent_id': {'type': 'string', 'description': '由本机签名代理填入，客户端可省略（直连时必须提供注册 agent_id）'},
                 'signature': {'type': 'string',
-                              'description': '必填·对 "append|v2|volume=<卷>|tag=<主>|subtag=<子或_>|to=<收件人>|ts=<时间戳>|content=<正文>" 的 HMAC-SHA256 hex 签名'},
-                'ts': {'type': 'integer', 'description': '必填·Unix 时间戳·绑定签名防重放（服务端校验 ±60s 窗口）'},
+                              'description': '由本机签名代理填入，客户端可省略（代理按 HMAC-SHA256 生成，无需手算）'},
+                'ts': {'type': 'integer', 'description': '由本机签名代理填入，客户端可省略（Unix 时间戳，服务端校验 ±60s 窗口）'},
             },
             'required': ['volume', 'tag', 'author', 'content', 'agent_id', 'signature', 'ts'],
         },

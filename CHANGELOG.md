@@ -15,8 +15,8 @@
    `daybook_list`、`daybook_append`、`cross_ref_verify`。原 `daybook_unread` /
    `daybook_mark_read` / `daybook_heartbeat` / `daybook_alive` 移出 MCP；
    `daybook_index` / `cross_ref_make` 归维护面（`daybook.py index`、`cross_ref.py make`）。
-   移出不是删能力：司南 CLI 新增 `unread` / `mark_read` / `heartbeat` / `alive`，
-   游标文件名与 4.0.6 相同。
+   **MCP 面净减 4 项**：替代品是司南 CLI 的 `unread` / `mark_read` / `heartbeat` /
+   `alive`，游标文件名与 4.0.6 相同；**纯 MCP 客户端会失去这四项**（必须走 CLI 或外壳）。
 2. **signer 与安装器随包**：发行包新增 `signer/`（`daybook-signer`、`proxy.py`、
    `verify_audit.py`、`README.md`）与 `setup/`（`daybook-setup`、可双击
    `Daybook Setup.command`、`observe_407.py`）。`daybook-setup install` 一条命令完成
@@ -53,6 +53,34 @@ online / 超时 1s 后 offline（均报「超时 2 秒」）结论一致；`cros
 `sys.dont_write_bytecode=True`；`pack.py --verify` 开头预检包内
 `__pycache__`/`.pyc`/`.pyo`，命中即 `RED 包内字节码缓存：N 件` 并退 **4**，
 不再等到逐件比对 rc=3 再人肉清理。实测：植入 2 件残留 ⇒ rc=4；清理后 ⇒ rc=0。
+构建步骤也已前移：`pack.py` 拷贝完成后立刻 `scan_bytecode()`，不依赖「先清证据再 verify」。
+
+**终裁前返修（刺客 P1/P2、强森 P1/P1/P2/P2）**
+
+1. **path_leak 全量 0 命中**：返修前全量 rc=1、20 处命中（`mcp-clients/*.json` 四个模板的
+   `/Users/YOU`）。模板绝对路径改为 `~` 形式，`NEEDLE='/Users/'` 未动、未加任何豁免。
+   返修后 src + 三包 = 269 个文本文件、命中 0、FAIL 目录 0，四树各 rc=0。
+2. **alive 恢复分钟级心跳回退**：`agent_heartbeat._last_beats` 在秒级 `%Y-%m-%d %H:%M:%S`
+   失败后回退 `%Y-%m-%d %H:%M`（秒按 0），4.0.6 心跳卷继续可认。夹具（orch_fixes_test 14）
+   4/4 PASS：分钟级非 None、时间正确、秒级不回归、同 agent 两格式取较晚。
+3. **密钥「本机生成」自证**：`observe_407` 新增 D 点：两个隔离 BASE 各跑一次 install，
+   rc=[0,0]、各 3 把密钥、两两指纹零交集 `shared=0`、形状 6/6 为 600+64 字符。
+   固定 key 复制进来会立刻同指纹判红，不再只证「文件存在 + 600」。
+4. **发布措辞改实**：`README.mcp.md`、`mcp-clients/README.md`、本 CHANGELOG 明写
+   **MCP 面净减 4 项**（`unread`/`mark_read`/`heartbeat`/`alive`），替代品是
+   `orchestrator.py` CLI 子命令，**纯 MCP 客户端会失去这四项**；不写「调度能力无损」。
+5. **append schema 注记**：`agent_id` / `signature` / `ts` 三个字段均注明
+   「由本机签名代理填入，客户端可省略」，不再让模型以为要手算 HMAC。
+6. **字节码闸前移**：构建入口自身零字节码，构建完成后立即扫描盒内缓存；变异植入
+   2 件 ⇒ 构建 rc=4（不是等 verify）。
+
+**返修自曝红（未点名也报）**：第一次 source guard rc=1（新夹具的 `Heartbeat` 构造被登记为
+写能力、测试函数未登记），补登记后 rc=0；第一次 `pack --verify` rc=3（改完 `guard.py`
+未重打包，盒内 `ledger_guard_test.py` 仍是旧字节），重打包后 rc=0。
+
+**返修后全套读数**：p0 13/13、mcp_test 23/23、orch_fixes 14/14、源树 guard 0 红（变异 9/9）、
+盒内 ledger guard 0 红（变异 8/8）、`pack --verify` 0、`pack_pypi --verify` 0、
+observe A 3/3 + B 5/5 + C 4/4 + D 4/4、path_leak 四树 269 文件 0 命中。
 
 ## v4.0.6 · 2026-11-18
 

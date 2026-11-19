@@ -549,6 +549,15 @@ def main():
         if r:
             rc = r
     if not rc and not args.dry:
+        # 构建后立刻扫字节码：不把「清掉证据再 verify」当成唯一修复路径。
+        # Scan right after building: clearing evidence before verify must not be the only fix path.
+        cache_bad = scan_bytecode(out_root, targets)
+        if cache_bad:
+            print('RED 构建产物内含字节码缓存：%d 件（构建入口已设零字节码，仍出现即判红）'
+                  % len(cache_bad), file=sys.stderr)
+            for box, rel in cache_bad:
+                print('  ✗ %s/%s' % (box, rel), file=sys.stderr)
+            return 4
         if args.pkg == 'all':
             print('三包已生成于：%s' % out_root)
             print('自验：')

@@ -158,6 +158,7 @@ WRITE_PATHS = (
     ('orch_fixes_test.py', 'test_alarm_structure_and_exit_codes', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cross_process_lock', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_legacy_minute_heartbeat', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试：目标由 tempfile 生成'),

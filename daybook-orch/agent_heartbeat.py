@@ -98,7 +98,13 @@ class Heartbeat:
             try:
                 ts = time.mktime(time.strptime(parts[0], '%Y-%m-%d %H:%M:%S'))
             except ValueError:
-                continue
+                # 4.0.6 及更早的分钟级心跳 [YYYY-MM-DD HH:MM]（无秒）必须继续可认，秒按 0。
+                # Heartbeats written by 4.0.6 and earlier use minute precision [YYYY-MM-DD HH:MM];
+                # keep parsing them (seconds = 0) instead of silently treating the agent as dead.
+                try:
+                    ts = time.mktime(time.strptime(parts[0], '%Y-%m-%d %H:%M'))
+                except ValueError:
+                    continue
             if agent_id not in last or ts > last[agent_id]:
                 last[agent_id] = ts
         return last

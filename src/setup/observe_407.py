@@ -10,6 +10,8 @@
            仍 rc=0 且新增 1 行 —— 调度层挂了，存储不受牵连，且不出现「假 alive」。
   C 璇玑连不上：mcp_server 坏 conf 下 rc=2、stdout 0 字节、无 daybook://；健康对照 tools=4
            且有 daybook:// —— 不是「进程在、工具全报错」。
+  D 密钥本机生成：两个隔离 BASE 各跑一次 install，各得 3 把密钥；两两指纹零交集，
+           每把 600 + 64 字符 —— 固定 key 复制进来会立刻同指纹判红。
 
 码表（rc + 首行文案）：
   0  成功
@@ -18,7 +20,7 @@
   6  ★ 运行失败（rc=6）：体检执行失败（内部错误）
 
 用法：python3 observe_407.py [--suite DIR]
-退出码：0=三观察点全绿；1=有红项
+退出码：0=观察点全绿；1=有红项
 """
 import argparse
 import hashlib
@@ -78,11 +80,14 @@ def entry_paths(suite):
                        os.path.join(suite, 'daybook', 'daybook.conf'))
     sample = _first(os.path.join(suite, 'sample'),
                     os.path.join(suite, 'daybook', 'sample'))
+    setup = _first_file(os.path.join(suite, 'setup', 'daybook-setup'),
+                        os.path.join(suite, 'daybook-mcp', 'setup', 'daybook-setup'))
     if not (daybook and mcp and orch and launcher and
             os.path.isfile(launcher)):
         return {}
     return {'daybook': daybook, 'mcp': mcp, 'orch': orch,
-            'launcher': launcher, 'conf': dist_conf, 'sample': sample}
+            'launcher': launcher, 'conf': dist_conf, 'sample': sample,
+            'setup': setup}
 
 
 def snapshot(root):
@@ -158,6 +163,26 @@ def mcp_probe(P, root, timeout=20):
 def check(name, ok, detail):
     print('  %-4s %-28s %s' % ('GREEN' if ok else 'RED', name, detail))
     return ok
+
+
+def key_snapshot(base):
+    """读一个 BASE 的密钥指纹：{agent_id: (sha256, mode, 长度)}。只留指纹，不打印明文。
+    Read key fingerprints for one BASE: {agent_id: (sha256, mode, length)}. Never print the secret."""
+    d = os.path.join(base, 'ledger', '.daybook_keys')
+    out = {}
+    if not os.path.isdir(d):
+        return out
+    for name in sorted(os.listdir(d)):
+        if not name.endswith('.key'):
+            continue
+        p = os.path.join(d, name)
+        try:
+            raw = open(p, encoding='utf-8').read().strip()
+            mode = os.stat(p).st_mode & 0o777
+        except OSError:
+            continue
+        out[name[:-4]] = (hashlib.sha256(raw.encode()).hexdigest(), mode, len(raw))
+    return out
 
 
 def main():
@@ -258,7 +283,57 @@ def main():
                                                    'daybook://' in ctrl_out))
         print('  判据：坏 conf 非 2 / stdout 非空 / 出现 daybook:// / 健康对照非 4 工具 ⇒ 红。')
 
-        print('\n== 总结：%s ==' % ('三观察点全绿' if ok_all else '存在红项'))
+        # ── D 密钥本机生成：同一台机器两次独立安装（隔离 BASE）密钥必须不同 ──
+        print('\n[D] 密钥本机生成（两次独立安装必须不同）')
+        setup = P.get('setup')
+        if not setup:
+            ok_all &= check('D.0 安装器在场', False, 'setup/daybook-setup 缺失')
+        else:
+            src_root = suite if os.path.isdir(os.path.join(suite, 'daybook-mcp')) \
+                else os.path.dirname(suite)
+            bases = [os.path.join(tmp, 'kbase1'), os.path.join(tmp, 'kbase2')]
+            cfgs = []
+            for i in (1, 2):
+                cfgs.append({
+                    'DAYBOOK_TRAE_CFG': os.path.join(tmp, 'ktrae%d.json' % i),
+                    'DAYBOOK_WB_CFG': os.path.join(tmp, 'kwb%d.json' % i),
+                    'DAYBOOK_DSH_CFG': os.path.join(tmp, 'kdsh%d.yml' % i),
+                    'DAYBOOK_PLIST': os.path.join(tmp, 'kp%d.plist' % i),
+                })
+            inst_rcs, snaps = [], []
+            try:
+                for i in (0, 1):
+                    r = run([setup, '--base', bases[i], '--source', src_root, 'install'],
+                            cwd=os.path.dirname(setup), env=cfgs[i], timeout=180)
+                    inst_rcs.append(r[0])
+                    snaps.append(key_snapshot(bases[i]))
+                fps = [set(v[0] for v in s.values()) for s in snaps]
+                all_keys = [v for s in snaps for v in s.values()]
+                # 形状按「600 + 长度 64」判；生成器保证 hex，不在此重复解码
+                shapes_ok = len(all_keys) == 6 and all(m == 0o600 and n == 64
+                                                       for _f, m, n in all_keys)
+                print('  两次 install rc：%s；密钥数：%d / %d'
+                      % (inst_rcs, len(snaps[0]), len(snaps[1])))
+                print('  指纹前缀：A=%s B=%s'
+                      % ([v[0][:8] for v in snaps[0].values()],
+                         [v[0][:8] for v in snaps[1].values()]))
+                ok_all &= check('D.1 两次独立安装均成功', inst_rcs == [0, 0],
+                                'rc=%s' % inst_rcs)
+                ok_all &= check('D.2 每侧 3 把密钥（身份 3）',
+                                len(snaps[0]) == 3 and len(snaps[1]) == 3,
+                                '%d / %d' % (len(snaps[0]), len(snaps[1])))
+                ok_all &= check('D.3 两 BASE 密钥指纹零交集', not (fps[0] & fps[1]),
+                                'shared=%d' % len(fps[0] & fps[1]))
+                ok_all &= check('D.4 密钥形状 600 + 64 字符', shapes_ok,
+                                '%d/6' % sum(1 for _f, m, n in all_keys
+                                             if m == 0o600 and n == 64))
+            finally:
+                for i in (0, 1):
+                    run([setup, '--base', bases[i], 'uninstall'],
+                        cwd=os.path.dirname(setup), env=cfgs[i], timeout=120)
+            print('  判据：任一 install 非 0 / 每侧非 3 把 / 指纹有交集 / 形状不合 ⇒ 红。')
+
+        print('\n== 总结：%s ==' % ('三观察点 + 密钥自证全绿' if ok_all else '存在红项'))
         return 0 if ok_all else 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
