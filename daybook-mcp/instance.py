@@ -15,6 +15,7 @@ can eat each other's cursors; doctor / alive warn when one agent_id shows two ac
 Boundary: the uid is copied with the ledger; the runtime token appends a short hash of the
 BASE absolute path, so two copies at different paths get different tokens and the warning fires.
 """
+import functools
 import hashlib
 import json
 import os
@@ -26,11 +27,14 @@ FILE = '实例.json'
 TOKEN_RE = r'\[实例=([^\]]+)\]'
 
 
+@functools.lru_cache(maxsize=1)
 def _machine_id():
     """稳定机器标识：优先环境覆盖，其次 /etc/machine-id、~/.daybook-machine-id、
     IOPlatformUUID，最后网卡节点。锚都在 BASE 之外，且不用主机名——改名会漂。
+    import 时不读锚；首次 host_tag() 才触发，同进程内缓存一次。
     Stable machine id: env override, then /etc/machine-id, ~/.daybook-machine-id,
-    IOPlatformUUID, then the NIC node. All anchors live outside BASE; never the hostname."""
+    IOPlatformUUID, then the NIC node. Anchors live outside BASE; never the hostname.
+    No anchor read at import time: the first host_tag() call reads it, cached per process."""
     env = os.environ.get('DAYBOOK_HOST_ID')
     if env:
         return env
@@ -63,12 +67,10 @@ def _machine_id():
     return mid
 
 
-_MACHINE_ID = _machine_id()
-
-
 def host_tag():
-    """机器维度：稳定机器标识的 sha1 前 8 位。Machine dimension: first 8 hex of sha1(machine id)."""
-    mid = os.environ.get('DAYBOOK_HOST_ID') or _MACHINE_ID
+    """机器维度：稳定机器标识的 sha1 前 8 位；首次调用才读锚并缓存。
+    Machine dimension: first 8 hex of sha1(machine id); the anchor is read on first call only."""
+    mid = os.environ.get('DAYBOOK_HOST_ID') or _machine_id()
     return hashlib.sha1(mid.encode('utf-8')).hexdigest()[:8]
 
 

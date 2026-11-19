@@ -29,6 +29,11 @@ import threading
 import time
 import uuid
 
+# 安装器不写字节码：避免在开发树/运行副本里留下 __pycache__。
+# The installer writes no bytecode, keeping the dev tree and runtime copy clean.
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
+
 SETUP_DIR = os.path.dirname(os.path.abspath(__file__))
 PKG_ROOT = os.path.dirname(SETUP_DIR)                 # daybook-mcp/
 SUITE_ROOT = os.path.dirname(PKG_ROOT)                # 三包同级根
@@ -214,11 +219,15 @@ def ensure_instance():
     rec = {'实例': uuid.uuid4().hex,
            '生成': time.strftime('%Y-%m-%d %H:%M:%S'),
            'BASE': os.path.abspath(BASE)}
-    os.makedirs(LEDGER, exist_ok=True)
-    tmp = p + '.tmp-%d' % os.getpid()
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(rec, f, ensure_ascii=False)
-    os.replace(tmp, p)
+    # 走 safeio 既有写口（临时文件 + 原子替换）；安装中断只会留旧完整文件或没有文件。
+    # Use safeio's existing write path (temp file + atomic replace); an interrupted install
+    # leaves either the old complete file or no file — never a half-written one.
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from safeio import locked, WriteMode
+    with locked(LEDGER) as lr:
+        lr.write(lr.root.rel_of(p, 'setup.ensure_instance'),
+                 json.dumps(rec, ensure_ascii=False),
+                 mode=WriteMode.REPLACE, perm=0o644)
     return rec['实例']
 
 

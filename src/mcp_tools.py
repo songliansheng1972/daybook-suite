@@ -637,7 +637,7 @@ TOOLS = [
                               'description': '由本机签名代理自动填入，客户端无需计算；不经代理直连时须自行提供（算法见 README）'},
                 'ts': {'type': 'integer', 'description': '由本机签名代理自动填入；不经代理直连时须自行提供（Unix 秒，服务端校验 ±60s）'},
             },
-            'required': ['volume', 'tag', 'author', 'content', 'agent_id', 'signature', 'ts'],
+            'required': ['volume', 'tag', 'author', 'content'],
         },
     },
     {
@@ -739,6 +739,12 @@ def call_tool(name, args, agent_id=None, signature=None):
             to = args.get('to')  # F1 收件人寻址·可空
                                  # F1 recipient addressing · may be empty
             ts = int(args.get('ts', 0))
+            if not agent_id or not signature:
+                # required 已松绑：经代理只传三字段即可；直连未签名时给一句能读懂的指路。
+                # required is relaxed: three fields suffice via the proxy; direct unsigned calls
+                # get a readable pointer instead of a bare verification error.
+                raise ValueError('未签名调用：经本机签名代理时由代理补签名；'
+                                 '不经代理直连请提供 agent_id/signature/ts，算法见 README')
             payload = _append_payload(vol_raw, tag, subtag, to, ts, content)
             _verify_agent(agent_id, signature, payload, force=True)
             # 时间窗在验签之后校验：先让匿名/坏签拿到准确错误，再挡重放

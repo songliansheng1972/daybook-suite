@@ -399,6 +399,32 @@ def test_daybook_append_bad_sig(tmp_root):
     return _ok('P1-1.5 文本含签名校验失败', '签名' in text, text)
 
 
+def test_append_schema_and_proxy(tmp_root):
+    """P1-4：required 只留四字段；直连未签名给可读错（代理成功格子在 observe E.7）。
+    P1-4: only four required fields; direct unsigned gets a readable error (proxy success lives in observe E.7)."""
+    os.environ['DAYBOOK_ROOT'] = tmp_root
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}])
+    tools = out[0]['result']['tools']
+    spec = [t for t in tools if t['name'] == 'daybook_append'][0]
+    req = spec['inputSchema'].get('required')
+    if not _ok('P1-4.1 required = 四字段', req == ['volume', 'tag', 'author', 'content'], str(req)):
+        return False
+    blob = json.dumps(spec, ensure_ascii=False)
+    if not _ok('P1-4.2 schema 不含 HMAC 算法', 'HMAC' not in blob.upper(), blob[:80]):
+        return False
+
+    agent_id, _secret = _register_test_agent(tmp_root)
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
+                    'params': {'name': 'daybook_append',
+                               'arguments': {'volume': '测试MCP', 'tag': '未签',
+                                             'author': agent_id, 'content': 'x'}}}])
+    res = out[0].get('result', {})
+    text = res.get('content', [{}])[0].get('text', '')
+    return _ok('P1-4.5 直连未签名 ⇒ isError + 可读指引',
+               res.get('isError') is True and '签名代理' in text
+               and 'agent_id/signature/ts' in text, text[:160])
+
+
 def test_path_traversal(tmp_root):
     """验收 P1-3：../ 穿越拒绝。
     Acceptance P1-3: ../ traversal rejection.
@@ -764,6 +790,8 @@ def main():
     results.append(('daybook_append 冒名被拒', test_daybook_append_impersonation(tmp_root)))
     results.append(('daybook_append G3 签名', test_daybook_append_signed(tmp_root)))
     results.append(('daybook_append 坏签名拒', test_daybook_append_bad_sig(tmp_root)))
+    results.append(('append schema + 代理三字段 + 直连未签名',
+                    test_append_schema_and_proxy(tmp_root)))
     results.append(('路径穿越拒绝', test_path_traversal(tmp_root)))
     results.append(('未知工具 isError:true', test_unknown_tool_iserror(tmp_root)))
     results.append(('cross_ref make/verify', test_cross_ref(tmp_root)))

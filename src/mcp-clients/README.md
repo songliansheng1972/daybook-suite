@@ -101,6 +101,9 @@ printf '%s\n' \
 > **克隆边界**：克隆整 BASE 是允许的（备份/迁移要它），但**同一身份的两份不要同时
 > 指向同一 root/卷**——会互相吃游标；迁移用 **move** 不用 copy。
 > `doctor` / `alive` 看到同一 `agent_id` 有两个活跃实例时只**告警**，不硬拒。
+> 边界两面：**同机同 BASE 的多个客户端共 token、按设计不告警**；**跨机同路径或共享 root 会告警**。
+> 机器锚优先 `/etc/machine-id` 或手放的 `~/.daybook-machine-id`（不自动生成）；macOS 走
+> `IOPlatformUUID`、Linux 走 `/etc/machine-id`。
 
 ```sh
 python3 daybook-orch/orchestrator.py --home /path/to/ledger unread  <agent_id> <卷>

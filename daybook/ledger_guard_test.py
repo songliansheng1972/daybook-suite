@@ -152,6 +152,8 @@ WRITE_PATHS = (
     ('mcp_test.py', '_setup_tmp_root', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_test.py', 'test_daybook_index', 'other', '随包测试：目标由 tempfile 生成'),
     ('mcp_test.py', 'test_subscribe_push', 'other', '随包测试：目标由 tempfile 生成'),
+    ('mcp_test.py', 'test_append_schema_and_proxy', 'other',
+     '随包测试：只读 schema + 直连未签名，写目标由 tempfile 生成'),
     ('mcp_test.py', 'main', 'other', '随包测试：rmtree 只清 tempfile 目录'),
     ('mcp_tools.py', '_wal', 'ledger', '账本内容/派生件（临界区内复用 held）'),
     ('orch_fixes_test.py', '_fresh_root', 'other', '随包测试：目标由 tempfile 生成'),

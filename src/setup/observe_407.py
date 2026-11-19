@@ -28,11 +28,17 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+# 测试入口零字节码：本进程与子进程都不写 __pycache__。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
 
 # 本入口及其子进程零字节码：观察点要从产品目录跑入口，绝不把 __pycache__ 留进盒内。
 # Zero bytecode in this entry and its children: the probes run product entries in-place and
@@ -464,6 +470,111 @@ def main():
             finally:
                 run([setup, '--base', eb4, 'uninstall'],
                     cwd=os.path.dirname(setup), env=ecfg4, timeout=120)
+
+            # E.5 实例文件原子写：注入失败后，旧文件必须完整、无旧文件则仍不存在
+            import importlib.util
+            from importlib.machinery import SourceFileLoader
+            _sys = __import__('sys')
+            _sys.path.insert(0, os.path.dirname(os.path.dirname(setup)))
+            import safeio
+            loader = SourceFileLoader('dbsetup_fixture', setup)
+            spec = importlib.util.spec_from_loader('dbsetup_fixture', loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            eb5 = os.path.join(tmp, 'ebase5')
+            led5 = os.path.join(eb5, 'ledger')
+            os.makedirs(led5)
+            inst5 = os.path.join(led5, '实例.json')
+            mod.BASE, mod.LEDGER = eb5, led5
+            old = '{"实例":"","生成":"old","BASE":"y"}'
+            with open(inst5, 'w', encoding='utf-8') as f:
+                f.write(old)
+            orig_write = safeio.LockedRoot.write
+
+            def _boom(*a, **k):
+                raise RuntimeError('inject-write-failure')
+
+            safeio.LockedRoot.write = _boom
+            raised = False
+            try:
+                mod.ensure_instance()
+            except RuntimeError:
+                raised = True
+            finally:
+                safeio.LockedRoot.write = orig_write
+            with open(inst5, encoding='utf-8') as f:
+                after = f.read()
+            ok_all &= check('E.5 写失败 ⇒ 旧 实例.json 完整保留',
+                            raised and after == old, 'raised=%s same=%s' % (raised, after == old))
+            os.remove(inst5)
+            safeio.LockedRoot.write = _boom
+            raised2 = False
+            try:
+                mod.ensure_instance()
+            except RuntimeError:
+                raised2 = True
+            finally:
+                safeio.LockedRoot.write = orig_write
+            ok_all &= check('E.6 写失败且无旧文件 ⇒ 仍不存在（无半截）',
+                            raised2 and not os.path.exists(inst5),
+                            'raised=%s exists=%s' % (raised2, os.path.exists(inst5)))
+
+            # E.7 经本机代理只传 volume/tag/content ⇒ 落卷（required 松绑的正面格）
+            eb7 = os.path.join(tmp, 'ebase7')
+            ecfg7 = {
+                'DAYBOOK_TRAE_CFG': os.path.join(tmp, 'etrae7.json'),
+                'DAYBOOK_WB_CFG': os.path.join(tmp, 'ewb7.json'),
+                'DAYBOOK_DSH_CFG': os.path.join(tmp, 'edsh7.yml'),
+                'DAYBOOK_PLIST': os.path.join(tmp, 'ep7.plist'),
+            }
+            try:
+                run([setup, '--base', eb7, '--source', src_root, 'install'],
+                    cwd=os.path.dirname(setup), env=ecfg7, timeout=180)
+                reg7 = os.path.join(eb7, 'ledger', '注册卷.txt')
+                label = ''
+                for line in open(reg7, encoding='utf-8'):
+                    m = re.search(r'\[注册\]\s*\[(ag-[0-9a-f]+)\]\s*\[([^\]]+)\]', line)
+                    if m:
+                        label = m.group(2)
+                        break
+                env7 = dict(os.environ, DAYBOOK_BASE=eb7,
+                            DAYBOOK_ROOT=os.path.join(eb7, 'ledger'),
+                            DAYBOOK_AUDIT_BASE=eb7)
+                sp = subprocess.Popen([os.path.join(eb7, 'signer', 'daybook-signer'), label],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE, text=True, env=env7,
+                                      start_new_session=True)
+                try:
+                    sp.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 1,
+                                               'method': 'initialize',
+                                               'params': {'protocolVersion': '2024-11-05'}}) + '\n')
+                    sp.stdin.flush()
+                    sp.stdout.readline()
+                    sp.stdin.write(json.dumps({
+                        'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                        'params': {'name': 'daybook_append',
+                                   'arguments': {'volume': '协作', 'tag': '代理三字段',
+                                                 'content': '代理只传三字段'}}}) + '\n')
+                    sp.stdin.flush()
+                    resp = json.loads(sp.stdout.readline() or '{}')
+                finally:
+                    try:
+                        sp.stdin.close()
+                        sp.wait(timeout=5)
+                    except Exception:
+                        try:
+                            os.killpg(os.getpgid(sp.pid), signal.SIGKILL)
+                        except Exception:
+                            sp.kill()
+                res = resp.get('result', {})
+                vol7 = os.path.join(eb7, 'ledger', 'sample', '协作卷.txt')
+                hit7 = os.path.exists(vol7) and '代理只传三字段' in open(vol7, encoding='utf-8').read()
+                ok_all &= check('E.7 经代理三字段 ⇒ 落卷',
+                                res.get('isError') is not True and hit7,
+                                'isError=%s landed=%s' % (res.get('isError'), hit7))
+            finally:
+                run([setup, '--base', eb7, 'uninstall'],
+                    cwd=os.path.dirname(setup), env=ecfg7, timeout=120)
 
         print('\n== 总结：%s ==' % ('三观察点 + 密钥自证 + 克隆/超时全绿' if ok_all else '存在红项'))
         return 0 if ok_all else 1

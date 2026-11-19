@@ -789,6 +789,14 @@ def test_instance_token_machine_dim():
         b1 = _inst.token(root)
 
         check('同机同 BASE 两客户端 ⇒ 同一 token', a1 == a1b, '%s == %s' % (a1, a1b))
+        code = ("import subprocess,sys;c=[];"
+                "subprocess.run=lambda *a,**k:c.append(a);"
+                "sys.path.insert(0,'.');import instance;print(len(c))")
+        r = subprocess.run([sys.executable, '-B', '-c', code], cwd=HERE,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                           universal_newlines=True, timeout=30)
+        check('import instance 不产生 subprocess 调用', r.stdout.strip() == '0',
+              'calls=%s' % (r.stdout.strip() or r.stderr.strip()[-80:]))
         check('同机不同路径 ⇒ token 不同（路径维）', a1 != a2,
               '%s != %s' % (a1, a2))
         check('同路径两台机 ⇒ token 不同（机器维）',

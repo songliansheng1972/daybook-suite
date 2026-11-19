@@ -169,6 +169,38 @@ daybook-mcp 6882、daybook-orch 5040。
 （变异 9/9、8/8）、两套 verify 0、observe A3/B5/C4/D6/E4、path_leak 四树 0 命中。
 构建号：daybook 5136、daybook-mcp 6931、daybook-orch 5089。
 
+**第六轮（强森 P3×2 + 终裁 required 松绑 + 机器锚惰性读）**
+
+1. **`daybook_append.required` 松绑**：改为 `volume/tag/author/content` 四项；
+   服务端验签行为不变。直连未签名调用返回可读错误：
+   「未签名调用：经本机签名代理时由代理补签名；不经代理直连请提供
+   agent_id/signature/ts，算法见 README」。夹具 P1-4：经代理只传三字段
+   ⇒ `appended`、正文落卷；直连未签名 ⇒ `isError:true` 且文案含关键词。
+2. **实例文件原子写**：`ensure_instance` 改走 `safeio.locked` +
+   `WriteMode.REPLACE`（临时文件 + 原子替换），不再 `json.dump` 直写。
+   observe E.5/E.6：注入写失败，旧完整文件保留 / 无旧文件仍不存在，均无半截；
+   E.7：经代理只传 volume/tag/content ⇒ `isError` 缺省、正文落卷。
+3. **发布边界两面**：同机同 BASE 多客户端共 token、按设计不告警；
+   跨机同路径或共享 root 会告警。`~/.daybook-machine-id` 由用户手放、不自动生成；
+   macOS 走 IOPlatformUUID、Linux 走 `/etc/machine-id`。
+4. **机器锚惰性读**：`_MACHINE_ID` 模块级常量删除，`_machine_id` 改
+   `functools.lru_cache`；`import instance` 不读锚（夹具：子进程 import 时
+   subprocess 调用数 `0`），`host_tag()` 首次调用才读、同进程缓存。
+
+**第六轮自曝红（先红后修）**：① `pack` 构建前闸 rc=4——手工 install 未设零字节码，
+导入 safeio 写出 `daybook-mcp/__pycache__`；给 setup/observe 都补零字节码后绿。
+② install rc=1——`ensure_instance` 引用未定义 `HERE`，改 `__file__` 路径后绿。
+③ observe rc=1——E.5 导入 safeio 前未加 runtime 根到 `sys.path`；补路径后绿。
+④ observe rc=1——`spec_from_file_location` 对无 `.py` 后缀的安装器返回 None；
+改 `SourceFileLoader` 后绿。⑤ E.5 假红——旧文件仍有有效 `实例` 时 ensure 幂等返回；
+改用「完整 JSON 但实例为空」的旧文件后绿。⑥ 源树 guard rc=1——新测试函数写调用未登记；
+登记后仍红（other 桶不收路径参数），把代理成功格移 observe E.7、mcp_test 只留
+schema+直连后绿。⑦ E.7 假红——卷名用了文件 stem `协作卷`，conf 键是 `协作`；改正后绿。
+
+**第六轮读数**：p0 13/13、mcp_test 24/24、orch_fixes 16/16、两套 guard 0 红
+（变异 9/9、8/8）、两套 verify 0、observe A3/B5/C4/D6/E7、path_leak 四树 0 命中。
+构建号：daybook 5138、daybook-mcp 6939、daybook-orch 5091。
+
 ## v4.0.6 · 2026-11-18
 
 ### 定版（2026-11-18）：4.0.6 发布读数
