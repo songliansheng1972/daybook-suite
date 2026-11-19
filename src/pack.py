@@ -383,6 +383,27 @@ def scan_bytecode(out_root, targets):
     return bad
 
 
+def scan_source_bytecode(paths):
+    """构建前扫输入面：源树里任何 __pycache__/.pyc/.pyo 都拒绝构建（在任何清理之前）。
+    Pre-build input scan: any __pycache__/.pyc/.pyo in the source trees rejects the build
+    (before any cleanup), so planting evidence cannot be erased by rmtree(dest).
+    每个 __pycache__ 只记一条（剪枝，不再重复记里面的 .pyc）；散落的 .pyc/.pyo 也记。"""
+    bad = []
+    for root in paths:
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirs, files in os.walk(root):
+            if '__pycache__' in dirs:
+                p = os.path.join(dirpath, '__pycache__')
+                bad.append((os.path.relpath(p, os.path.dirname(root)), '缓存目录'))
+                dirs.remove('__pycache__')
+            for f in files:
+                if f.endswith(('.pyc', '.pyo')):
+                    p = os.path.join(dirpath, f)
+                    bad.append((os.path.relpath(p, os.path.dirname(root)), '字节码'))
+    return bad
+
+
 def verify_all(targets, src, out_root):
     """一致守卫：逐包逐件比对「产物 == 源」md5；全同返 0，失配返 3。
     （承 W-DB-026 丁·防「改了产物不落源·重打包静默抹」）
@@ -542,6 +563,19 @@ def main():
 
     if args.verify:
         return verify_all(targets, src, out_root)
+
+    # 构建前先扫输入面（四个源树），命中即拒；必须在任何 rmtree(dest) 之前。
+    # Pre-build input scan over the four source trees; reject before any rmtree(dest).
+    if not args.dry:
+        repo = os.path.dirname(HERE)
+        src_bad = scan_source_bytecode([src] + [os.path.join(repo, b)
+                                                for b in ('daybook', 'daybook-mcp', 'daybook-orch')])
+        if src_bad:
+            print('RED 源树内含字节码缓存：%d 件（构建前拒绝；先清理源树再打包）'
+                  % len(src_bad), file=sys.stderr)
+            for rel, why in src_bad:
+                print('  ✗ %-42s %s' % (rel, why), file=sys.stderr)
+            return 4
 
     rc = 0
     for name in targets:

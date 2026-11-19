@@ -11,7 +11,9 @@
   C 璇玑连不上：mcp_server 坏 conf 下 rc=2、stdout 0 字节、无 daybook://；健康对照 tools=4
            且有 daybook:// —— 不是「进程在、工具全报错」。
   D 密钥本机生成：两个隔离 BASE 各跑一次 install，各得 3 把密钥；两两指纹零交集，
-           每把 600 + 64 字符 —— 固定 key 复制进来会立刻同指纹判红。
+           每把 600 + 64 字符。复制另一 BASE 的 key 进已装 BASE ⇒ install rc=2 拒绝。
+  E 克隆 BASE：克隆 ledger 后 install 必须返回（不挂起）；假代理不返回时，
+           握手在固定秒数内超时 rc=2，且本次拉起的子进程被清理、无孤儿。
 
 码表（rc + 首行文案）：
   0  成功
@@ -30,6 +32,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 # 本入口及其子进程零字节码：观察点要从产品目录跑入口，绝不把 __pycache__ 留进盒内。
 # Zero bytecode in this entry and its children: the probes run product entries in-place and
@@ -327,13 +330,116 @@ def main():
                 ok_all &= check('D.4 密钥形状 600 + 64 字符', shapes_ok,
                                 '%d/6' % sum(1 for _f, m, n in all_keys
                                              if m == 0o600 and n == 64))
+                # D.5 复制另一 BASE 的 key 进已装 BASE ⇒ 必须拒（指纹不在本 BASE 注册卷）
+                kd1 = os.path.join(bases[0], 'ledger', '.daybook_keys')
+                kd2 = os.path.join(bases[1], 'ledger', '.daybook_keys')
+                names = sorted(n for n in os.listdir(kd1) if n.endswith('.key'))
+                if not names:
+                    ok_all &= check('D.5 复制另一 BASE 的 key ⇒ 拒', False, '源 BASE 无 key')
+                else:
+                    src_key = os.path.join(kd1, names[0])
+                    secret = open(src_key, encoding='utf-8').read().strip()
+                    fp = hashlib.sha256(secret.encode()).hexdigest()
+                    dst_key = os.path.join(kd2, names[0])
+                    shutil.copy2(src_key, dst_key)
+                    r = run([setup, '--base', bases[1], '--source', src_root, 'install'],
+                            cwd=os.path.dirname(setup), env=cfgs[1], timeout=120)
+                    txt = (r[1] or '') + (r[2] or '')
+                    print('  复制后重装 rc=%d；报指纹前缀=%s' % (r[0], fp[:12]))
+                    ok_all &= check('D.5 复制另一 BASE 的 key ⇒ 拒', r[0] == 2
+                                    and '密钥登记' in txt and fp[:12] in txt,
+                                    'rc=%d hit=%s' % (r[0], fp[:12] in txt))
+                    ok_all &= check('D.6 拒绝时不打印完整密钥', secret not in txt,
+                                    'leaked=%s' % (secret in txt))
             finally:
                 for i in (0, 1):
                     run([setup, '--base', bases[i], 'uninstall'],
                         cwd=os.path.dirname(setup), env=cfgs[i], timeout=120)
-            print('  判据：任一 install 非 0 / 每侧非 3 把 / 指纹有交集 / 形状不合 ⇒ 红。')
+            print('  判据：任一 install 非 0 / 每侧非 3 把 / 指纹有交集 / 形状不合 / '
+                  '复制 key 未被拒 ⇒ 红。')
 
-        print('\n== 总结：%s ==' % ('三观察点 + 密钥自证全绿' if ok_all else '存在红项'))
+        # ── E 克隆 BASE 不挂起 + 握手超时上限 ──
+        print('\n[E] 克隆 BASE 后 install / 握手超时上限')
+        if not setup:
+            ok_all &= check('E.0 安装器在场', False, 'setup/daybook-setup 缺失')
+        else:
+            src_root = suite if os.path.isdir(os.path.join(suite, 'daybook-mcp')) \
+                else os.path.dirname(suite)
+            eb1 = os.path.join(tmp, 'ebase1')
+            eb2 = os.path.join(tmp, 'ebase2')
+            ecfgs = []
+            for i in (1, 2):
+                ecfgs.append({
+                    'DAYBOOK_TRAE_CFG': os.path.join(tmp, 'etrae%d.json' % i),
+                    'DAYBOOK_WB_CFG': os.path.join(tmp, 'ewb%d.json' % i),
+                    'DAYBOOK_DSH_CFG': os.path.join(tmp, 'edsh%d.yml' % i),
+                    'DAYBOOK_PLIST': os.path.join(tmp, 'ep%d.plist' % i),
+                })
+            try:
+                t0 = time.time()
+                r1 = run([setup, '--base', eb1, '--source', src_root, 'install'],
+                         cwd=os.path.dirname(setup), env=ecfgs[0], timeout=180)
+                dt1 = time.time() - t0
+                os.makedirs(eb2, exist_ok=True)
+                shutil.rmtree(os.path.join(eb2, 'ledger'), ignore_errors=True)
+                shutil.copytree(os.path.join(eb1, 'ledger'),
+                                os.path.join(eb2, 'ledger'), symlinks=True)
+                t0 = time.time()
+                r2 = run([setup, '--base', eb2, '--source', src_root, 'install'],
+                         cwd=os.path.dirname(setup), env=ecfgs[1], timeout=120)
+                dt2 = time.time() - t0
+                print('  首装 rc=%d（%.1fs）；克隆 ledger 后重装 rc=%d（%.1fs）'
+                      % (r1[0], dt1, r2[0], dt2))
+                ok_all &= check('E.1 克隆 ledger 后 install 返回（非挂起）',
+                                r1[0] == 0 and r2[0] in (0, 2) and dt2 < 90,
+                                'rc=%s %.1fs' % (r2[0], dt2))
+            finally:
+                for i, b in enumerate((eb1, eb2), 1):
+                    run([setup, '--base', b, 'uninstall'],
+                        cwd=os.path.dirname(setup), env=ecfgs[i - 1], timeout=120)
+
+            # E.2 确定性超时：假代理永不返回，install 必须在固定秒数内 rc=2，且无孤儿
+            eb3 = os.path.join(tmp, 'ebase3')
+            pidf = os.path.join(tmp, 'fake_signer.pid')
+            fake = os.path.join(tmp, 'fake-signer')
+            with open(fake, 'w', encoding='utf-8') as f:
+                f.write('#!/bin/sh\necho $$ > "$FAKE_PIDFILE"\nexec sleep 300\n')
+            os.chmod(fake, 0o755)
+            ecfg3 = {
+                'DAYBOOK_TRAE_CFG': os.path.join(tmp, 'etrae3.json'),
+                'DAYBOOK_WB_CFG': os.path.join(tmp, 'ewb3.json'),
+                'DAYBOOK_DSH_CFG': os.path.join(tmp, 'edsh3.yml'),
+                'DAYBOOK_PLIST': os.path.join(tmp, 'ep3.plist'),
+                'DAYBOOK_SIGNER': fake,
+                'DAYBOOK_HANDSHAKE_TIMEOUT': '3',
+                'FAKE_PIDFILE': pidf,
+            }
+            try:
+                t0 = time.time()
+                r3 = run([setup, '--base', eb3, '--source', src_root, 'install'],
+                         cwd=os.path.dirname(setup), env=ecfg3, timeout=60)
+                dt3 = time.time() - t0
+                txt = (r3[1] or '') + (r3[2] or '')
+                time.sleep(0.5)
+                orphan = False
+                try:
+                    pid = int(open(pidf, encoding='utf-8').read().strip())
+                    os.kill(pid, 0)
+                    orphan = True
+                except (OSError, ValueError):
+                    orphan = False
+                print('  假代理 install rc=%d（%.1fs）；孤儿=%s'
+                      % (r3[0], dt3, orphan))
+                ok_all &= check('E.2 假代理不返回 ⇒ 3 秒超时 rc=2',
+                                r3[0] == 2 and dt3 < 30 and '握手超时' in txt,
+                                'rc=%d %.1fs' % (r3[0], dt3))
+                ok_all &= check('E.3 超时后不留孤儿子进程', not orphan,
+                                'orphan=%s' % orphan)
+            finally:
+                run([setup, '--base', eb3, 'uninstall'],
+                    cwd=os.path.dirname(setup), env=ecfg3, timeout=120)
+
+        print('\n== 总结：%s ==' % ('三观察点 + 密钥自证 + 克隆/超时全绿' if ok_all else '存在红项'))
         return 0 if ok_all else 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

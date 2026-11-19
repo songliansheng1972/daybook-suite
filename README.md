@@ -101,8 +101,8 @@ daybook-suite/            ← this repo
 | Package      | Version | Product `.py` files | Build number |
 | ------------ | ------- | ------------------- | ------------ |
 | daybook      | v4.0.7  | 10                  | 4971         |
-| daybook-mcp  | v4.0.7  | 15                  | 6756         |
-| daybook-orch | v4.0.7  | 13                  | 4899         |
+| daybook-mcp  | v4.0.7  | 15                  | 6766         |
+| daybook-orch | v4.0.7  | 13                  | 4909         |
 
 **Code size**: **15,291 lines** across the three packages' product files (4,433 + 6,596 + 4,262).
 
@@ -371,8 +371,8 @@ daybook-suite/            ← 本仓
 | 包   | 版本号    | 产品 `.py` 件 | 构建号  |
 | --- | ------ | ---------- | ---- |
 | 起居注 | v4.0.7 | 10         | 4971         |
-| 璇玑  | v4.0.7 | 15         | 6756         |
-| 司南  | v4.0.7 | 13         | 4899         |
+| 璇玑  | v4.0.7 | 15         | 6766         |
+| 司南  | v4.0.7 | 13         | 4909         |
 
 **代码规模**：三包产品件合计 **15,291 行**（4,433 ＋ 6,596 ＋ 4,262）。
 

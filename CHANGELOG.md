@@ -82,6 +82,38 @@ online / 超时 1s 后 offline（均报「超时 2 秒」）结论一致；`cros
 盒内 ledger guard 0 红（变异 8/8）、`pack --verify` 0、`pack_pypi --verify` 0、
 observe A 3/3 + B 5/5 + C 4/4 + D 4/4、path_leak 四树 269 文件 0 命中。
 
+**第三轮返修（刺客 P1/P1/P1、P2/P2）**
+
+1. **字节码闸改扫输入面**：`pack.py` 在构建开始前扫 `src/` 与三个包目录，命中
+   `__pycache__`/`.pyc`/`.pyo` 即 `RED 源树内含字节码缓存` 并 rc=4，位置在任何
+   `rmtree(dest)` 之前；构建后扫输出目录保留为第二道。读数：`src/__pycache__` 植入
+   2 个 `.pyc` ⇒ 纯构建（不带 `--verify`）rc=4；`daybook-mcp/__pycache__` 同理 rc=4；
+   清理后纯构建 rc=0。
+2. **密钥登记指纹**：`join` 在注册卷追加 `[fp=<sha256>]`；`install` 逐把 key 比对
+   本 BASE 注册卷，未登记 / 无指纹 / 不符 ⇒ 打印 `密钥登记` + 指纹前缀（不打印密钥）
+   并 rc=2。实测：把 kb1 的 key 复制进已装 kb2 再 install ⇒ rc=2，报
+   `ag-... 指纹 xxxxxxxxxxxx 未在本 BASE 注册卷登记`，输出无完整密钥。
+3. **握手超时上限**：代理就绪等待默认 20 秒（`DAYBOOK_HANDSHAKE_TIMEOUT` 可调），
+   超时返回 `握手超时（N 秒）：代理未返回 ...`、install rc=2，并以独立进程组
+   `SIGKILL` 清掉本次拉起的代理与后端，不留孤儿。夹具：克隆 ledger 后 install
+   rc=0（0.7s 返回）；假代理永不返回 ⇒ 3 秒超时 rc=2（全程 6.3s）、孤儿=False。
+4. **path_leak 计数口径**：清检出（只算跟踪文件）为 src 103 / daybook 37 /
+   daybook-mcp 46 / daybook-orch 38 = **224**；本机工作树 src 另有 45 个被忽略的
+   运行时文本件（`index_*`/`volumes.md`/`.cursor_*`/本地备忘等），故为 148，
+   合计 **269**。两个数都对，差异只在 src 的未跟踪运行时残留；三包计数一致，
+   命中始终 0。
+5. **observe 注释改实测结论**：D 点只声明「两次独立安装指纹不交」；复制场景另立
+   D.5/D.6 用实测拒绝结果说话，不再写未测过的性质。
+
+**第三轮自曝红（均先红后修）**：首次 observe rc=1 —— 注册卷正则只吃了 4 段、
+把第 5 段密钥引用当成 fp 位置，导致 6 把 key 全报「注册卷无指纹登记」、install rc=2；
+修正正则后 observe rc=0。另有首次 E.1/E.2 随此红，一并转绿。
+
+**第三轮读数**：p0 13/13、mcp_test 23/23、orch_fixes 14/14、源树 guard 0 红（9/9）、
+盒内 guard 0 红（8/8）、两套 verify 0、observe A3/B5/C4/D6/E3 全绿、
+path_leak 四树 0 命中（清检出 224 / 工作树 269）。构建号：daybook 4971、
+daybook-mcp 6766、daybook-orch 4909。
+
 ## v4.0.6 · 2026-11-18
 
 ### 定版（2026-11-18）：4.0.6 发布读数

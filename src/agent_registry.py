@@ -18,7 +18,7 @@ Agent identity registry (W-DB-023-G3 · item 1)
 
 注册卷.txt 格式（每行一条·append-only）：
 Registry volume (注册卷.txt) format (one entry per line · append-only):
-  [时间] [注册] [agent_id] [agent_name] [密钥文件=.daybook_keys/<agent_id>.key]
+  [时间] [注册] [agent_id] [agent_name] [密钥文件=.daybook_keys/<agent_id>.key] [fp=<sha256>]
   [时间] [吊销] [agent_id]
   旧格式 [时间] [注册] [agent_id] [agent_name] [secret_hex] 仍可读（兼容）。
   The legacy form with the secret hex inline is still readable (compatibility).
@@ -61,14 +61,15 @@ def _now():
 class Agent:
     """单个 Agent 的身份信息（值对象）。
     Identity info of a single agent (value object)."""
-    __slots__ = ('agent_id', 'name', 'secret', 'created_at', 'revoked')
+    __slots__ = ('agent_id', 'name', 'secret', 'created_at', 'revoked', 'fp')
 
-    def __init__(self, agent_id, name, secret, created_at, revoked=False):
+    def __init__(self, agent_id, name, secret, created_at, revoked=False, fp=None):
         self.agent_id = agent_id
         self.name = name
         self.secret = secret
         self.created_at = created_at
         self.revoked = revoked
+        self.fp = fp
 
     def __repr__(self):
         return '<Agent %s name=%s revoked=%s>' % (self.agent_id[:8], self.name, self.revoked)
@@ -111,11 +112,16 @@ class Registry:
                 continue
             if parts[1] == '注册' and len(parts) >= 5:
                 aid, name, ref = parts[2], parts[3], parts[4]
+                fp = None
+                for extra in parts[5:]:
+                    if extra.startswith('fp='):
+                        fp = extra[3:].strip()
+                        break
                 if ref.startswith(KEY_REF_PREFIX):
                     secret = self._read_secret(ref[len(KEY_REF_PREFIX):].strip())
                 else:
                     secret = ref          # 旧格式内联密钥 / legacy inline secret
-                self._agents[aid] = Agent(aid, name, secret, parts[0], False)
+                self._agents[aid] = Agent(aid, name, secret, parts[0], False, fp)
             elif parts[1] == '吊销' and len(parts) >= 3:
                 aid = parts[2]
                 if aid in self._agents:
@@ -162,7 +168,11 @@ class Registry:
         agent_id = 'ag-' + secrets.token_hex(8)  # 16 字符前缀 · 16-char prefix
         secret = secrets.token_hex(32)            # 64 字符 hex · 256bit · 64-char hex · 256-bit
         ref = self._write_secret(agent_id, secret)
-        rec = '[%s] [注册] [%s] [%s] [%s]\n' % (_now(), agent_id, name, KEY_REF_PREFIX + ref)
+        # 指纹随注册落卷：安装时可据此拒绝「从别的 BASE 复制过来的 key」。
+        # The fingerprint lands in the registry: install can then reject keys copied from another BASE.
+        fp = hashlib.sha256(secret.encode('utf-8')).hexdigest()
+        rec = '[%s] [注册] [%s] [%s] [%s] [fp=%s]\n' % (_now(), agent_id, name,
+                                                       KEY_REF_PREFIX + ref, fp)
         from safeio import locked, WriteMode
         with locked(self.root) as lr:
             lr.write(lr.root.rel_of(self.path, 'agent_registry.register'), rec,

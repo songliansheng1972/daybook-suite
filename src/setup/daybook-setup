@@ -18,11 +18,14 @@ import copy
 import hashlib
 import json
 import os
+import queue
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 
 SETUP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,7 +57,8 @@ def configure(base, source=None):
     LEDGER = os.path.join(BASE, 'ledger')
     RUNTIME = os.path.join(BASE, 'runtime', 'daybook-suite')
     SIGNER_DIR = os.path.join(BASE, 'signer')
-    SIGNER = os.path.join(SIGNER_DIR, 'daybook-signer')
+    SIGNER = os.environ.get('DAYBOOK_SIGNER',
+                            os.path.join(SIGNER_DIR, 'daybook-signer'))
     STATE = os.path.join(BASE, 'setup', 'install-state.json')
     SOURCE = os.path.abspath(os.path.expanduser(source)) if source else detect_source()
     # 测试/多账户隔离：客户端配置路径可用环境变量覆盖（默认 macOS 用户级路径）。
@@ -199,12 +203,44 @@ def registry():
     rows = []
     try:
         for line in open(p, encoding='utf-8'):
-            m = re.search(r'\[注册\]\s*\[(ag-[0-9a-f]+)\]\s*\[([^\]]+)\]', line)
+            m = re.search(r'\[注册\]\s*\[(ag-[0-9a-f]+)\]\s*\[([^\]]+)\]'
+                          r'(?:\s*\[[^\]]*\])?'
+                          r'(?:\s*\[fp=([0-9a-f]{64})\])?', line)
             if m:
-                rows.append({'id': m.group(1), 'name': m.group(2)})
+                rows.append({'id': m.group(1), 'name': m.group(2), 'fp': m.group(3)})
     except FileNotFoundError:
         pass
     return rows
+
+
+def verify_key_registry():
+    """每把 key 的指纹必须能在本 BASE 注册卷找到登记。
+    Every key fingerprint must be registered in this BASE's registry volume.
+    返回 [(agent_id, 指纹前缀, 原因)]；不打印密钥。
+    Returns [(agent_id, fingerprint prefix, reason)]; never prints the secret."""
+    known = {r['id']: r.get('fp') for r in registry()}
+    kd = os.path.join(LEDGER, '.daybook_keys')
+    bad = []
+    if not os.path.isdir(kd):
+        return bad
+    for fn in sorted(os.listdir(kd)):
+        if not fn.endswith('.key'):
+            continue
+        aid = fn[:-4]
+        p = os.path.join(kd, fn)
+        try:
+            val = open(p, encoding='utf-8').read().strip()
+        except OSError as e:
+            bad.append((aid, '', '不可读：%s' % type(e).__name__))
+            continue
+        fp = hashlib.sha256(val.encode('utf-8')).hexdigest()
+        if aid not in known:
+            bad.append((aid, fp[:12], '未在本 BASE 注册卷登记'))
+        elif not known[aid]:
+            bad.append((aid, fp[:12], '注册卷无指纹登记（请重新 join）'))
+        elif known[aid] != fp:
+            bad.append((aid, fp[:12], '与注册卷指纹不符'))
+    return bad
 
 
 def key_path(agent_id):
@@ -393,21 +429,51 @@ def write_trae_whitelist(st):
         out('YELLOW TRAE 白名单：写入失败 %s' % str(e)[:120])
 
 
+def _readline_deadline(stream, seconds):
+    """带截止时间的 readline；超时返回 None（不阻塞）。
+    readline with a deadline; returns None on timeout instead of blocking forever."""
+    q = queue.Queue()
+
+    def _rd():
+        try:
+            q.put(('ok', stream.readline()))
+        except Exception as e:                      # noqa: BLE001
+            q.put(('err', e))
+
+    t = threading.Thread(target=_rd, daemon=True)
+    t.start()
+    try:
+        kind, val = q.get(timeout=seconds)
+    except queue.Empty:
+        return None
+    if kind == 'err':
+        raise val
+    return val
+
+
 def handshake(label):
+    timeout = float(os.environ.get('DAYBOOK_HANDSHAKE_TIMEOUT', '20'))
+    # 独立进程组：超时清理时连同代理拉起的后端一起杀，不留孤儿。
+    # Separate process group: on timeout kill the proxy and its backend together, no orphans.
     p = subprocess.Popen([SIGNER, label], text=True, bufsize=1,
                          stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                         stderr=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True,
                          env={**os.environ, **client_env()})
     try:
         p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
                                   'params': {'protocolVersion': '2024-11-05'}}) + '\n')
         p.stdin.flush()
-        line = p.stdout.readline()
+        line = _readline_deadline(p.stdout, timeout)
+        if line is None:
+            return False, '握手超时（%g 秒）：代理未返回 initialize' % timeout
         if not line:
             return False, '无响应'
         p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}) + '\n')
         p.stdin.flush()
-        obj = json.loads(p.stdout.readline())
+        line = _readline_deadline(p.stdout, timeout)
+        if line is None:
+            return False, '握手超时（%g 秒）：代理未返回 tools/list' % timeout
+        obj = json.loads(line)
         names = [t.get('name') for t in (obj.get('result') or {}).get('tools', [])]
         return (len(names) == 4 and 'daybook_append' in names,
                 'tools=%d append=%s' % (len(names), 'daybook_append' in names))
@@ -416,9 +482,15 @@ def handshake(label):
     finally:
         try:
             p.stdin.close()
+        except Exception:
+            pass
+        try:
             p.wait(timeout=3)
         except Exception:
-            p.kill()
+            try:
+                os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+            except Exception:
+                p.kill()
 
 
 def secret_scan():
@@ -487,6 +559,16 @@ def cmd_install():
         aid = ensure_identity(name)
         ids.append((label, aid))
     install_signer(st)
+    bad_keys = verify_key_registry()
+    if bad_keys:
+        for aid, fp, why in bad_keys:
+            out('RED   密钥登记：%s 指纹 %s %s' % (aid, fp or '∅', why))
+        die('密钥登记', '%d 把 key 未能在本 BASE 注册卷找到对应指纹（拒绝复制来的 key）'
+            % len(bad_keys))
+    out('GREEN 密钥登记：%d 把 key 均在本 BASE 注册卷有指纹'
+        % len([n for n in os.listdir(os.path.join(LEDGER, '.daybook_keys'))
+               if n.endswith('.key')]) if os.path.isdir(os.path.join(LEDGER, '.daybook_keys'))
+        else 'GREEN 密钥登记：0 把（无密钥目录）')
     write_json_cfg(TRAE_CFG, 'trae', st)
     write_trae_whitelist(st)
     write_json_cfg(WB_CFG, 'workbuddy', st)
@@ -544,6 +626,10 @@ def cmd_doctor():
     checks.append(('签名代理随包件', 'GREEN' if signer_ok else 'RED', SIGNER_DIR))
     ok, why = handshake('trae')
     checks.append(('璇玑工具面', 'GREEN' if ok else 'RED', why))
+    bad_keys = verify_key_registry()
+    checks.append(('密钥登记指纹', 'GREEN' if not bad_keys else 'RED',
+                   '全部有登记' if not bad_keys
+                   else '; '.join('%s:%s %s' % (a, f or '∅', w) for a, f, w in bad_keys)))
     hits, scanned = secret_scan()
     checks.append(('密钥泄漏扫描', 'GREEN' if not hits else 'RED',
                    '0 命中（扫描 %d 文件）' % scanned if not hits
