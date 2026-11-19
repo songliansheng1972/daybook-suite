@@ -127,6 +127,8 @@ WRITE_PATHS = (
     ('daybook.py', '_backup_copy', 'ledger', 'backup/ 在账本根内（REPLACE）'),
     ('daybook.py', '_run_hook', 'dispatch',
      '变动令在索引/备份之后执行，不在写链上；本仓唯一登记的 subprocess 派发点'),
+    ('instance.py', '_machine_id', 'dispatch',
+     '只读机器锚：subprocess 读 /etc/machine-id 与 IOPlatformUUID，不在写链上'),
     ('daybook_append.py', 'append_one', 'ledger', '账本内容/派生件'),
     ('daybook_append.py', '_emit', 'ledger', '账本内容/派生件（临界区内复用已持凭证）'),
     ('daybook_hook.py', 'mark_processed', 'ledger', '账本内容/派生件'),
@@ -160,6 +162,7 @@ WRITE_PATHS = (
     ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_legacy_minute_heartbeat', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_instance_token_and_dup_warning', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_instance_token_machine_dim', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试：目标由 tempfile 生成'),
@@ -345,6 +348,8 @@ _TEST_TOLERATED = frozenset({'subproc_raw'})
 _SUBPROC_SITES = {
     ('daybook.py', '_run_hook'):
         '用户配置的变动令：在索引/备份之后执行，不在写链上；外部 shell 命令无法预解析子进程根',
+    ('instance.py', '_machine_id'):
+        '只读机器标识（ioreg IOPlatformUUID），stdout 重定向，不写账本、不在写链上',
 }
 # 账本桶函数里允许出现的只读/纯进程 os.* 调用；不在表里且不是写原语 ⇒ 红。
 # Read-only / process-only os.* calls allowed inside ledger-bucket functions; anything else
@@ -8067,14 +8072,15 @@ def main():
             print('  [跳过] %s' % _r)
     p1_bad = [f for f in FAILS if f.startswith('P1')]
     print('属性层：P1 根身份/换根语义 = %s' % ('红' if p1_bad else '绿'))
-    print('变异矩阵（legacy 字符串锚点）：总数 %d / 杀死 %d / 存活 %d / 死变异 %d'
-          % (MUT['total'], MUT['killed'], len(MUT['survivors']), MUT['dead']))
+    print('变异矩阵（legacy 字符串锚点）：杀死 %d / 存活 %d / 死 %d（总数 %d）'
+          % (MUT['killed'], len(MUT['survivors']), MUT['dead'], MUT['total']))
     if MUT['survivors']:
         print('  存活变异：' + '；'.join(MUT['survivors']))
     if FAILS:
         print('FAIL: ' + '；'.join(FAILS))
         return 1
-    print('PASS: 回归层 0 红；legacy 锚点变异 0 存活 / 0 死变异')
+    print('PASS: 回归层 0 红；legacy 锚点变异 存活 %d / 死 %d（总数 %d）'
+          % (len(MUT['survivors']), MUT['dead'], MUT['total']))
     return 0
 
 

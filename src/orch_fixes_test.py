@@ -763,6 +763,69 @@ def test_instance_token_and_dup_warning():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_instance_token_machine_dim():
+    """实例 token 三格：同机不同路径 / 同路径两台机 / 同机同 BASE 两客户端。
+    Three cells: same host different paths / same path two hosts / same host same BASE two clients."""
+    print('== 16. 实例 token 机器维度：三格 ==')
+    import instance as _inst
+    from orchestrator import Hub
+    root = _fresh_root('instm1')
+    root2 = _fresh_root('instm2')
+    old = os.environ.get('DAYBOOK_HOST_ID')
+    try:
+        _inst.ensure(root)
+        # 复制实例文件到另一路径：uid 相同，只差路径维
+        # Copy the instance file to another path: same uid, only the path dimension differs.
+        with open(os.path.join(root, '实例.json'), encoding='utf-8') as f:
+            rec = f.read()
+        with open(os.path.join(root2, '实例.json'), 'w', encoding='utf-8') as f:
+            f.write(rec)
+
+        os.environ['DAYBOOK_HOST_ID'] = 'machine-A'
+        a1 = _inst.token(root)
+        a1b = _inst.token(root)
+        a2 = _inst.token(root2)
+        os.environ['DAYBOOK_HOST_ID'] = 'machine-B'
+        b1 = _inst.token(root)
+
+        check('同机同 BASE 两客户端 ⇒ 同一 token', a1 == a1b, '%s == %s' % (a1, a1b))
+        check('同机不同路径 ⇒ token 不同（路径维）', a1 != a2,
+              '%s != %s' % (a1, a2))
+        check('同路径两台机 ⇒ token 不同（机器维）',
+              a1 != b1 and a1.rsplit('@', 1)[0] == b1.rsplit('@', 1)[0],
+              '%s != %s' % (a1, b1))
+
+        hb = os.path.join(root, '心跳卷.txt')
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        _append_fixture(hb, '[%s] [心跳] [ag-host] alive [实例=%s]\n' % (now, a1), root)
+        _append_fixture(hb, '[%s] [心跳] [ag-host] alive [实例=%s]\n' % (now, b1), root)
+        _append_fixture(hb, '[%s] [心跳] [ag-path] alive [实例=%s]\n' % (now, a1), root)
+        _append_fixture(hb, '[%s] [心跳] [ag-path] alive [实例=%s]\n' % (now, a2), root)
+        hub = Hub(root=root)
+        online_h, why_h = hub.alive('ag-host', timeout=120)
+        check('同路径两台机 ⇒ 两 token 且告警',
+              online_h and '2 个活跃实例' in why_h, why_h)
+        online_p, why_p = hub.alive('ag-path', timeout=120)
+        check('同机不同路径 ⇒ 两 token 且告警',
+              online_p and '2 个活跃实例' in why_p, why_p)
+
+        hb2 = os.path.join(root2, '心跳卷.txt')
+        _append_fixture(hb2, '[%s] [心跳] [ag-same] alive [实例=%s]\n' % (now, a1), root2)
+        _append_fixture(hb2, '[%s] [心跳] [ag-same] alive [实例=%s]\n' % (now, a1), root2)
+        hub2 = Hub(root=root2)
+        online_s, why_s = hub2.alive('ag-same', timeout=120)
+        check('同机同 BASE 两客户端 ⇒ 一 token 不告警',
+              online_s and '活跃实例' not in why_s, why_s)
+        return all(_results)
+    finally:
+        if old is None:
+            os.environ.pop('DAYBOOK_HOST_ID', None)
+        else:
+            os.environ['DAYBOOK_HOST_ID'] = old
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(root2, ignore_errors=True)
+
+
 TESTS = {1: test_pull_reply, 2: test_identity_signature,
          3: test_root_resolution, 4: test_read_locking,
          5: test_route, 6: test_digest_visibility_and_limit,
@@ -770,7 +833,8 @@ TESTS = {1: test_pull_reply, 2: test_identity_signature,
          9: test_cross_process_lock, 10: test_verify_requires_baseline,
          11: test_sock_and_dead_code, 12: test_single_pass_reads,
          13: test_author_head_parse, 14: test_legacy_minute_heartbeat,
-         15: test_instance_token_and_dup_warning}
+         15: test_instance_token_and_dup_warning,
+         16: test_instance_token_machine_dim}
 
 
 def main(argv):

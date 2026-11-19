@@ -144,6 +144,31 @@ orch 报 `ModuleNotFoundError`，补三处拷贝清单后绿；④ 连带 AF/AL 
 path_leak 四树 0 命中、字节码闸两处 `1 目录 / 2 文件` rc=4。构建号：daybook 5087、
 daybook-mcp 6882、daybook-orch 5040。
 
+**第五轮（强森增量，两处 + 刺客 P3）**
+
+1. **实例 token 加机器维度**：`uid8@path8@machine8`。机器锚取自 BASE 之外：
+   `DAYBOOK_HOST_ID`（测试覆盖）→ `/etc/machine-id` / `/var/lib/dbus/machine-id` →
+   `~/.daybook-machine-id` → `IOPlatformUUID` → 网卡节点；**不用主机名**（改名会漂）。
+   边界写全两面：**同路径跨机克隆在加机器分量后可辨**（两 token、告警）；
+   **同机同 BASE 的多个客户端共 token，按设计不告警**。
+   夹具 orch_fixes 16：6/6 PASS（同机同 BASE 同 token；同机不同路径 token 不同且告警；
+   同路径两台机 token 不同且告警；同机同 BASE 两客户端不告警）。
+2. **append schema 自相矛盾**：`required` 保留 `agent_id/signature/ts` 不动（直连仍要填、
+   服务端仍验签）；描述统一改为「经本机签名代理自动填入，客户端无需填写或计算；
+   不经代理直连时须自行提供，算法见 README」。HMAC 算法细节整体移出 schema，
+   落到 `mcp-clients/README.md` 的「直连（不经代理）」一节。
+3. **guard 末行措辞**：变异记分改为 `杀死 9 / 存活 0 / 死 0（总数 9）`，
+   避免「0 存活 / 0 死」被误读为空跑。
+
+**第五轮自曝红**：① 首次两套 guard `rc=1`——`instance._machine_id` 登记为 dispatch
+却在函数内写缓存（dispatch 夹带写）；去掉缓存后又因 `open`/`pathlib` 读锚被判写原语，
+改为纯 `subprocess` 读锚；最后补 `_CAPABILITIES` 的 `dispatch` 桶登记才转绿。
+② 机器短哈希原为 4 位，按要求改 8 位并补 `~/.daybook-machine-id` 锚。
+
+**第五轮读数**：p0 13/13、mcp_test 23/23、orch_fixes 16/16、两套 guard 0 红
+（变异 9/9、8/8）、两套 verify 0、observe A3/B5/C4/D6/E4、path_leak 四树 0 命中。
+构建号：daybook 5136、daybook-mcp 6931、daybook-orch 5089。
+
 ## v4.0.6 · 2026-11-18
 
 ### 定版（2026-11-18）：4.0.6 发布读数

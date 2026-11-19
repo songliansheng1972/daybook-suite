@@ -18,11 +18,58 @@ BASE absolute path, so two copies at different paths get different tokens and th
 import hashlib
 import json
 import os
+import subprocess
 import time
 import uuid
 
 FILE = '实例.json'
 TOKEN_RE = r'\[实例=([^\]]+)\]'
+
+
+def _machine_id():
+    """稳定机器标识：优先环境覆盖，其次 /etc/machine-id、~/.daybook-machine-id、
+    IOPlatformUUID，最后网卡节点。锚都在 BASE 之外，且不用主机名——改名会漂。
+    Stable machine id: env override, then /etc/machine-id, ~/.daybook-machine-id,
+    IOPlatformUUID, then the NIC node. All anchors live outside BASE; never the hostname."""
+    env = os.environ.get('DAYBOOK_HOST_ID')
+    if env:
+        return env
+    mid = ''
+    for p in ('/etc/machine-id', '/var/lib/dbus/machine-id',
+              os.path.expanduser('~/.daybook-machine-id')):
+        try:
+            # 只走派发读锚（不经 open）：dispatch 函数不得夹带任何写原语。
+            # Anchor read via dispatch only (no open): a dispatch function must carry no writes.
+            mid = subprocess.run(['cat', p], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, universal_newlines=True,
+                                 timeout=2).stdout.strip()
+            if mid:
+                break
+        except (OSError, subprocess.SubprocessError):
+            continue
+    if not mid:
+        try:
+            out = subprocess.run(['ioreg', '-rd1', '-c', 'IOPlatformExpertDevice'],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 universal_newlines=True, timeout=3).stdout
+            for line in out.splitlines():
+                if 'IOPlatformUUID' in line:
+                    mid = line.split('=', 1)[1].strip().strip('"')
+                    break
+        except (OSError, subprocess.SubprocessError, IndexError):
+            pass
+    if not mid:
+        mid = '%x' % uuid.getnode()
+    return mid
+
+
+_MACHINE_ID = _machine_id()
+
+
+def host_tag():
+    """机器维度：稳定机器标识的 sha1 前 8 位。Machine dimension: first 8 hex of sha1(machine id)."""
+    mid = os.environ.get('DAYBOOK_HOST_ID') or _MACHINE_ID
+    return hashlib.sha1(mid.encode('utf-8')).hexdigest()[:8]
 
 
 def ensure(base):
@@ -50,8 +97,10 @@ def ensure(base):
 
 
 def token(base):
-    """运行时实例 token：`uid前8@路径sha1前8`；无实例文件返回 None。
-    Runtime instance token: `uid[:8]@sha1(path)[:8]`; None when no instance file exists."""
+    """运行时实例 token：`uid8@path8@machine8`；无实例文件返回 None。
+    机器维度让「同路径还原/迁移到另一台机」也能区分为两个实例。
+    Runtime token: `uid[:8]@sha1(path)[:8]@sha1(machine)[:8]`; None when no instance file exists.
+    The machine dimension distinguishes a same-path restore/migration on two machines."""
     if base is None:
         return None
     base = getattr(base, 'label', base)
@@ -64,7 +113,7 @@ def token(base):
     if not uid:
         return None
     tag = hashlib.sha1(os.path.realpath(os.path.abspath(base)).encode('utf-8')).hexdigest()[:8]
-    return '%s@%s' % (uid[:8], tag)
+    return '%s@%s@%s' % (uid[:8], tag, host_tag())
 
 
 def _ts(parts0):

@@ -34,6 +34,20 @@
 - 密钥不可用时只拒写，只读调用继续可用；
 - **非同 uid / 远程 / 第三方客户端不适用**；本版没有密钥轮换。
 
+### 直连（不经代理）的签名算法 / Direct connect (no proxy)
+
+只用于调试或自有外壳；默认接法应走本机签名代理。直连时 `daybook_append` 必须自填
+`agent_id`、`ts`（Unix 秒，服务端校验 ±60s）与 `signature`：
+
+```text
+payload   = append|v2|volume=<卷>|tag=<主标签>|subtag=<子标签或 _>|to=<收件人>|ts=<秒>|content=<正文>
+signature = HMAC-SHA256(key = .daybook_keys/<agent_id>.key 的 64-hex 文本,
+                        msg = payload 的 UTF-8 字节) 的小写 hex
+```
+
+`to` 为空时用空串；`subtag` 无子卷时用 `_`。模型读 MCP schema 只会看到「由代理填入」，
+不会看到这段算法——需要手算时再来这里。
+
 ### 六条撤回条件（照抄 `#84111`，不重写）
 
 1. 密钥内容或完整密钥文件出现在报告、日志、命令行、审计行、聊天记录或仓库中；
