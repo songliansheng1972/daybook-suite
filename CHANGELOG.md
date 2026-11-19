@@ -114,6 +114,36 @@ observe A 3/3 + B 5/5 + C 4/4 + D 4/4、path_leak 四树 269 文件 0 命中。
 path_leak 四树 0 命中（清检出 224 / 工作树 269）。构建号：daybook 4971、
 daybook-mcp 6766、daybook-orch 4909。
 
+**第四轮（刺客 P2×3，终裁收口）**
+
+1. **字节码计数附文件数**：构建前 / 构建后 / verify 前置三处都改为
+   `N 目录 / M 文件`；判定不变（有命中即 rc=4）。实测：`src/__pycache__` 放 2 个
+   `.pyc` ⇒ `RED 源树内含字节码缓存：1 目录 / 2 文件`、rc=4；`daybook-mcp/__pycache__`
+   同样 `1 目录 / 2 文件`、rc=4；清理后 rc=0。
+2. **fp 判据边界写进文档**：README 与本节明写——密钥登记指纹是**绊线，不是防篡改**；
+   能改注册卷的人已经能直接 `join`，不在这条判据的防守面内；它挡的是**误拷**。
+3. **实例号与同身份多实例告警**（只做小）：
+   - `install` 在账本根写 `实例.json`（`[实例=<uuid>]`，幂等保留）；
+   - 心跳与条目携带 `[实例=<uid8@路径hash8>]`（`instance.token` 拼 BASE 路径短哈希，
+     不同路径的两份副本 token 不同）；
+   - `alive` 对同一 `agent_id` 的两个活跃实例返回 `online；⚠ 2 个活跃实例（…）`，
+     **不硬拒**；`doctor` 增加「同身份多实例」`WARN` 行，退出码仍 0；
+   - 文档补：克隆整 BASE 允许（备份/迁移要它），但同一身份两份不要同时指向同一
+     root/卷；**迁移用 move 不用 copy**。
+   - 不做：硬拒克隆、卷级锁、实例互斥（留给 4.1 收件语义）。
+4. **path_leak 计数**（第四轮）：清检出 **228**（src 104 / daybook 38 / mcp 47 /
+   orch 39），本机工作树 **273**（src 149，另 45 个被忽略运行时文本件）；命中 0。
+
+**第四轮自曝红（先红后修）**：① 盒内 guard `rc=1`——`instance.ensure` 未登记
+写能力；② 修完再红——直写未走 safeio（`mkdir`/`open`），改为 `safeio.locked` +
+`WriteMode.REPLACE` 后绿；③ 源树 guard `rc=1`——guard 沙箱拷贝清单缺 `instance.py`，
+orch 报 `ModuleNotFoundError`，补三处拷贝清单后绿；④ 连带 AF/AL 多条红随此转绿。
+
+**第四轮读数**：p0 13/13、mcp_test 23/23、orch_fixes 15/15、源树 guard 0 红（9/9）、
+盒内 guard 0 红（8/8）、两套 verify 0、observe A3/B5/C4/D6/E4 全绿、
+path_leak 四树 0 命中、字节码闸两处 `1 目录 / 2 文件` rc=4。构建号：daybook 5087、
+daybook-mcp 6882、daybook-orch 5040。
+
 ## v4.0.6 · 2026-11-18
 
 ### 定版（2026-11-18）：4.0.6 发布读数

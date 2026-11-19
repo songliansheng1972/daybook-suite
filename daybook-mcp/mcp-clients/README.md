@@ -84,6 +84,10 @@ printf '%s\n' \
 4.0.7 起这四项不再经 MCP 暴露（**MCP 面净减 4 项**）：**纯 MCP 客户端会失去**
 `unread` / `mark_read` / `heartbeat` / `alive`；替代品是司南 CLI：
 
+> **克隆边界**：克隆整 BASE 是允许的（备份/迁移要它），但**同一身份的两份不要同时
+> 指向同一 root/卷**——会互相吃游标；迁移用 **move** 不用 copy。
+> `doctor` / `alive` 看到同一 `agent_id` 有两个活跃实例时只**告警**，不硬拒。
+
 ```sh
 python3 daybook-orch/orchestrator.py --home /path/to/ledger unread  <agent_id> <卷>
 python3 daybook-orch/orchestrator.py --home /path/to/ledger mark_read <agent_id> <卷>

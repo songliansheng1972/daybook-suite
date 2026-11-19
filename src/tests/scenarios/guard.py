@@ -159,6 +159,7 @@ WRITE_PATHS = (
     ('orch_fixes_test.py', 'test_cross_process_lock', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_author_head_parse', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_legacy_minute_heartbeat', 'other', '随包测试：目标由 tempfile 生成'),
+    ('orch_fixes_test.py', 'test_instance_token_and_dup_warning', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_cli_limit_semantics', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_digest_visibility_and_limit', 'other', '随包测试：目标由 tempfile 生成'),
     ('orch_fixes_test.py', 'test_pull_reply', 'other', '随包测试：目标由 tempfile 生成'),
@@ -197,6 +198,7 @@ WRITE_PATHS = (
     # Closure-surface registrations: write-capable first-party functions reached from ledger
     # primitives. Entry names are never signed; bundled tests are report-only.
     ('agent_heartbeat.py', 'recover', 'ledger', '心跳恢复：写 alive 条目到账本卷'),
+    ('instance.py', 'ensure', 'ledger', '安装期实例号：写账本根内 实例.json'),
     ('agent_lock.py', 'acquire', 'ledger', '取根锁 + 租约日志（账本卷）'),
     ('agent_lock.py', 'release', 'ledger', '释放锁 + 租约日志（账本卷）'),
     ('agent_message.py', 'handle', 'ledger', '收件箱/回执落账'),
@@ -5027,7 +5029,7 @@ def _case_five_roots(tmp):
     present = []
     for name in ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py',
                  'errors.py', 'daybook_hook.py', 'mcp_resources.py', 'mcp_transport.py',
-                 'volume_paths.py', 'conf_norm.py'):
+                 'volume_paths.py', 'conf_norm.py', 'instance.py'):
         src = os.path.join(os.path.dirname(SRC_BIN), name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(confd, name))
@@ -5129,7 +5131,7 @@ _MATRIX_COPY = ('daybook.py', 'safeio.py', 'daybook_append.py', 'ledger_root.py'
                 'mcp_tools.py', 'mcp_prompts.py', 'mcp_subscribe.py',
                 'volume_paths.py', 'orchestrator.py', 'agent_registry.py', 'cross_ref.py',
                 'task_volume.py', 'agent_lock.py', 'agent_heartbeat.py', 'agent_message.py',
-                'daybook_multidx.py', 'errors.py', 'conf_norm.py')
+                'daybook_multidx.py', 'errors.py', 'conf_norm.py', 'instance.py')
 
 
 def _matrix_cmds(exedir, ledger, kinds):
@@ -5480,12 +5482,12 @@ def _case_conf_dual_e2e(tmp):
             os.makedirs(os.path.join(d, 'sub'))
             io.open(os.path.join(d, 'daybook.conf'), 'w', encoding='utf-8').write(text)
         for nm in ('daybook.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py',
-                   'errors.py', 'conf_norm.py'):
+                   'errors.py', 'conf_norm.py', 'instance.py'):
             shutil.copy2(os.path.join(here, nm), os.path.join(full, nm))
         for nm in ('orchestrator.py', 'volume_paths.py', 'ledger_root.py', 'errors.py',
                    'conf_norm.py', 'safeio.py', 'agent_registry.py', 'agent_lock.py',
                    'agent_heartbeat.py', 'task_volume.py', 'cross_ref.py',
-                   'daybook_append.py', 'agent_message.py'):
+                   'daybook_append.py', 'agent_message.py', 'instance.py'):
             shutil.copy2(os.path.join(here, nm), os.path.join(orch, nm))
         io.open(os.path.join(full, 'sub', '账卷.txt'), 'w', encoding='utf-8').write(
             '[2026-11-13 10:00:00] [测试] [甲] [皮特] 正文\n')

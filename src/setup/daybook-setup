@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 
 SETUP_DIR = os.path.dirname(os.path.abspath(__file__))
 PKG_ROOT = os.path.dirname(SETUP_DIR)                 # daybook-mcp/
@@ -196,6 +197,60 @@ def ensure_ledger(st):
         out('GREEN 账本根：已新建 %s' % LEDGER)
     else:
         out('GREEN 账本根：已存在，未动 %s' % LEDGER)
+
+
+def ensure_instance():
+    """安装期确保实例号；已有则保留（幂等）。克隆会连同文件复制，运行时 token 另拼路径哈希。
+    Ensure an install-time instance id; keep the existing one (idempotent). A clone copies the
+    file; the runtime token appends a path hash so two copies at different paths differ."""
+    p = os.path.join(LEDGER, '实例.json')
+    try:
+        with open(p, encoding='utf-8') as f:
+            d = json.load(f)
+        if d.get('实例'):
+            return d['实例']
+    except (OSError, ValueError):
+        pass
+    rec = {'实例': uuid.uuid4().hex,
+           '生成': time.strftime('%Y-%m-%d %H:%M:%S'),
+           'BASE': os.path.abspath(BASE)}
+    os.makedirs(LEDGER, exist_ok=True)
+    tmp = p + '.tmp-%d' % os.getpid()
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(rec, f, ensure_ascii=False)
+    os.replace(tmp, p)
+    return rec['实例']
+
+
+def active_instance_warnings(timeout=120):
+    """同一 agent_id 出现两个活跃实例 ⇒ 告警（不硬拒）。
+    Warn (never hard-reject) when one agent_id shows two active instances."""
+    p = os.path.join(LEDGER, '心跳卷.txt')
+    try:
+        lines = open(p, encoding='utf-8').read().splitlines()
+    except OSError:
+        return []
+    now = time.time()
+    seen = {}
+    for line in lines:
+        if '[心跳]' not in line or 'alive' not in line:
+            continue
+        parts = [x.strip(' []') for x in line.split(']') if x.strip()]
+        if len(parts) < 3 or not parts[2].startswith('ag-'):
+            continue
+        ts = None
+        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M'):
+            try:
+                ts = time.mktime(time.strptime(parts[0], fmt))
+                break
+            except ValueError:
+                continue
+        if ts is None or ts < now - timeout:
+            continue
+        m = re.search(r'\[实例=([^\]]+)\]', line)
+        tok = m.group(1) if m else '∅'
+        seen.setdefault(parts[2], set()).add(tok)
+    return [(a, sorted(t)) for a, t in sorted(seen.items()) if len(t) > 1]
 
 
 def registry():
@@ -554,6 +609,7 @@ def cmd_install():
     out('== daybook-setup install 4.0.7 ==')
     sync_runtime(st)
     ensure_ledger(st)
+    ensure_instance()
     ids = []
     for name, label in IDENTITIES:
         aid = ensure_identity(name)
@@ -630,6 +686,10 @@ def cmd_doctor():
     checks.append(('密钥登记指纹', 'GREEN' if not bad_keys else 'RED',
                    '全部有登记' if not bad_keys
                    else '; '.join('%s:%s %s' % (a, f or '∅', w) for a, f, w in bad_keys)))
+    dup = active_instance_warnings()
+    checks.append(('同身份多实例', 'WARN' if dup else 'GREEN',
+                   '；'.join('%s ← %s' % (a, ', '.join(t)) for a, t in dup)
+                   if dup else '无（同一身份只有 1 个活跃实例）'))
     hits, scanned = secret_scan()
     checks.append(('密钥泄漏扫描', 'GREEN' if not hits else 'RED',
                    '0 命中（扫描 %d 文件）' % scanned if not hits

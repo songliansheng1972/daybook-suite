@@ -724,13 +724,53 @@ def test_legacy_minute_heartbeat():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_instance_token_and_dup_warning():
+    """实例号随心跳/条目落卷；同一 agent 两个活跃实例 ⇒ alive 告警（不硬拒）。
+    Instance tokens land with heartbeats/entries; two active instances for one agent ⇒ alive warns."""
+    print('== 15. 实例号：心跳/条目携带 · 同身份多实例告警 ==')
+    import instance as _inst
+    from orchestrator import Hub
+    from agent_heartbeat import Heartbeat
+    import daybook_append as _dba
+    root = _fresh_root('inst')
+    try:
+        uid = _inst.ensure(root)
+        tok = _inst.token(root)
+        check('实例号已生成', bool(uid) and bool(tok), 'uid=%s tok=%s' % (uid[:8], tok))
+        hbpath = os.path.join(root, '心跳卷.txt')
+        hb = Heartbeat(hbpath, period=10, dead_after=3, root=root)
+        hb.beat('ag-dup')
+        txt = open(hbpath, encoding='utf-8').read()
+        check('心跳条目携带 [实例=…]', ('[实例=%s]' % tok) in txt, txt.strip()[:90])
+        vol = os.path.join(root, '协作卷.txt')
+        _dba.append_one(vol, '聊', 't', '正文', author='甲',
+                        author_id='ag-0123456789abcdef', root=root)
+        line = open(vol, encoding='utf-8').read()
+        check('条目携带 [实例=…]', ('[实例=%s]' % tok) in line, line.strip()[:90])
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        _append_fixture(hbpath, '[%s] [心跳] [ag-dup] alive [实例=deadbeef@11111111]\n'
+                        % now, root)
+        _append_fixture(hbpath, '[%s] [心跳] [ag-one] alive [实例=%s]\n' % (now, tok), root)
+        hub = Hub(root=root)
+        online, why = hub.alive('ag-dup', timeout=120)
+        check('两活跃实例 ⇒ 仍 online（不硬拒）', online and 'online' in why, why)
+        check('两活跃实例 ⇒ 告警 2 个活跃实例', '2 个活跃实例' in why
+              and 'move' in why, why)
+        online1, why1 = hub.alive('ag-one', timeout=120)
+        check('单实例 ⇒ 不告警', online1 and '活跃实例' not in why1, why1)
+        return all(_results)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 TESTS = {1: test_pull_reply, 2: test_identity_signature,
          3: test_root_resolution, 4: test_read_locking,
          5: test_route, 6: test_digest_visibility_and_limit,
          7: test_alarm_structure_and_exit_codes, 8: test_cli_limit_semantics,
          9: test_cross_process_lock, 10: test_verify_requires_baseline,
          11: test_sock_and_dead_code, 12: test_single_pass_reads,
-         13: test_author_head_parse, 14: test_legacy_minute_heartbeat}
+         13: test_author_head_parse, 14: test_legacy_minute_heartbeat,
+         15: test_instance_token_and_dup_warning}
 
 
 def main(argv):

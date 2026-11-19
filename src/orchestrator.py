@@ -101,6 +101,7 @@ import agent_heartbeat as _hb
 import agent_lock as _lock
 import daybook_append as _dba
 import volume_paths as _vp
+import instance as _instance
 
 AUTHOR_ID_RE = _dba.AUTHOR_ID_RE   # 作者附注 [id=ag-…] 与条号 [id=m…] 的区分依据
 
@@ -681,14 +682,22 @@ class Hub:
 
     def alive(self, agent_id, timeout=120):
         """在线判定：最后心跳在 timeout 秒内即在线（与 4.0.6 璇玑同口径）。
-        Presence: online when the last heartbeat is within `timeout` seconds (same rule as 4.0.6 Xuanji)."""
+        Presence: online when the last heartbeat is within `timeout` seconds (same rule as 4.0.6 Xuanji).
+        同身份出现两个活跃实例只告警、不硬拒（克隆/迁移切换要用）；迁移用 move 不用 copy。
+        Two active instances of one identity only warn (clone/migration needs it); move, don't copy."""
         last = self.hb._last_beat(agent_id)
         if last is None:
             return False, 'offline（无心跳记录）'
         age = int(time.time() - last)
+        insts = _instance.active(self.vols['heartbeat'], timeout).get(agent_id, {})
+        warn = ''
+        if len(insts) > 1:
+            warn = ('；⚠ %d 个活跃实例（%s）·同身份两份会互相吃游标'
+                    '（迁移用 move 不用 copy）'
+                    % (len(insts), ', '.join(sorted(insts))))
         if age <= timeout:
-            return True, 'online'
-        return False, 'offline（超时 %d 秒）' % age
+            return True, 'online' + warn
+        return False, 'offline（超时 %d 秒）%s' % (age, warn)
 
     def _log(self, kind, title, msg, author, to=None, re_ref=None):
         """落一条带显式条号 + 签名 + 回应引用的编排卷条目。返回条号 id。

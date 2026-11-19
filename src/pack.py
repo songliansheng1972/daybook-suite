@@ -126,7 +126,10 @@ PACKAGES = {
                  'daybook_record.py', 'daybook_session_hook.py', 'daybook_hook.py',
                  # v3.1：四库式多级索引（部→类→属）·daybook.py multiindex 子命令懒 import
                  # v3.1: four-library-style multi-level index (section → category → attribute) · daybook.py multiindex subcommand lazy-imports it
-                 'daybook_multidx.py'],
+                 'daybook_multidx.py',
+                 # 4.0.7 实例号（安装期生成·心跳/条目携带·doctor/alive 告警）
+                 # 4.0.7 instance id (install-time · carried by heartbeats/entries · doctor/alive warn)
+                 'instance.py'],
         'prog_aux': ['daybook.sh', 'daybook.c', 'daybook.bas', 'daybook.f',
                      'sentinel.sh', 'sentinel-daemon.sh',
                      # 通用入口烟雾测试：--help 不得 NameError（挡模块尾 sys 未导入）
@@ -178,6 +181,7 @@ PACKAGES = {
         'prog': ['mcp_server.py', 'mcp_tools.py', 'mcp_resources.py',
                  'mcp_prompts.py', 'mcp_subscribe.py', 'mcp_transport.py',
                  'daybook_append.py', 'safeio.py', 'ledger_root.py', 'errors.py',
+                 'instance.py',
                  # conf 归一/解析的唯一实现（零依赖）·三包同带同一份
                  # The one conf normalisation/parser (zero-dependency) · shipped verbatim by all three
                  'conf_norm.py',
@@ -233,7 +237,7 @@ PACKAGES = {
         'prog': ['orchestrator.py', 'agent_registry.py', 'agent_lock.py',
                  'agent_heartbeat.py', 'agent_message.py', 'task_volume.py',
                  'cross_ref.py', 'daybook_append.py', 'safeio.py', 'ledger_root.py',
-                 'errors.py', 'conf_norm.py',
+                 'errors.py', 'conf_norm.py', 'instance.py',
                  'volume_paths.py'],
         # 两个测试脚本 + 一个性能对照脚本随包发·不计入构建号
         # Two test scripts plus one performance A/B script ship with the package · not counted in the build number
@@ -366,8 +370,10 @@ def verify_one(pkg_key, spec, src, out_root):
 
 def scan_bytecode(out_root, targets):
     """打包校验前置：盒内出现 __pycache__/.pyc/.pyo 直接判红（不等 md5 对账）。
-    Pre-verify: any __pycache__/.pyc/.pyo in the boxes is red immediately (before md5 reconciliation)."""
-    bad = []
+    Pre-verify: any __pycache__/.pyc/.pyo in the boxes is red immediately (before md5 reconciliation).
+    返回 (缓存目录列表, 字节码文件列表)，供「N 目录 / M 文件」成对报数。
+    Returns (cache dirs, bytecode files) so the report can carry both counts."""
+    dirs_bad, files_bad = [], []
     for name in targets:
         box = PACKAGES[name]['box']
         dest = os.path.join(out_root, box)
@@ -376,32 +382,32 @@ def scan_bytecode(out_root, targets):
         for dirpath, dirs, files in os.walk(dest):
             for d in dirs:
                 if d == '__pycache__':
-                    bad.append((box, os.path.relpath(os.path.join(dirpath, d), dest)))
+                    dirs_bad.append((box, os.path.relpath(os.path.join(dirpath, d), dest)))
             for f in files:
                 if f.endswith(('.pyc', '.pyo')):
-                    bad.append((box, os.path.relpath(os.path.join(dirpath, f), dest)))
-    return bad
+                    files_bad.append((box, os.path.relpath(os.path.join(dirpath, f), dest)))
+    return dirs_bad, files_bad
 
 
 def scan_source_bytecode(paths):
     """构建前扫输入面：源树里任何 __pycache__/.pyc/.pyo 都拒绝构建（在任何清理之前）。
     Pre-build input scan: any __pycache__/.pyc/.pyo in the source trees rejects the build
     (before any cleanup), so planting evidence cannot be erased by rmtree(dest).
-    每个 __pycache__ 只记一条（剪枝，不再重复记里面的 .pyc）；散落的 .pyc/.pyo 也记。"""
-    bad = []
+    返回 (缓存目录列表, 字节码文件列表)；每个缓存目录记 1 条，目录内 .pyc 另计入文件数。"""
+    dirs_bad, files_bad = [], []
     for root in paths:
         if not os.path.isdir(root):
             continue
         for dirpath, dirs, files in os.walk(root):
-            if '__pycache__' in dirs:
-                p = os.path.join(dirpath, '__pycache__')
-                bad.append((os.path.relpath(p, os.path.dirname(root)), '缓存目录'))
-                dirs.remove('__pycache__')
+            for d in dirs:
+                if d == '__pycache__':
+                    p = os.path.join(dirpath, d)
+                    dirs_bad.append((os.path.relpath(p, os.path.dirname(root)), '缓存目录'))
             for f in files:
                 if f.endswith(('.pyc', '.pyo')):
                     p = os.path.join(dirpath, f)
-                    bad.append((os.path.relpath(p, os.path.dirname(root)), '字节码'))
-    return bad
+                    files_bad.append((os.path.relpath(p, os.path.dirname(root)), '字节码'))
+    return dirs_bad, files_bad
 
 
 def verify_all(targets, src, out_root):
@@ -412,11 +418,11 @@ def verify_all(targets, src, out_root):
     print('== 一致守卫：产物 == 源 校验 ==')
     # 先判缓存：测试入口已设 PYTHONDONTWRITEBYTECODE，若仍有残留即红，不进入逐件比对。
     # Cache check first: test entries set PYTHONDONTWRITEBYTECODE; any residue is red before file comparison.
-    cache_bad = scan_bytecode(out_root, targets)
-    if cache_bad:
-        print('RED 包内字节码缓存：%d 件（先清理再 verify；测试入口已设零字节码）' % len(cache_bad),
-              file=sys.stderr)
-        for box, rel in cache_bad:
+    cache_dirs, cache_files = scan_bytecode(out_root, targets)
+    if cache_dirs or cache_files:
+        print('RED 包内字节码缓存：%d 目录 / %d 文件（先清理再 verify；测试入口已设零字节码）'
+              % (len(cache_dirs), len(cache_files)), file=sys.stderr)
+        for box, rel in cache_dirs + cache_files:
             print('  ✗ %s/%s' % (box, rel), file=sys.stderr)
         return 4
     bad = []
@@ -568,12 +574,12 @@ def main():
     # Pre-build input scan over the four source trees; reject before any rmtree(dest).
     if not args.dry:
         repo = os.path.dirname(HERE)
-        src_bad = scan_source_bytecode([src] + [os.path.join(repo, b)
-                                                for b in ('daybook', 'daybook-mcp', 'daybook-orch')])
-        if src_bad:
-            print('RED 源树内含字节码缓存：%d 件（构建前拒绝；先清理源树再打包）'
-                  % len(src_bad), file=sys.stderr)
-            for rel, why in src_bad:
+        src_dirs, src_files = scan_source_bytecode(
+            [src] + [os.path.join(repo, b) for b in ('daybook', 'daybook-mcp', 'daybook-orch')])
+        if src_dirs or src_files:
+            print('RED 源树内含字节码缓存：%d 目录 / %d 文件（构建前拒绝；先清理源树再打包）'
+                  % (len(src_dirs), len(src_files)), file=sys.stderr)
+            for rel, why in src_dirs + src_files:
                 print('  ✗ %-42s %s' % (rel, why), file=sys.stderr)
             return 4
 
@@ -585,11 +591,11 @@ def main():
     if not rc and not args.dry:
         # 构建后立刻扫字节码：不把「清掉证据再 verify」当成唯一修复路径。
         # Scan right after building: clearing evidence before verify must not be the only fix path.
-        cache_bad = scan_bytecode(out_root, targets)
-        if cache_bad:
-            print('RED 构建产物内含字节码缓存：%d 件（构建入口已设零字节码，仍出现即判红）'
-                  % len(cache_bad), file=sys.stderr)
-            for box, rel in cache_bad:
+        cache_dirs, cache_files = scan_bytecode(out_root, targets)
+        if cache_dirs or cache_files:
+            print('RED 构建产物内含字节码缓存：%d 目录 / %d 文件（构建入口已设零字节码，仍出现即判红）'
+                  % (len(cache_dirs), len(cache_files)), file=sys.stderr)
+            for box, rel in cache_dirs + cache_files:
                 print('  ✗ %s/%s' % (box, rel), file=sys.stderr)
             return 4
         if args.pkg == 'all':

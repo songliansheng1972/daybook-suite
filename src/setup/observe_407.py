@@ -439,6 +439,32 @@ def main():
                 run([setup, '--base', eb3, 'uninstall'],
                     cwd=os.path.dirname(setup), env=ecfg3, timeout=120)
 
+            # E.4 doctor：同一 agent 两个活跃实例 ⇒ WARN（不硬拒）
+            eb4 = os.path.join(tmp, 'ebase4')
+            ecfg4 = {
+                'DAYBOOK_TRAE_CFG': os.path.join(tmp, 'etrae4.json'),
+                'DAYBOOK_WB_CFG': os.path.join(tmp, 'ewb4.json'),
+                'DAYBOOK_DSH_CFG': os.path.join(tmp, 'edsh4.yml'),
+                'DAYBOOK_PLIST': os.path.join(tmp, 'ep4.plist'),
+            }
+            try:
+                run([setup, '--base', eb4, '--source', src_root, 'install'],
+                    cwd=os.path.dirname(setup), env=ecfg4, timeout=180)
+                hb4 = os.path.join(eb4, 'ledger', '心跳卷.txt')
+                now = time.strftime('%Y-%m-%d %H:%M:%S')
+                with open(hb4, 'a', encoding='utf-8') as f:
+                    f.write('[%s] [心跳] [ag-aaaaaaaaaaaaaaaa] alive [实例=11111111@aaaa]\n' % now)
+                    f.write('[%s] [心跳] [ag-aaaaaaaaaaaaaaaa] alive [实例=22222222@bbbb]\n' % now)
+                r4 = run([setup, '--base', eb4, 'doctor'],
+                         cwd=os.path.dirname(setup), env=ecfg4, timeout=120)
+                txt4 = (r4[1] or '') + (r4[2] or '')
+                ok_all &= check('E.4 doctor 同身份多实例 ⇒ WARN 不硬拒',
+                                r4[0] == 0 and '同身份多实例' in txt4
+                                and 'WARN' in txt4, 'rc=%d' % r4[0])
+            finally:
+                run([setup, '--base', eb4, 'uninstall'],
+                    cwd=os.path.dirname(setup), env=ecfg4, timeout=120)
+
         print('\n== 总结：%s ==' % ('三观察点 + 密钥自证 + 克隆/超时全绿' if ok_all else '存在红项'))
         return 0 if ok_all else 1
     finally:

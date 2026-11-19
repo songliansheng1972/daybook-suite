@@ -68,7 +68,13 @@ class Heartbeat:
         if not self.root:
             raise RuntimeError('Heartbeat.beat: 缺少账本根（root）·拒绝写入'
                                '（不猜目标所在目录）')
-        rec = '[%s] [心跳] [%s] alive\n' % (_now(), agent_id)
+        try:
+            from instance import token as _inst_token
+            inst = _inst_token(self.root)
+        except Exception:                            # noqa: BLE001
+            inst = None
+        rec = '[%s] [心跳] [%s] alive%s\n' % (
+            _now(), agent_id, (' [实例=%s]' % inst) if inst else '')
         with locked(self.root) as lr:
             lr.write(lr.root.rel_of(self.path, 'agent_heartbeat.beat'), rec,
                      mode=WriteMode.APPEND_CREATE)

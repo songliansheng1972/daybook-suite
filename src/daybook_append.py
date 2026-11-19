@@ -327,6 +327,15 @@ def append_one(path, kind, title, msg, author='未标', to=None,
     head = '[%s] [%s] [%s] [%s] ' % (now, kind, title, author)
     if author_id:
         head += '[id=%s] ' % author_id
+    try:
+        from instance import token as _inst_token
+        _inst = _inst_token(root)
+    except Exception:                                # noqa: BLE001
+        _inst = None
+    if _inst:
+        # 实例号随条目落卷：同身份两份指向同一 root 时，读取侧可据此告警。
+        # The instance token lands with the entry, so readers can warn when two copies share a root.
+        head += '[实例=%s] ' % _inst
     if unregistered:
         head += '[未注册] '
     if msg_id:
