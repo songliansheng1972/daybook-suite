@@ -34,6 +34,9 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 入口烟雾测试零字节码：它扫到的每个子进程都继承该环境，不写 __pycache__。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
 TIMEOUT = 15
 ALLOWED_RC = (0, 1, 2)   # --help 约定：0 正常 / 1 打用法 / 2 参数错 · conventional --help statuses
 # 测试/校验/压测脚本不是 CLI 入口 · test/check/bench scripts are not CLI entry points

@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 手艺人老宋 <songliansheng@vip.sina.com>
+"""daybook-setup 4.0.7（随包组件）
+================================
+install  ：同步运行副本、建账本根（已有不动）、注册身份、本机生成/校验密钥、
+           安装签名代理、写三家客户端配置（改前备份）、自检
+doctor   ：只读体检，逐项 GREEN/YELLOW/RED；密钥项不靠「文件存在 + 0600」过关，
+           必须内容形状正确且泄漏扫描 0 命中
+uninstall：停代理、还原配置，账本保留
+
+约束：不删除账本；任何一步失败即停并给出回滚命令；密钥不打印、不入日志/命令行。
+用法：daybook-setup [--base DIR] [--source DIR] install|doctor|uninstall|show
+"""
+import argparse
+import copy
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+
+SETUP_DIR = os.path.dirname(os.path.abspath(__file__))
+PKG_ROOT = os.path.dirname(SETUP_DIR)                 # daybook-mcp/
+SUITE_ROOT = os.path.dirname(PKG_ROOT)                # 三包同级根
+
+BASE = os.path.expanduser('~/.daybook-mailroom')
+LEDGER = ''
+RUNTIME = ''
+SOURCE = ''
+SIGNER_DIR = ''
+SIGNER = ''
+STATE = ''
+PLIST = os.path.expanduser('~/Library/LaunchAgents/com.daybook.dispatcher.plist')
+TRAE_CFG = os.path.expanduser('~/Library/Application Support/Trae CN/User/mcp.json')
+TRAE_DB = os.path.expanduser('~/Library/Application Support/Trae CN/User/globalStorage/state.vscdb')
+WB_CFG = os.path.expanduser('~/.workbuddy/mcp.json')
+DSH_CFG = os.path.expanduser('~/.dsh/profiles/desktop/cordis.patch.yml')
+IDENTITIES = [('trae', 'trae'), ('workbuddy', 'workbuddy'),
+              ('deepseek-harness', 'deepseek-harness')]
+PY = sys.executable
+KEY_RE = re.compile(r'^[0-9a-f]{64}$')
+
+
+def configure(base, source=None):
+    global BASE, LEDGER, RUNTIME, SOURCE, SIGNER_DIR, SIGNER, STATE
+    global TRAE_CFG, TRAE_DB, WB_CFG, DSH_CFG, PLIST
+    BASE = os.path.abspath(os.path.expanduser(base))
+    LEDGER = os.path.join(BASE, 'ledger')
+    RUNTIME = os.path.join(BASE, 'runtime', 'daybook-suite')
+    SIGNER_DIR = os.path.join(BASE, 'signer')
+    SIGNER = os.path.join(SIGNER_DIR, 'daybook-signer')
+    STATE = os.path.join(BASE, 'setup', 'install-state.json')
+    SOURCE = os.path.abspath(os.path.expanduser(source)) if source else detect_source()
+    # 测试/多账户隔离：客户端配置路径可用环境变量覆盖（默认 macOS 用户级路径）。
+    # Test / multi-account isolation: client config paths can be overridden by env vars.
+    TRAE_CFG = os.environ.get(
+        'DAYBOOK_TRAE_CFG',
+        os.path.expanduser('~/Library/Application Support/Trae CN/User/mcp.json'))
+    TRAE_DB = os.environ.get(
+        'DAYBOOK_TRAE_DB',
+        os.path.expanduser('~/Library/Application Support/Trae CN/User/globalStorage/state.vscdb'))
+    WB_CFG = os.environ.get('DAYBOOK_WB_CFG', os.path.expanduser('~/.workbuddy/mcp.json'))
+    DSH_CFG = os.environ.get('DAYBOOK_DSH_CFG',
+                             os.path.expanduser('~/.dsh/profiles/desktop/cordis.patch.yml'))
+    PLIST = os.environ.get('DAYBOOK_PLIST',
+                           os.path.expanduser('~/Library/LaunchAgents/com.daybook.dispatcher.plist'))
+
+
+def detect_source():
+    """发行树：<root>/daybook-mcp/setup/daybook-setup ⇒ root 有三个同级包。
+    Release tree: <root>/daybook-mcp/setup/daybook-setup ⇒ root holds the three sibling packages."""
+    for cand in (SUITE_ROOT, PKG_ROOT):
+        if os.path.exists(os.path.join(cand, 'daybook-mcp', 'mcp_server.py')):
+            return cand
+    return ''
+
+
+def out(msg):
+    print(msg, flush=True)
+
+
+def die(step, msg):
+    out('RED   %s：%s' % (step, msg))
+    out('已停止，未继续下一步。回滚：daybook-setup uninstall')
+    sys.exit(2)
+
+
+def load_state():
+    try:
+        with open(STATE, encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(st):
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    tmp = STATE + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(st, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, STATE)
+
+
+def backup(path, st):
+    rec = st.setdefault('backups', {}).get(path)
+    if rec is not None:
+        return rec
+    if os.path.exists(path):
+        b = path + '.bak-daybook-setup-' + time.strftime('%Y%m%d-%H%M%S')
+        shutil.copy2(path, b)
+        rec = {'existed': True, 'path': b}
+    else:
+        rec = {'existed': False, 'path': None}
+    st['backups'][path] = rec
+    save_state(st)
+    return rec
+
+
+def sha256_file(path):
+    try:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return ''
+
+
+def version_of(root):
+    p = os.path.join(root, 'daybook-mcp', 'version.txt')
+    try:
+        with open(p, encoding='utf-8') as f:
+            return f.readline().strip()
+    except OSError:
+        return ''
+
+
+def sync_runtime(st):
+    if not SOURCE:
+        die('运行副本', '找不到同级三包根（需要 daybook-mcp/ 与 daybook-orch/）；用 --source 指定')
+    for need in ('daybook-mcp', 'daybook-orch'):
+        if not os.path.isdir(os.path.join(SOURCE, need)):
+            die('运行副本', '源缺 %s：%s' % (need, os.path.join(SOURCE, need)))
+    sv = version_of(SOURCE)
+    if '4.0.7' not in sv:
+        die('运行副本', '源不是 4.0.7：%s' % (sv or '无 version.txt'))
+    if version_of(RUNTIME) == sv:
+        out('GREEN 运行副本：已是最新 %s' % sv)
+        return
+    tmp = RUNTIME + '.tmp-' + str(os.getpid())
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    for d in ('daybook', 'daybook-mcp', 'daybook-orch'):
+        s = os.path.join(SOURCE, d)
+        if os.path.isdir(s):
+            shutil.copytree(s, os.path.join(tmp, d),
+                            ignore=shutil.ignore_patterns('__pycache__', '*.pyc',
+                                                          '.daybook_keys'))
+    if not st.get('runtime_created'):
+        st['runtime_created'] = not os.path.isdir(RUNTIME)
+    old = RUNTIME + '.old-' + str(os.getpid())
+    if os.path.isdir(RUNTIME):
+        os.replace(RUNTIME, old)
+    os.replace(tmp, RUNTIME)
+    shutil.rmtree(old, ignore_errors=True)
+    out('GREEN 运行副本：已同步 %s' % sv)
+
+
+def ensure_ledger(st):
+    if not os.path.isdir(LEDGER):
+        os.makedirs(LEDGER, exist_ok=True)
+        st['ledger_created'] = True
+        # 优先用发行 conf（卷表挂 sample/ 三卷），否则空卷表会让璇玑启动即 2。
+        # Prefer the distribution conf (three sample volumes); an empty volume table
+        # would make Xuanji exit 2 on startup.
+        conf = os.path.join(RUNTIME, 'daybook', 'daybook.conf')
+        if not os.path.exists(conf):
+            conf = os.path.join(RUNTIME, 'daybook-mcp', 'daybook.conf')
+        if os.path.exists(conf):
+            shutil.copy2(conf, os.path.join(LEDGER, 'daybook.conf'))
+        sample = os.path.join(RUNTIME, 'daybook', 'sample')
+        if os.path.isdir(sample) and not os.path.exists(os.path.join(LEDGER, 'sample')):
+            shutil.copytree(sample, os.path.join(LEDGER, 'sample'),
+                            ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+        out('GREEN 账本根：已新建 %s' % LEDGER)
+    else:
+        out('GREEN 账本根：已存在，未动 %s' % LEDGER)
+
+
+def registry():
+    p = os.path.join(LEDGER, '注册卷.txt')
+    rows = []
+    try:
+        for line in open(p, encoding='utf-8'):
+            m = re.search(r'\[注册\]\s*\[(ag-[0-9a-f]+)\]\s*\[([^\]]+)\]', line)
+            if m:
+                rows.append({'id': m.group(1), 'name': m.group(2)})
+    except FileNotFoundError:
+        pass
+    return rows
+
+
+def key_path(agent_id):
+    return os.path.join(LEDGER, '.daybook_keys', agent_id + '.key')
+
+
+def key_shape(path):
+    """返回 (ok, why)。只判形状与权限，不打印内容。
+    Returns (ok, why). Checks shape and mode only; never prints the content."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False, '缺失'
+    if (st.st_mode & 0o777) != 0o600:
+        return False, '权限=%o（须 600）' % (st.st_mode & 0o777)
+    try:
+        val = open(path, encoding='utf-8').read().strip()
+    except OSError as e:
+        return False, '不可读：%s' % type(e).__name__
+    if not val:
+        return False, '空文件'
+    if not KEY_RE.match(val):
+        return False, '内容不是 64 位 hex'
+    return True, '600/64hex'
+
+
+def ensure_identity(name):
+    rows = registry()
+    for r in rows:
+        if r['name'] == name:
+            k = key_path(r['id'])
+            ok, why = key_shape(k)
+            if not ok:
+                die('密钥 %s' % name, '%s（%s）' % (k, why))
+            out('GREEN 身份：%s / %s（密钥 %s）' % (name, r['id'], why))
+            return r['id']
+    orch = os.path.join(RUNTIME, 'daybook-orch', 'orchestrator.py')
+    if not os.path.exists(orch):
+        die('注册身份', '找不到 orchestrator：%s' % orch)
+    # --quiet：注册卷写密钥文件 600，secret 不回显、不进本进程输出
+    r = subprocess.run([PY, orch, '--home', LEDGER, 'join', name, '--quiet'],
+                       text=True, capture_output=True, timeout=60)
+    if r.returncode != 0:
+        die('注册身份 %s' % name, (r.stderr or r.stdout)[-300:])
+    rows = registry()
+    for x in rows:
+        if x['name'] == name:
+            k = key_path(x['id'])
+            ok, why = key_shape(k)
+            if not ok:
+                die('密钥 %s' % name, '%s（%s）' % (k, why))
+            out('GREEN 身份：%s / %s（本机生成·密钥 %s）' % (name, x['id'], why))
+            return x['id']
+    die('注册身份 %s' % name, 'join 后注册卷仍无该身份')
+
+
+def signer_source():
+    for cand in (os.path.join(PKG_ROOT, 'signer'),
+                 os.path.join(SOURCE, 'daybook-mcp', 'signer')):
+        if os.path.exists(os.path.join(cand, 'proxy.py')):
+            return cand
+    return ''
+
+
+def install_signer(st):
+    src = signer_source()
+    if not src:
+        die('签名代理', '发行包未带 signer/（proxy.py 缺失）')
+    os.makedirs(SIGNER_DIR, exist_ok=True)
+    changed = 0
+    for name in ('proxy.py', 'daybook-signer', 'verify_audit.py', 'README.md'):
+        s = os.path.join(src, name)
+        if not os.path.exists(s):
+            continue
+        d = os.path.join(SIGNER_DIR, name)
+        want = sha256_file(s)
+        if os.path.exists(d) and sha256_file(d) == want:
+            continue
+        if os.path.exists(d):
+            backup(d, st)
+        shutil.copy2(s, d)
+        changed += 1
+    os.chmod(os.path.join(SIGNER_DIR, 'daybook-signer'), 0o755)
+    out('GREEN 签名代理：%s' % ('无变化' if changed == 0 else '已安装 %d 件' % changed))
+
+
+def client_env():
+    return {
+        'DAYBOOK_BASE': BASE,
+        'DAYBOOK_ROOT': LEDGER,
+        'DAYBOOK_SERVER': os.path.join(RUNTIME, 'daybook-mcp', 'mcp_server.py'),
+        'DAYBOOK_AUDIT_BASE': BASE,
+    }
+
+
+def write_json_cfg(path, label, st):
+    entry = {'type': 'stdio', 'command': SIGNER, 'args': [label], 'env': client_env()}
+    old = None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding='utf-8') as f:
+                old = json.load(f)
+        except Exception:
+            old = None
+    # 合并而不是覆盖：保留用户已有的其他 MCP 服务与顶层键。深拷贝，避免原地改到 old。
+    # Merge, do not clobber: preserve other servers/top-level keys. Deep-copy so old is not mutated.
+    want = copy.deepcopy(old) if isinstance(old, dict) else {}
+    servers = want.get('mcpServers')
+    if not isinstance(servers, dict):
+        servers = {}
+    servers['daybook'] = entry
+    want['mcpServers'] = servers
+    if old == want:
+        out('GREEN 配置：%s 无变化' % path)
+        return
+    backup(path, st)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(want, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+    out('GREEN 配置：%s 已写入' % path)
+
+
+def write_dsh_cfg(st):
+    env = client_env()
+    block = ('- id: mcp-manager\n'
+             '  name: "@deepseek-ai/dsh-mcp-manager"\n'
+             '  config:\n'
+             '    servers:\n'
+             '      daybook:\n'
+             '        transport: stdio\n'
+             '        command: %s\n'
+             '        args: ["deepseek-harness"]\n'
+             '        env:\n' % SIGNER)
+    for k, v in env.items():
+        block += '          %s: %s\n' % (k, v)
+    old = open(DSH_CFG, encoding='utf-8').read() if os.path.exists(DSH_CFG) else ''
+    lines = old.splitlines(keepends=True)
+    start = next((i for i, l in enumerate(lines) if l.strip() == '- id: mcp-manager'), None)
+    if start is None:
+        new = old.rstrip() + ('\n\n' if old.strip() else '') + block
+    else:
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if lines[j].startswith('- id:'):
+                end = j
+                break
+        new = ''.join(lines[:start]) + block + ''.join(lines[end:])
+    if new == old:
+        out('GREEN 配置：%s 无变化' % DSH_CFG)
+        return
+    backup(DSH_CFG, st)
+    os.makedirs(os.path.dirname(DSH_CFG), exist_ok=True)
+    with open(DSH_CFG, 'w', encoding='utf-8') as f:
+        f.write(new)
+    out('GREEN 配置：%s 已写入' % DSH_CFG)
+
+
+def write_trae_whitelist(st):
+    if not os.path.exists(TRAE_DB):
+        out('YELLOW TRAE 白名单：找不到 state.vscdb')
+        return
+    backup(TRAE_DB, st)
+    try:
+        con = sqlite3.connect(TRAE_DB)
+        cur = con.cursor()
+        row = cur.execute(
+            "select value from ItemTable where key='currentAgentData_4021362611466836'").fetchone()
+        if not row:
+            out('YELLOW TRAE 白名单：未找到 currentAgentData 键')
+            con.close()
+            return
+        data = json.loads(row[0])
+        names = data.setdefault('mcp_list', [])
+        if 'daybook' not in names:
+            names.append('daybook')
+            cur.execute(
+                "update ItemTable set value=? where key='currentAgentData_4021362611466836'",
+                (json.dumps(data, ensure_ascii=False),))
+            con.commit()
+            out('GREEN TRAE 白名单：已加入 daybook')
+        else:
+            out('GREEN TRAE 白名单：已包含 daybook')
+        con.close()
+    except Exception as e:
+        out('YELLOW TRAE 白名单：写入失败 %s' % str(e)[:120])
+
+
+def handshake(label):
+    p = subprocess.Popen([SIGNER, label], text=True, bufsize=1,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL,
+                         env={**os.environ, **client_env()})
+    try:
+        p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize',
+                                  'params': {'protocolVersion': '2024-11-05'}}) + '\n')
+        p.stdin.flush()
+        line = p.stdout.readline()
+        if not line:
+            return False, '无响应'
+        p.stdin.write(json.dumps({'jsonrpc': '2.0', 'id': 2, 'method': 'tools/list'}) + '\n')
+        p.stdin.flush()
+        obj = json.loads(p.stdout.readline())
+        names = [t.get('name') for t in (obj.get('result') or {}).get('tools', [])]
+        return (len(names) == 4 and 'daybook_append' in names,
+                'tools=%d append=%s' % (len(names), 'daybook_append' in names))
+    except Exception as e:
+        return False, str(e)[:80]
+    finally:
+        try:
+            p.stdin.close()
+            p.wait(timeout=3)
+        except Exception:
+            p.kill()
+
+
+def secret_scan():
+    """泄漏扫描：读本机密钥值，在配置/日志/源码树里找完整 key；命中即红。
+    不打印 key，只打印指纹前缀与命中路径。
+    Leak scan: search the configs/logs/source tree for each full key; never print the key."""
+    keys = {}
+    kd = os.path.join(LEDGER, '.daybook_keys')
+    if os.path.isdir(kd):
+        for fn in os.listdir(kd):
+            if not fn.endswith('.key'):
+                continue
+            p = os.path.join(kd, fn)
+            try:
+                v = open(p, encoding='utf-8').read().strip()
+            except OSError:
+                continue
+            if KEY_RE.match(v):
+                keys[fn[:-4]] = v
+    if not keys:
+        return [], 0
+    roots = [BASE]
+    if SOURCE and os.path.abspath(SOURCE) != os.path.abspath(BASE):
+        roots.append(SOURCE)
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'dist', 'build',
+                 '.pytest_cache'}
+    hits = []
+    scanned = 0
+    for root in roots:
+        for dirpath, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            # 密钥文件自身不是泄漏（它就在该在的地方）
+            if os.path.abspath(dirpath) == os.path.abspath(kd):
+                continue
+            for fn in files:
+                p = os.path.join(dirpath, fn)
+                try:
+                    if os.path.getsize(p) > 2 * 1024 * 1024:
+                        continue
+                    raw = open(p, 'rb').read()
+                except OSError:
+                    continue
+                scanned += 1
+                for aid, key in keys.items():
+                    if key.encode() in raw:
+                        hits.append((aid, p))
+    return hits, scanned
+
+
+def config_digest():
+    rows = []
+    for p in (TRAE_CFG, WB_CFG, DSH_CFG):
+        rows.append('%s=%s' % (os.path.basename(p), sha256_file(p)[:16] or 'missing'))
+    return ' '.join(rows)
+
+
+def cmd_install():
+    st = load_state()
+    if not SOURCE:
+        die('运行副本', '找不到同级三包根；用 --source 指定发行树根')
+    out('== daybook-setup install 4.0.7 ==')
+    sync_runtime(st)
+    ensure_ledger(st)
+    ids = []
+    for name, label in IDENTITIES:
+        aid = ensure_identity(name)
+        ids.append((label, aid))
+    install_signer(st)
+    write_json_cfg(TRAE_CFG, 'trae', st)
+    write_trae_whitelist(st)
+    write_json_cfg(WB_CFG, 'workbuddy', st)
+    write_dsh_cfg(st)
+    for label, _aid in ids:
+        ok, why = handshake(label)
+        if not ok:
+            die('自检 %s' % label, why)
+        out('GREEN 自检：%s 代理握手 %s' % (label, why))
+    hits, scanned = secret_scan()
+    if hits:
+        for aid, p in hits:
+            out('RED   密钥泄漏：%s 的完整密钥出现在 %s' % (aid, p))
+        die('密钥', '完整密钥出现在配置/日志/源码树（%d 处）' % len(hits))
+    out('GREEN 密钥扫描：0 命中（扫描 %d 文件）' % scanned)
+    out('GREEN 配置指纹：%s' % config_digest())
+    st['installed_at'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    save_state(st)
+    out('== install 完成 ==')
+    out('还差你点一下：')
+    out('  1) TRAE：新会话里若弹出 daybook MCP 信任，点“信任/允许”。')
+    out('  2) WorkBuddy：MCP 面板若弹出“首次连接此 MCP 服务需要您的信任确认”，点“信任”。')
+    out('  3) WorkBuddy CLI：运行 codebuddy 后输入 /login（仅本人操作）。')
+    return 0
+
+
+def cmd_doctor():
+    out('== daybook-setup doctor 4.0.7 ==')
+    checks = []
+    sv = version_of(RUNTIME)
+    checks.append(('运行副本 4.0.7', 'GREEN' if '4.0.7' in sv else 'RED', sv or '缺失'))
+    checks.append(('账本根', 'GREEN' if os.path.isdir(LEDGER) else 'RED', LEDGER))
+    for name, _label in IDENTITIES:
+        hit = [r for r in registry() if r['name'] == name]
+        if not hit:
+            checks.append(('身份 %s' % name, 'RED', '未注册'))
+            continue
+        ok, why = key_shape(key_path(hit[0]['id']))
+        checks.append(('身份 %s' % name, 'GREEN' if ok else 'RED',
+                       '%s · 密钥 %s' % (hit[0]['id'], why)))
+    ps = subprocess.run(['ps', 'ax', '-o', 'pid,command'], capture_output=True, text=True)
+    plines = ps.stdout.splitlines()
+    for name, label in IDENTITIES:
+        lines = [l for l in plines if 'signer/proxy.py' in l
+                 and SIGNER_DIR in l and '--label %s' % label in l]
+        if lines:
+            checks.append(('代理 %s' % label, 'GREEN', '运行中'))
+        else:
+            checks.append(('代理 %s' % label, 'YELLOW', '客户端尚未拉起'))
+    checks.append(('TRAE 配置', 'GREEN' if os.path.exists(TRAE_CFG) else 'RED', TRAE_CFG))
+    checks.append(('WorkBuddy 配置', 'GREEN' if os.path.exists(WB_CFG) else 'RED', WB_CFG))
+    dsh = open(DSH_CFG, encoding='utf-8').read() if os.path.exists(DSH_CFG) else ''
+    checks.append(('DSH 配置', 'GREEN' if 'daybook' in dsh else 'RED', DSH_CFG))
+    signer_ok = os.path.exists(SIGNER) and os.path.exists(os.path.join(SIGNER_DIR, 'proxy.py'))
+    checks.append(('签名代理随包件', 'GREEN' if signer_ok else 'RED', SIGNER_DIR))
+    ok, why = handshake('trae')
+    checks.append(('璇玑工具面', 'GREEN' if ok else 'RED', why))
+    hits, scanned = secret_scan()
+    checks.append(('密钥泄漏扫描', 'GREEN' if not hits else 'RED',
+                   '0 命中（扫描 %d 文件）' % scanned if not hits
+                   else '%d 命中' % len(hits)))
+    for aid, p in hits:
+        checks.append(('泄漏 %s' % aid, 'RED', p))
+    checks.append(('派发器', 'YELLOW', '4.0.7 不随包、不承诺唤醒'))
+    checks.append(('TRAE 唤醒', 'YELLOW', '无 headless；仅 GUI'))
+    checks.append(('WorkBuddy 唤醒', 'YELLOW', '需本人 /login + UI 信任'))
+    for name, status, why in checks:
+        out('%-4s %-18s %s' % (status, name, why))
+    return 0
+
+
+def cmd_show():
+    rows = registry()
+    out('== 注册身份 ==')
+    for r in rows:
+        ok, why = key_shape(key_path(r['id']))
+        out('%s｜%s｜密钥 %s' % (r['id'], r['name'], why if ok else 'BAD:' + why))
+    path = os.path.join(LEDGER, '协作卷.txt')
+    if not os.path.exists(path):
+        out('YELLOW 协作卷不存在：%s' % path)
+        return 0
+    lines = open(path, encoding='utf-8').read().splitlines()
+    out('== 协作卷（末 20 条）==')
+    for line in lines[-20:]:
+        out(line)
+    return 0
+
+
+def cmd_uninstall():
+    st = load_state()
+    out('== daybook-setup uninstall ==')
+    for path, rec in st.get('backups', {}).items():
+        if rec.get('existed') and rec.get('path') and os.path.exists(rec['path']):
+            shutil.copy2(rec['path'], path)
+            out('GREEN 已还原 %s' % path)
+        elif not rec.get('existed') and os.path.exists(path):
+            os.remove(path)
+            out('GREEN 已移除安装时新建的 %s' % path)
+    for _name, label in IDENTITIES:
+        # 只停本 BASE 的代理，避免误杀另一套安装（同 label 不同目录）。
+        # Only stop proxies under this BASE; do not kill another install with the same label.
+        subprocess.run(['pkill', '-f', '%s/proxy.py.*--label %s' % (SIGNER_DIR, label)],
+                       capture_output=True)
+    out('GREEN 代理进程已停')
+    if os.path.exists(PLIST):
+        subprocess.run(['launchctl', 'bootout', 'gui/%d/com.daybook.dispatcher' % os.getuid()],
+                       capture_output=True)
+        os.remove(PLIST)
+        out('GREEN 旧派发器已停并移除 plist')
+    if st.get('runtime_created') and os.path.isdir(RUNTIME):
+        shutil.rmtree(RUNTIME)
+        out('GREEN 已移除安装时创建的运行副本')
+    out('KEEP 账本保留：%s' % LEDGER)
+    out('== uninstall 完成 ==')
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(prog='daybook-setup')
+    ap.add_argument('cmd', choices=['install', 'doctor', 'uninstall', 'show'])
+    ap.add_argument('--base', default=os.path.expanduser('~/.daybook-mailroom'))
+    ap.add_argument('--source', default=None, help='三包同级根（含 daybook-mcp/ 与 daybook-orch/）')
+    a = ap.parse_args()
+    configure(a.base, a.source)
+    return {'install': cmd_install, 'doctor': cmd_doctor,
+            'uninstall': cmd_uninstall, 'show': cmd_show}[a.cmd]()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

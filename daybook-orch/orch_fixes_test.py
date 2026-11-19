@@ -37,6 +37,9 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 测试入口零字节码：本进程与子进程都不写 __pycache__。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
 sys.path.insert(0, HERE)
 
 # conf 按脚本自身位置解析（不经 cwd）：候选名从 pack.py 的 conf_rename 表派生，

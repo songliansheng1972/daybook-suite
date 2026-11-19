@@ -50,6 +50,10 @@ import shutil
 import sys
 import time
 
+# 打包器零字节码：构建/校验过程不产 __pycache__；子进程继承该环境。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ── 套件版本号（语义版本·三包同源同发·统一）──────────────
@@ -61,7 +65,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # to avoid confusion with "line counts" (two numbering schemes in one repo · line counts are non-monotonic ·
 # one suite having three numbers — all easily misunderstood). The original "sum of product .py line counts"
 # is demoted to "build number" = build fingerprint, shown alongside it, not discarded.
-SUITE_VERSION = '4.0.6'
+SUITE_VERSION = '4.0.7'
 
 # ── 开发者工具目录（不入包 payload）───────────────────────
 # bench/ 是并发与容量压测工具，位于仓根，不在 src/ 源清单内，也不属于任何包盒。
@@ -213,7 +217,16 @@ PACKAGES = {
         # Client integration templates (three files) · cross-referenced by the README mount examples
         'sub': SAMPLE + ['mcp-clients/README.md',
                          'mcp-clients/deepseek-harness.json',
-                         'mcp-clients/workbuddy.json'],
+                         'mcp-clients/workbuddy.json',
+                         # 4.0.7 随包组件：签名代理与安装器（只随 mcp 包发，按文件实际分布）
+                         # 4.0.7 bundled components: signing proxy and installer (mcp package only)
+                         'signer/README.md',
+                         'signer/daybook-signer',
+                         'signer/proxy.py',
+                         'signer/verify_audit.py',
+                         'setup/daybook-setup',
+                         'setup/observe_407.py',
+                         'setup/Daybook Setup.command'],
     },
     'orch': {
         'box': 'daybook-orch',
@@ -225,6 +238,9 @@ PACKAGES = {
         # 两个测试脚本 + 一个性能对照脚本随包发·不计入构建号
         # Two test scripts plus one performance A/B script ship with the package · not counted in the build number
         'prog_aux': ['orch_fixes_test.py', 'orch_mutation_check.py', 'orch_perf_bench.py',
+                     # 4.0.7 司南统一入口：入口缺失时 rc=2 + 固定首行，防 alarm 假活
+                     # 4.0.7 Sinnan launcher: rc=2 + fixed first line when the entry is missing
+                     'daybook-orch',
                      # 通用入口烟雾测试（同上）· generic entry smoke test (same as above)
                      'entry_smoke_test.py',
                      # 产物本机路径机检（同上）· artifact local-path check (same as above)
@@ -348,12 +364,40 @@ def verify_one(pkg_key, spec, src, out_root):
     return bad
 
 
+def scan_bytecode(out_root, targets):
+    """打包校验前置：盒内出现 __pycache__/.pyc/.pyo 直接判红（不等 md5 对账）。
+    Pre-verify: any __pycache__/.pyc/.pyo in the boxes is red immediately (before md5 reconciliation)."""
+    bad = []
+    for name in targets:
+        box = PACKAGES[name]['box']
+        dest = os.path.join(out_root, box)
+        if not os.path.isdir(dest):
+            continue
+        for dirpath, dirs, files in os.walk(dest):
+            for d in dirs:
+                if d == '__pycache__':
+                    bad.append((box, os.path.relpath(os.path.join(dirpath, d), dest)))
+            for f in files:
+                if f.endswith(('.pyc', '.pyo')):
+                    bad.append((box, os.path.relpath(os.path.join(dirpath, f), dest)))
+    return bad
+
+
 def verify_all(targets, src, out_root):
     """一致守卫：逐包逐件比对「产物 == 源」md5；全同返 0，失配返 3。
     （承 W-DB-026 丁·防「改了产物不落源·重打包静默抹」）
     Consistency guard: compare the md5 of "artifact == source" package by package, file by file; return 0 if all match, 3 on mismatch.
     (Per W-DB-026 D · guards against "editing the artifact without landing it in the source · repacking silently wipes it")"""
     print('== 一致守卫：产物 == 源 校验 ==')
+    # 先判缓存：测试入口已设 PYTHONDONTWRITEBYTECODE，若仍有残留即红，不进入逐件比对。
+    # Cache check first: test entries set PYTHONDONTWRITEBYTECODE; any residue is red before file comparison.
+    cache_bad = scan_bytecode(out_root, targets)
+    if cache_bad:
+        print('RED 包内字节码缓存：%d 件（先清理再 verify；测试入口已设零字节码）' % len(cache_bad),
+              file=sys.stderr)
+        for box, rel in cache_bad:
+            print('  ✗ %s/%s' % (box, rel), file=sys.stderr)
+        return 4
     bad = []
     for name in targets:
         bad += verify_one(name, PACKAGES[name], src, out_root)

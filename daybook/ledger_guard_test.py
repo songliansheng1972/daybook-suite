@@ -80,6 +80,9 @@ import time
 # A judge must never take its truth source from the code under test. If a reference set
 # extracted from that code is empty, that is "cannot see" — red, never green.
 HERE = os.path.dirname(os.path.abspath(__file__))
+# 一致守卫零字节码：本进程与所有子进程都不写 __pycache__，避免 verify 被自产缓存判红。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
 # 源树布局 tests/scenarios/guard.py；盒内布局 <box>/ledger_guard_test.py（pack.py 改名拷贝）。
 # Source layout: tests/scenarios/guard.py; box layout: <box>/ledger_guard_test.py (renamed by pack.py).
 BASE = HERE if os.path.exists(os.path.join(HERE, 'daybook.py')) \
@@ -210,9 +213,11 @@ WRITE_PATHS = (
     ('mcp_resources.py', '_read_dir_resource', 'other', '只读目录资源'),
     ('mcp_tools.py', '_audit', 'ledger', '审计卷 append-only'),
     ('mcp_tools.py', '_record_signature', 'ledger', '签名边车 append-only'),
-    ('mcp_tools.py', '_write_cursor', 'ledger', '写游标（账本派生件）'),
     ('mcp_tools.py', 'call_tool', 'ledger', '工具派发：写工具经各登记点落账'),
     ('orchestrator.py', '_log', 'ledger', '编排卷条目'),
+    ('orchestrator.py', 'heartbeat', 'ledger', '4.0.7 调度面：心跳写心跳卷（经 append_one）'),
+    ('orchestrator.py', 'mark_read', 'ledger', '4.0.7 调度面：已读游标推进（账本派生件）'),
+    ('orchestrator.py', 'unread', 'other', '4.0.7 调度面：只读游标与未读内容（闭包参考项）'),
     ('orchestrator.py', 'claim', 'ledger', '认领：加锁迁移状态'),
     ('orchestrator.py', 'digest', 'other', '只读多级目录摘要'),
     ('orchestrator.py', 'join', 'ledger', '加入：注册 + 落编排卷'),

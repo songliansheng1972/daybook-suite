@@ -5,8 +5,8 @@ MCP P0 minimal regression (read-only mode / second-level cross_ref head / produc
 ================================================
 覆盖 / Covers：
   1. initialize
-  2. tools/list（只读模式隐藏四个写工具）
-  3. daybook_append / daybook_mark_read / daybook_heartbeat / daybook_index 只读被拒
+  2. tools/list（只读模式隐藏唯一写工具 append；移出项不回潮）
+  3. daybook_append 只读被拒；移出的调度/维护工具在 MCP 面为未知工具
   4. cross_ref 秒级条目头（[YYYY-MM-DD HH:MM:SS]）
   5. 生产索引路径：conf index.out_dir=索引 + multilevel.out_dir 空 ⇒ 索引/multilevel
   6. resources/read 的 offset/limit
@@ -20,6 +20,9 @@ MCP P0 minimal regression (read-only mode / second-level cross_ref head / produc
 Exit code: 0=PASS 1=FAIL
 """
 import os, sys, json, subprocess, tempfile, shutil, time, hashlib, stat
+# 测试入口零字节码：本进程与子进程都不写 __pycache__。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, 'mcp_server.py')
@@ -146,24 +149,26 @@ def test_tools_list_hides_write(t):
     if not _ok('2.1 tools/list 有响应', len(out) == 1, err):
         return False
     names = [x.get('name') for x in out[0].get('result', {}).get('tools', [])]
-    writes = ('daybook_append', 'daybook_mark_read', 'daybook_heartbeat', 'daybook_index')
-    if not _ok('2.2 四个写工具已隐藏', not any(n in names for n in writes), 'names=%s' % names):
+    writes = ('daybook_append',)
+    if not _ok('2.2 唯一写工具 append 已隐藏', not any(n in names for n in writes), 'names=%s' % names):
         return False
-    return _ok('2.3 读工具仍在', 'daybook_query' in names and 'daybook_list' in names, 'names=%s' % names)
+    # 4.0.7：调度写/维护写已移出 MCP，不得在 tools/list 出现
+    moved = ('daybook_unread', 'daybook_mark_read', 'daybook_heartbeat', 'daybook_alive',
+             'daybook_index', 'cross_ref_make', 'daybook_multi_query')
+    return _ok('2.3 只读面 3 工具 + 移出项不回潮',
+               sorted(names) == ['cross_ref_verify', 'daybook_list', 'daybook_query']
+               and not any(n in names for n in moved), 'names=%s' % names)
 
 
 def test_write_tools_rejected(t):
     calls = [
         ('daybook_append', {'volume': '测试', 'tag': 'x', 'author': 'a', 'content': 'x',
                             'agent_id': 'a', 'signature': '0' * 64, 'ts': int(time.time())}),
-        ('daybook_mark_read', {'volume': '测试', 'agent_id': 'a', 'signature': '0' * 64}),
-        ('daybook_heartbeat', {'agent_id': 'a', 'signature': '0' * 64, 'ts': int(time.time())}),
-        ('daybook_index', {'agent_id': 'a', 'signature': '0' * 64, 'ts': int(time.time())}),
     ]
     reqs = [{'jsonrpc': '2.0', 'id': i, 'method': 'tools/call',
              'params': {'name': n, 'arguments': a}} for i, (n, a) in enumerate(calls)]
     out, err, zero = _rpc(reqs, tmp_root=t)
-    if not _ok('3.1 四个写工具都有响应', len(out) == len(calls), err):
+    if not _ok('3.1 唯一写工具有响应', len(out) == len(calls), err):
         return False
     ok = True
     for name, resp in zip([c[0] for c in calls], out):
@@ -171,19 +176,26 @@ def test_write_tools_rejected(t):
         text = r.get('content', [{}])[0].get('text', '')
         ok = _ok('3.2 %s 被拒（isError+只读）' % name,
                  r.get('isError') is True and '只读模式' in text, text) and ok
+    # 移出的工具在 MCP 面必须是未知工具，不能留后门执行
+    moved = ('daybook_unread', 'daybook_mark_read', 'daybook_heartbeat', 'daybook_alive',
+             'daybook_index', 'cross_ref_make', 'daybook_multi_query')
+    reqs = [{'jsonrpc': '2.0', 'id': 100 + i, 'method': 'tools/call',
+             'params': {'name': n, 'arguments': {}}} for i, n in enumerate(moved)]
+    out, err, zero = _rpc(reqs, tmp_root=t)
+    for name, resp in zip(moved, out):
+        text = resp.get('result', {}).get('content', [{}])[0].get('text', '')
+        ok = _ok('3.3 %s 已移出（未知工具）' % name,
+                 resp.get('result', {}).get('isError') is True and '未知工具' in text, text) and ok
     return ok
 
 
 def test_cross_ref_seconds(t):
-    out, err, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                         'params': {'name': 'cross_ref_make',
-                                    'arguments': {'volume': '测试', 'lineno': 1}}}], tmp_root=t)
-    if not _ok('4.1 cross_ref_make 有响应', len(out) == 1, err):
-        return False
-    r = out[0].get('result', {})
-    text = r.get('content', [{}])[0].get('text', '')
-    if not _ok('4.2 秒级条目头可生成引用', not r.get('isError')
-               and text.startswith('[测试#L1-'), text):
+    # cross_ref_make 已归维护面（CLI/module）；MCP 只留 verify。
+    # cross_ref_make moved to the maintenance face (CLI/module); MCP keeps verify only.
+    sys.path.insert(0, HERE)
+    from cross_ref import CrossRef
+    text = CrossRef(root=t).make_ref('测试', 1)
+    if not _ok('4.1 维护面可生成引用', bool(text) and text.startswith('[测试#L1-'), text):
         return False
     out2, _, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
                         'params': {'name': 'cross_ref_verify',
@@ -212,16 +224,13 @@ def test_cross_ref_numbered():
                      ('归', '编号重复'), ('归', '末条')], 1):
                 f.write('编号\t归\t%d\t2026-11-13 21:2%d\t编号\t皮特\t%s\n' % (ln, ln, title))
 
-        # 13.1-13.3 经 MCP：带编号、旧无编号都能生成并验签
-        reqs = [{'jsonrpc': '2.0', 'id': i, 'method': 'tools/call',
-                 'params': {'name': 'cross_ref_make',
-                            'arguments': {'volume': '编号', 'lineno': i}}}
-                for i in (1, 3, 5)]
-        out, err, _ = _rpc(reqs, tmp_root=t)
-        if not _ok('13.1 三条 make 都有响应', len(out) == 3, err):
-            return False
-        texts = [o.get('result', {}).get('content', [{}])[0].get('text', '') for o in out]
-        ok = _ok('13.2 带编号条目可生成引用', texts[0].startswith('[编号#L1-'), texts[0])
+        # 13.1-13.4 维护面生成；与 verify 双路径
+        sys.path.insert(0, HERE)
+        from cross_ref import CrossRef
+        cr = CrossRef(root=t)
+        texts = [cr.make_ref('编号', i) for i in (1, 3, 5)]
+        ok = _ok('13.1 三条 make 都有值', all(texts), '%s' % texts)
+        ok = _ok('13.2 带编号条目可生成引用', texts[0].startswith('[编号#L1-'), texts[0]) and ok
         ok = _ok('13.3 旧无编号条目可生成引用', texts[1].startswith('[编号#L3-'), texts[1]) and ok
         ok = _ok('13.4 末条可生成引用', texts[2].startswith('[编号#L5-'), texts[2]) and ok
         vreqs = [{'jsonrpc': '2.0', 'id': 10 + i, 'method': 'tools/call',
@@ -232,9 +241,6 @@ def test_cross_ref_numbered():
         ok = _ok('13.5 三条引用 verify 全 True', vtexts == ['true'] * 3, '%s %s' % (vtexts, verr)) and ok
 
         # 13.6 块边界：到下一个条目头为止（不并入后条）
-        sys.path.insert(0, HERE)
-        from cross_ref import CrossRef
-        cr = CrossRef(root=t)
         r1 = cr.resolve('编号', 1)
         ok = _ok('13.6 块只到下一条目头', bool(r1) and 'body-2' not in r1[0]
                  and r1[0].strip().endswith('body-1') and r1[3] is False,
@@ -257,17 +263,17 @@ def test_cross_ref_numbered():
                  bool(r5) and r5[3] is True and r5[0].strip().endswith('body-5'),
                  repr(r5[0]) if r5 else 'None') and ok
 
-        # 13.10 multi_query 全文：末条显式标注，编号条目不再互见失败
+        # 13.10 query 全文：末条显式标注，编号条目不再互见失败
         mout, merr, _ = _rpc([{'jsonrpc': '2.0', 'id': 20, 'method': 'tools/call',
-                               'params': {'name': 'daybook_multi_query',
+                               'params': {'name': 'daybook_query',
                                           'arguments': {'volume': '编号', 'level': 'entry',
                                                         'full': True}}}], tmp_root=t)
         mt = mout[0].get('result', {}).get('content', [{}])[0].get('text', '')
-        ok = _ok('13.10 multi_query 编号条目无互见失败',
+        ok = _ok('13.10 query 编号条目无互见失败',
                  '↪[编号#L1-' in mt and '[互见失败]' not in mt, mt[:200]) and ok
-        ok = _ok('13.11 multi_query 末条显式标注', '（末条·至文末' in mt, mt[-200:]) and ok
+        ok = _ok('13.11 query 末条显式标注', '（末条·至文末' in mt, mt[-200:]) and ok
         sha_mq = mt.split('[编号#L1-', 1)[1][:8] if '[编号#L1-' in mt else ''
-        ok = _ok('13.12 make 与 multi_query 引用口径一致（同一 SHA8）',
+        ok = _ok('13.12 make 与 query 引用口径一致（同一 SHA8）',
                  bool(sha_mq) and texts[0] == '[编号#L1-%s]' % sha_mq,
                  'make=%s mq=%s' % (texts[0], sha_mq)) and ok
         return ok
@@ -277,9 +283,9 @@ def test_cross_ref_numbered():
 
 def test_production_index_path(t):
     out, err, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                         'params': {'name': 'daybook_multi_query',
+                         'params': {'name': 'daybook_query',
                                     'arguments': {'volume': '测试', 'level': 'entry'}}}], tmp_root=t)
-    if not _ok('5.1 multi_query 有响应', len(out) == 1, err):
+    if not _ok('5.1 query 下钻有响应', len(out) == 1, err):
         return False
     r = out[0].get('result', {})
     text = r.get('content', [{}])[0].get('text', '')
@@ -497,7 +503,7 @@ def main():
         results = [
             ('initialize', test_initialize(t)),
             ('tools/list 隐藏写工具', test_tools_list_hides_write(t)),
-            ('四个写工具只读被拒', test_write_tools_rejected(t)),
+            ('唯一写工具只读被拒', test_write_tools_rejected(t)),
             ('cross_ref 秒级头', test_cross_ref_seconds(t)),
             ('cross_ref 编号前缀与末条', test_cross_ref_numbered()),
             ('生产 索引/multilevel 路径', test_production_index_path(t)),

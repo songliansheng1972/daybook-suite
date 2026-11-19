@@ -6,16 +6,16 @@
 > 名号「璇玑」：《尚书·舜典》「在璇玑玉衡，以齐七政」——古之观星、换算、读出的器具。  
 > **璇玑＝观／换算／读出**，正合 MCP 之职。
 
-> **升级须知（v4.0.6 行为变更，必读） / Upgrade notes (v4.0.6)**
-> 1. **非空卷首次索引退 5，需认基线**：先退 5、不写回证据；执行一次
->    `python3 daybook.py baseline` 后才写回游标与封存，之后 `index` 为 0。证据缺失同样停在 5。
->    **The first index of a non-empty volume exits 5**; run `daybook.py baseline` once, then `index` is 0.
-> 2. **作者必填**：`daybook_append.py` 只接受 `卷 类 标题 作者 "正文"`；旧 3/4 参形态、显式
->    `未标`/空值与 `--name=` 一律退 2；独立模式也拒机器 id。**MCP 写路径不受影响**
->    （仍以 agent_id 验签后写显示名 + `[id=ag-…]` 附注）。**MCP 不认基线**：签名只证明
->    调用者是谁；`daybook_index` 遇证据缺失返回 rc=5、不写不重建，须由人在服务端 `baseline`。
->    **The author is mandatory**; the MCP write path is unaffected. **MCP never accepts a
->    baseline** — `daybook_index` returns rc=5 and writes nothing; a human runs `baseline`.
+> **升级须知（v4.0.7 接口面变更，必读） / Upgrade notes (v4.0.7 surface change)**
+> 1. **璇玑缩到存储面 4 个工具**：`daybook_query`（含原 `daybook_multi_query` 的层级下钻）、
+>    `daybook_list`、`daybook_append`、`cross_ref_verify`。原 `daybook_unread` /
+>    `daybook_mark_read` / `daybook_heartbeat` / `daybook_alive` 移到司南 CLI；
+>    `daybook_index` / `cross_ref_make` 归维护面（`daybook.py index`、`cross_ref.py make`）。
+>    **能力没删，只换出口**：`orchestrator.py unread|mark_read|heartbeat|alive`。
+> 2. **随包签名代理**：`setup/daybook-setup install` 一条命令完成运行副本、密钥、代理与三家
+>    客户端配置；密钥本机生成、只落 `.daybook_keys/` 600，用户不需要手算 HMAC。
+> 3. **写权限口径**：本机同 uid 可信 + 本机签名代理留痕；不是「持有密钥才能写」，
+>    也不是密钥轮换。边界与撤回条件见 `mcp-clients/README.md`。
 
 ## 特点
 
@@ -24,22 +24,22 @@
 - **卷即资源** —— 每一卷都是 `daybook://<卷名>`，支持行范围读、可订阅（mtime 轮询推更新）。
 - **写必验签** —— HMAC-SHA256，作者须为已注册 agent（**防冒名**）；审计卷 append-only。
 
-## 十一个工具 · 资源 · 提示
+## 四个工具 · 资源 · 提示
 
-- **tools（11）**：`daybook_list` `daybook_query` `daybook_append` `daybook_unread` `daybook_mark_read` `daybook_heartbeat` `daybook_alive` `daybook_index` `cross_ref_make` `cross_ref_verify` **`daybook_multi_query`**
+- **tools（4）**：`daybook_query`（字段查询 + 四库式下钻）、`daybook_list`、`daybook_append`、`cross_ref_verify`
 - **resources**：`daybook://<卷名>`（list / read 行范围 / subscribe）＋ **`daybook://catalog/<卷>`、`daybook://catalog/catalog`**（四库式多级目录·text/markdown）
 - **prompts（4）**：`daily_journal` `weekly_review` `cross_ref_audit` `agent_handover`
 
-### 多级目录 · 按需下钻（v3.1）
+### 多级目录 · 按需下钻（4.0.7 并入 query）
 
 账本侧 `python3 daybook.py multiindex` 生成**部(卷)→类→属(条目)** 的层级目录（派生件·可删可重建）后，
 本包即可把它**当资源读**、**按下钻查**：
 
 ```
-daybook_multi_query(level='部')                  # 各卷概览（条数／二级组数）
-daybook_multi_query(volume='协作', level='类')    # 该卷二级分组计数
-daybook_multi_query(cls='核', limit=20)          # 命中条目提要行（每条附互见引用 ↪[卷#L行-SHA8]）
-daybook_multi_query(volume='协作', full=True)     # 需要时取全文
+daybook_query(level='volume')                  # 各卷概览（条数／二级组数）
+daybook_query(volume='协作', level='category')  # 该卷二级分组计数
+daybook_query(cls='核', limit=20)               # 命中条目提要行（每条附互见引用 ↪[卷#L行-SHA8]）
+daybook_query(volume='协作', full=True)         # 需要时取全文
 ```
 
 ⇒ **LLM 不必拉全卷**：上下文限制转成「按需查询」。未生成目录时，资源不列、工具给友好指引（不崩）。

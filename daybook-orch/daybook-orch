@@ -1,0 +1,12 @@
+#!/bin/sh
+# daybook-orch 4.0.7 —— 司南统一入口。
+# 司南没有 daemon；"挂"的机判定义 = 入口不可用：入口文件缺失即 rc=2、首行固定文案，
+# 绝不静默回 0（防止 alarm 假活）。存在时透明转交 orchestrator.py。
+set -eu
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ENTRY="$SELF_DIR/orchestrator.py"
+if [ ! -f "$ENTRY" ]; then
+  echo "★ 运行失败（rc=2）：司南入口缺失：$ENTRY" >&2
+  exit 2
+fi
+exec /usr/bin/env python3 "$ENTRY" "$@"

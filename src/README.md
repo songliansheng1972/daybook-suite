@@ -185,7 +185,7 @@ python3 daybook.py multiindex --order 子       # 总目录只出「按类」一
 产出**全为派生件**（可删可重建），**索引是目录不是真相**——三条账形一字未动。
 `watch` 模式卷变动后自动续建（`[multilevel] multilevel_enabled=是`）。零依赖·确定性（同索引源⇒同产出）。
 
-**下游**：`daybook-mcp` 把目录挂成资源（`daybook://catalog/<卷>`）并按层级下钻（`daybook_multi_query`）；
+**下游**：`daybook-mcp` 把目录挂成资源（`daybook://catalog/<卷>`）并按层级下钻（`daybook_query` 的 `level` 参数）；
 `daybook-orch` 用它出变动摘要（`digest --push`）——**长上下文＝按需下钻**，**分发＝带层级的提要**。
 
 ## 边界（诚实）

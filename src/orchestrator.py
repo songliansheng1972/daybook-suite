@@ -79,6 +79,7 @@ Exit codes: 0 normal; 3 alarm has a hard warning; 2 argument/file error; 6 alarm
 import argparse
 import hashlib
 import io
+import json
 import os
 
 import errors
@@ -618,6 +619,77 @@ class Hub:
         (the environment variable selects a key, it does not prove identity)."""
         return (explicit or '').strip() or os.environ.get('DAYBOOK_AGENT_ID', '').strip()
 
+    # ── 4.0.7 调度面等价入口：从璇玑移出的收件/在场语义归司南 ──
+    # ── 4.0.7 scheduling-face equivalents: inbox/presence semantics moved out of Xuanji ──
+    def _content_vol(self, name):
+        """按 conf 内容卷表解析卷路径；非法卷名/未登记 ⇒ ValueError（调用方归 2）。
+        Resolve a volume path via the conf content-volume table; bad/unknown name ⇒ ValueError."""
+        if not name or '..' in name or '/' in name or '\\' in name or os.path.isabs(name):
+            raise ValueError('非法卷名：%r' % name)
+        rel = _vp.content_volumes_from(self.conf_path, root=self.root).get(name)
+        if not rel:
+            raise ValueError('卷 %r 不在 daybook.conf 卷表' % name)
+        return rel if os.path.isabs(rel) else os.path.join(self.root, rel)
+
+    def _cursor_path(self, agent_id, vol):
+        return os.path.join(self.root, '.已读_%s_%s.json' % (agent_id, vol))
+
+    def unread(self, agent_id, volume):
+        """返回 (resume_byte, 新字节, 文本, 新增条数)。游标文件与 4.0.6 同名同格式。
+        Returns (resume_byte, new bytes, text, new entries). Same cursor name/format as 4.0.6."""
+        path = self._content_vol(volume)
+        cp = self._cursor_path(agent_id, volume)
+        resume_byte = 0
+        if os.path.exists(cp):
+            try:
+                with open(cp, encoding='utf-8') as f:
+                    resume_byte = int(json.load(f).get('resume_byte', 0))
+            except (OSError, ValueError, TypeError):
+                resume_byte = 0
+        with open(path, 'rb') as f:
+            f.seek(resume_byte)
+            new_bytes = f.read()
+        from safeio import sniff_bytes
+        text, _enc, _why = sniff_bytes(new_bytes)
+        n_new = text.count('\n\n') + (1 if text and not text.endswith('\n\n') else 0)
+        return resume_byte, new_bytes, text, n_new
+
+    def mark_read(self, agent_id, volume):
+        """把游标推进到卷末尾（同一把根锁内取 size + 写游标）。
+        Advance the cursor to the end of the volume (size + cursor write under one root lock)."""
+        path = self._content_vol(volume)
+        from safeio import locked, WriteMode
+        with locked(self.root_handle) as lr:
+            size = os.path.getsize(path)
+            cur = {'resume_byte': size, 'mtime': time.time()}
+            lr.write(lr.root.rel_of(self._cursor_path(agent_id, volume),
+                                    'orchestrator.mark_read'),
+                     json.dumps(cur, ensure_ascii=False), mode=WriteMode.REPLACE)
+        return size
+
+    def heartbeat(self, agent_id, load=''):
+        """写一条 [心跳] 到心跳卷（与 4.0.6 璇玑同形）。
+        Append one [心跳] entry to the heartbeat volume (same shape as 4.0.6 Xuanji)."""
+        msg = 'alive' + ('｜负载=%s' % load if load else '')
+        a = self.reg.lookup(agent_id)
+        author = a.name if a and a.name else agent_id
+        rc = _dba.append_one(self.vols['heartbeat'], '心跳', agent_id, msg,
+                             author=author, author_id=agent_id, root=self.root)
+        if rc != 0:
+            raise RuntimeError('heartbeat append_one rc=%d' % rc)
+        return True
+
+    def alive(self, agent_id, timeout=120):
+        """在线判定：最后心跳在 timeout 秒内即在线（与 4.0.6 璇玑同口径）。
+        Presence: online when the last heartbeat is within `timeout` seconds (same rule as 4.0.6 Xuanji)."""
+        last = self.hb._last_beat(agent_id)
+        if last is None:
+            return False, 'offline（无心跳记录）'
+        age = int(time.time() - last)
+        if age <= timeout:
+            return True, 'online'
+        return False, 'offline（超时 %d 秒）' % age
+
     def _log(self, kind, title, msg, author, to=None, re_ref=None):
         """落一条带显式条号 + 签名 + 回应引用的编排卷条目。返回条号 id。
         Append one ledger entry with an explicit id + signature + reply reference. Returns the entry id."""
@@ -1031,6 +1103,8 @@ def _main(argv=None):
     sub = ap.add_subparsers(dest='cmd')
 
     p = sub.add_parser('join'); p.add_argument('name')
+    p.add_argument('--quiet', action='store_true',
+                   help='不打印 secret（安装器用；密钥只落 .daybook_keys/ 600）')
     p = sub.add_parser('leave'); p.add_argument('agent_id', nargs='?', default='')
     sub.add_parser('who')
     p = sub.add_parser('open'); p.add_argument('title'); p.add_argument('--by', required=True)
@@ -1045,6 +1119,14 @@ def _main(argv=None):
     p.add_argument('--note', default='')
     p.add_argument('--re', default='', help='显式回应条号 id=（消息总线回复关系）')
     p = sub.add_parser('pull'); p.add_argument('who')
+    # 4.0.7：调度面等价入口（从璇玑移出，不删能力）
+    # 4.0.7: scheduling-face equivalents (moved out of Xuanji, capabilities retained)
+    p = sub.add_parser('unread'); p.add_argument('agent_id'); p.add_argument('volume')
+    p = sub.add_parser('mark_read'); p.add_argument('agent_id'); p.add_argument('volume')
+    p = sub.add_parser('heartbeat'); p.add_argument('agent_id')
+    p.add_argument('--load', default='')
+    p = sub.add_parser('alive'); p.add_argument('agent_id')
+    p.add_argument('--timeout', type=int, default=120)
     sub.add_parser('board')
     sub.add_parser('alarm')
     p = sub.add_parser('digest')            # v3.1：读多级目录·分发摘要
@@ -1091,8 +1173,9 @@ def _main(argv=None):
     if args.cmd == 'join':
         aid, secret = hub.join(args.name)
         print('agent_id: %s' % aid)
-        print('secret:   %s' % secret)
-        print('（secret 仅此刻可见·请妥善保存）')
+        if not args.quiet:
+            print('secret:   %s' % secret)
+            print('（secret 仅此刻可见·请妥善保存）')
     elif args.cmd == 'leave':
         hub.leave(args.agent_id); print('已吊销：%s' % args.agent_id)
     elif args.cmd == 'who':
@@ -1115,6 +1198,23 @@ def _main(argv=None):
         print('裁决 %s：→ %s' % (args.tid, st))
     elif args.cmd == 'pull':
         _print_pull(hub, args.who)
+    elif args.cmd == 'unread':
+        resume, raw, text, n_new = hub.unread(args.agent_id, args.volume)
+        # 与 4.0.6 MCP 出口逐字同形：头行 + 空行 + 原文（原文尾随换行原样保留）
+        # Byte-identical to the 4.0.6 MCP exit: header + blank line + raw text (keep trailing newlines).
+        sys.stdout.write('未读 %d 条（%d 字节）·resume_byte=%d\n\n%s'
+                         % (n_new, len(raw), resume, text))
+        if text and not text.endswith('\n'):
+            sys.stdout.write('\n')
+    elif args.cmd == 'mark_read':
+        size = hub.mark_read(args.agent_id, args.volume)
+        print('已读推进到 %s 末尾（resume_byte=%d）' % (args.volume, size))
+    elif args.cmd == 'heartbeat':
+        hub.heartbeat(args.agent_id, args.load)
+        print('heartbeat appended for %s' % args.agent_id)
+    elif args.cmd == 'alive':
+        _ok_alive, why = hub.alive(args.agent_id, args.timeout)
+        print('%s·%s' % (args.agent_id, why))
     elif args.cmd == 'digest':
         if args.push:
             _summary, src = hub.push_digest(args.push, args.vol or None,

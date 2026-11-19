@@ -37,6 +37,11 @@ import shutil
 import subprocess
 import sys
 
+# 打包/校验入口零字节码：委托 src/pack.py --verify 的子进程同样继承该环境。
+# Zero bytecode for this pack/verify entry; child src/pack.py --verify inherits this environment.
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 SHIM = os.path.join(HERE, "cli_shim.py")

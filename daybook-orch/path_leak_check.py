@@ -21,6 +21,10 @@ import os
 import sys
 import tempfile
 
+# 机检入口零字节码：本进程与子进程都不写 __pycache__。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 拼出来而不是写死，免得本文件自己被自己的判据抓 —— 这不是绕过，是机检脚本的自指豁免。
 # Assembled rather than hard-coded so this file does not trip its own criterion — a self-reference

@@ -7,6 +7,53 @@
 
 ---
 
+## Unreleased · v4.0.7（施工完成，待终裁）
+
+**接口面变更（破坏性）**
+
+1. **璇玑缩到存储面 4 个工具**：`daybook_query`（合并原 `daybook_multi_query` 的层级下钻）、
+   `daybook_list`、`daybook_append`、`cross_ref_verify`。原 `daybook_unread` /
+   `daybook_mark_read` / `daybook_heartbeat` / `daybook_alive` 移出 MCP；
+   `daybook_index` / `cross_ref_make` 归维护面（`daybook.py index`、`cross_ref.py make`）。
+   移出不是删能力：司南 CLI 新增 `unread` / `mark_read` / `heartbeat` / `alive`，
+   游标文件名与 4.0.6 相同。
+2. **signer 与安装器随包**：发行包新增 `signer/`（`daybook-signer`、`proxy.py`、
+   `verify_audit.py`、`README.md`）与 `setup/`（`daybook-setup`、可双击
+   `Daybook Setup.command`、`observe_407.py`）。`daybook-setup install` 一条命令完成
+   运行副本、账本根、身份、密钥、代理与三家客户端配置；重复安装幂等（配置 SHA256 不变、
+   密钥不重生成、代理不重启），失败即停，`uninstall` 可回滚并保留账本。
+3. **密钥本机生成且不可见**：`join --quiet` 注册时密钥只写账本根 `.daybook_keys/`（600），
+   不打印、不进配置/日志/审计/命令行；`doctor` 的密钥项要求「内容为 64 位 hex + 泄漏扫描
+   0 命中」，不接受「文件存在 + 0600」作为通过。
+4. **写权限口径改实**：README 改为「本机同 uid 可信 + 本机签名代理留痕」，明确代理只对
+   `daybook_append` 补签、其余透传；六条撤回条件照抄 `#84111`，不改写。
+5. **三个观察点 + 码表**：`setup/observe_407.py` 判红读数：账本坏（三口同 rc=2、零落盘）、
+   司南挂（入口缺失时 `who/submit/pull/alarm` 同 rc=2，账本 append 仍 rc=0）、
+   璇玑连不上（坏 conf 立即 rc=2、stdout 0、无 `daybook://`；健康对照 4 工具）。
+6. **§7.4 五处判据缺口**：本版明写「未覆盖」，不用「已检查/通过」冒充机判
+   （详见交付报告「判据缺口」节）。
+
+**本轮自证读数**：`mcp_p0_regression.py` 13/13 PASS；`mcp_test.py` 23/23 PASS；
+`src/tests/scenarios/guard.py` 与 `daybook/ledger_guard_test.py` 双绿；
+`observe_407.py` 三观察点全绿（A 3/3、B 5/5、C 4/4）；
+`pack.py --pkg all --verify` EXIT=0（3 包逐件比对通过）。
+
+**双出口对照（4.0.6 旧 MCP vs 4.0.7 司南/维护面）**：同一写入者、同一卷、同一条消息，
+15/15 PASS。条数 2/2；行号区间 `[(1,25),(27,28)]` 两侧相同；每条正文逐字相同；
+`unread` / `mark_read` / `heartbeat` 文本逐字相同；`resume_byte=1529` 相同；
+游标规范化哈希（去 `mtime`）`4177fc6fc988` 相同；`mark_read` 后 `unread`
+两侧同为「未读 0 条（0 字节）·resume_byte=1529」；`alive` 初始 offline / 心跳后
+online / 超时 1s 后 offline（均报「超时 2 秒」）结论一致；`cross_ref_make` 返回值
+逐字相同（该工具无落盘产出，文件字节项不适用）；`index` 产出 `.head_stamp.json` /
+`volumes.md` 两件逐字节相同（冻结时钟下；自然钟唯一差异是运行时 `时戳`）。
+
+**包内字节码缓存硬化**：测试入口（`pack.py`、`mcp_test.py`、`mcp_p0_regression.py`、
+`orch_fixes_test.py`、`entry_smoke_test.py`、`path_leak_check.py`、
+`tests/scenarios/guard.py`）统一设 `PYTHONDONTWRITEBYTECODE=1` 与
+`sys.dont_write_bytecode=True`；`pack.py --verify` 开头预检包内
+`__pycache__`/`.pyc`/`.pyo`，命中即 `RED 包内字节码缓存：N 件` 并退 **4**，
+不再等到逐件比对 rc=3 再人肉清理。实测：植入 2 件残留 ⇒ rc=4；清理后 ⇒ rc=0。
+
 ## v4.0.6 · 2026-11-18
 
 ### 定版（2026-11-18）：4.0.6 发布读数

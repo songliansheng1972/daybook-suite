@@ -28,13 +28,10 @@ daybook_fix_test.py:336	标题	测试样本的条目头字段名
 daybook_fix_test.py:342	标题	测试样本的条目头字段名
 daybook_fix_test.py:357	标题	测试样本的条目头字段名
 mcp_p0_regression.py:121	索引	测试断言里的索引节名
-mcp_p0_regression.py:206	索引	测试断言里的索引节名
+mcp_p0_regression.py:215	索引	测试断言里的索引节名
 mcp_prompts.py:27	作者	prompt 参数说明文字
-mcp_test.py:237	索引	测试断言里的索引节名
-mcp_test.py:257	索引	测试断言里的索引节名
-mcp_test.py:299	索引	测试断言里的索引节名
 orch_perf_bench.py:33	索引	压测脚本里的索引产物名
-pack.py:392	多级	发行/帮助文案里的子命令名
-pack.py:392	索引	发行/帮助文案里的子命令名
-pack.py:466	多级	发行/帮助文案里的子命令名
-pack.py:466	索引	发行/帮助文案里的子命令名
+pack.py:404	多级	发行/帮助文案里的子命令名
+pack.py:404	索引	发行/帮助文案里的子命令名
+pack.py:478	多级	发行/帮助文案里的子命令名
+pack.py:478	索引	发行/帮助文案里的子命令名

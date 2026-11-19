@@ -1,0 +1,43 @@
+#!/bin/sh
+# daybook-signer 0.2.0（4.0.7 随包）——本机 stdio 签名代理入口。
+# 客户端配置只需给 label；本脚本从账本根的注册卷自动映射 label → agent_id，
+# 不需要用户手写 case，也不读取/打印密钥内容。
+set -eu
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+BASE=${DAYBOOK_BASE:-$(CDPATH= cd -- "$SELF_DIR/.." && pwd)}
+ROOT=${DAYBOOK_ROOT:-$BASE/ledger}
+LABEL=${1:-}
+if [ -z "$LABEL" ]; then
+  echo "daybook-signer: 用法: daybook-signer <label>" >&2
+  exit 2
+fi
+AGENT=$(python3 - "$ROOT/注册卷.txt" "$LABEL" <<'PY'
+import sys
+path, label = sys.argv[1], sys.argv[2]
+reg, revoked = {}, set()
+try:
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            parts = [p.lstrip(' [').strip() for p in line.split(']') if p.strip()]
+            if len(parts) < 3:
+                continue
+            if parts[1] == '注册' and len(parts) >= 5 and parts[2].startswith('ag-'):
+                reg[parts[3]] = parts[2]
+            elif parts[1] == '吊销' and len(parts) >= 3:
+                revoked.add(parts[2])
+except FileNotFoundError:
+    pass
+aid = reg.get(label)
+print(aid if aid and aid not in revoked else '')
+PY
+)
+if [ -z "$AGENT" ]; then
+  echo "daybook-signer: label 未在注册卷中找到：$LABEL（先运行 daybook-setup install）" >&2
+  exit 2
+fi
+exec /usr/bin/env python3 "$SELF_DIR/proxy.py" \
+  --root "$ROOT" \
+  --agent "$AGENT" \
+  --label "$LABEL" \
+  --server "${DAYBOOK_SERVER:-}" \
+  --audit-base "${DAYBOOK_AUDIT_BASE:-$BASE}"

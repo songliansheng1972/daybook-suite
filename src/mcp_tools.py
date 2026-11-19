@@ -32,7 +32,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 import daybook as _db
-import errors as _errors
 import daybook_append as _dba
 import mcp_resources as _mr
 import mcp_transport as _tr
@@ -41,20 +40,10 @@ from agent_registry import Registry as _AgentRegistry
 
 AUDIT_VOL_NAME = 'MCP审计卷.txt'
 SIG_SIDECAR = 'MCP签名边车.jsonl'   # 签名边车（append-only JSONL）/ signature sidecar (append-only JSONL)
-WRITE_TOOLS = ('daybook_append', 'daybook_mark_read', 'daybook_heartbeat', 'daybook_index')
-
-# 账本拒绝（非 0 退出）不是参数错：按错误类别取文案，绝不套「参数错：」。
-# A ledger refusal (non-zero exit) is not a bad argument: label it by its own class and
-# never prefix it with "参数错：".
-_REFUSAL_LABEL = {2: '配置错', 3: 'append-only 违例', 4: '作者口径红', 5: '证据缺失'}
-
-
-class _LedgerRefusal(ValueError):
-    """账本按退出码拒绝本次调用（2/3/4/5），由调用层按类别渲染。"""
-
-    def __init__(self, rc, detail):
-        ValueError.__init__(self, detail)
-        self.rc = rc
+# 4.0.7：璇玑只留存储面；调度写（mark_read/heartbeat/index）已移出，只剩唯一写入口 append。
+# 4.0.7: Xuanji keeps only the storage face; scheduling writes (mark_read/heartbeat/index)
+# have moved out, leaving append as the single write entry.
+WRITE_TOOLS = ('daybook_append',)
 
 
 def _audit_vol():
@@ -175,27 +164,6 @@ def _agent_reg():
     """取 G3 注册表实例·root 隔离。
     Get a G3 registry instance · isolated by root."""
     return _AgentRegistry(os.path.join(_root(), '注册卷.txt'))
-
-
-def _read_cursor(agent_id, vol):
-    """F2 已读未读：读某 agent 对某卷的游标。
-    F2 read/unread: read an agent's cursor for a volume."""
-    import json
-    cp = os.path.join(_root(), '.已读_%s_%s.json' % (agent_id, vol))
-    if os.path.exists(cp):
-        with open(cp, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {'resume_byte': 0}
-
-
-def _write_cursor(agent_id, vol, resume_byte):
-    """F2 已读未读：写游标。
-    F2 read/unread: write the cursor."""
-    import json
-    cp = os.path.join(_root(), '.已读_%s_%s.json' % (agent_id, vol))
-    cur = {'resume_byte': resume_byte, 'mtime': time.time()}
-    from safeio import WriteMode
-    _wal(cp, json.dumps(cur, ensure_ascii=False), WriteMode.REPLACE, 'mcp_tools._write_cursor')
 
 
 # ── v3.1 多级目录下钻（四库式：部=卷／类·作者／属=条目）──────
@@ -511,8 +479,7 @@ def _multi_query(args):
     rows = _read_multidx_tsv()
     if not rows:
         return ('多级目录为空或未生成（查找目录：%s）。请先在账本侧执行 `python3 daybook.py multiindex`'
-                '（按 conf 的 index.out_dir + multilevel.out_dir 生成 <卷>_catalog.tsv）后再下钻；'
-                '或在 MCP 侧调 `daybook_index` 后由 watch/多级续建生成。'
+                '（按 conf 的 index.out_dir + multilevel.out_dir 生成 <卷>_catalog.tsv）后再下钻。'
                 '（旧名 <根>/多级/<卷>_目录.tsv 仍可读）' % _multidx_dir())
     if vol:
         rows = [r for r in rows if r.get('volume') == vol]
@@ -620,21 +587,38 @@ def _multi_query(args):
 TOOLS = [
     {
         'name': 'daybook_query',
-        'description': '按字段精确查询 daybook 卷条目·返回匹配条目原文。字段：卷/行号/时间/类/标题/作者·值为子串匹配',
+        'description': '查账本。两种模式：① 字段查询（field/value/extra_filters/count）；'
+                       '② 四库式下钻（level/volume/cls/author/time/l2/full·省略 level 默认 entry）。'
+                       '下钻读多级目录，条目附互见引用 ↪[卷#L行-SHA8]。',
         'inputSchema': {
             'type': 'object',
             'properties': {
+                'mode': {'type': 'string', 'enum': ['field', 'drill'],
+                         'description': '省略时：有 field 走字段查询，否则走下钻'},
                 'field': {'type': 'string', 'description': '字段名（卷/行号/时间/类/标题/作者）'},
                 'value': {'type': 'string', 'description': '期望子串·空字符串表示不过滤该字段'},
                 'extra_filters': {
                     'type': 'object',
                     'description': '可选·多字段同时过滤·key=字段名 value=期望子串',
                 },
-                'count': {'type': 'boolean', 'description': '只返回命中数·默认 false'},
-                'limit': {'type': 'integer', 'description': '最多返回多少条·默认 50'},
+                'count': {'type': 'boolean', 'description': '字段查询：只返回命中数·默认 false'},
+                'volume': {'type': 'string', 'description': '下钻：卷名（省略＝跨全部在册卷）'},
+                'cls': {'type': 'string', 'description': '下钻：类字段过滤（子串·如 报/核/工）'},
+                'author': {'type': 'string', 'description': '下钻：作者过滤（子串）'},
+                'time': {'type': 'string', 'description': '下钻：时间前缀过滤·如 2026-10 或 2026-10-15'},
+                'l2': {'type': 'string', 'description': '下钻：二级键值过滤（二级＝类或作者·按 conf[multilevel] level2_field）'},
+                'level': {'type': 'string', 'enum': ['volume', 'category', 'entry'],
+                          'description': '下钻层级·默认 entry（属）'},
+                'limit': {'type': 'integer', 'description': '最多返回条数·默认 50'},
+                'full': {'type': 'boolean', 'description': '下钻属级命中回全文（默认 false·只回提要行）'},
             },
-            'required': ['field', 'value'],
+            'required': [],
         },
+    },
+    {
+        'name': 'daybook_list',
+        'description': '列 daybook.conf 卷表登记的所有卷·含路径/行数/字节数',
+        'inputSchema': {'type': 'object', 'properties': {}},
     },
     {
         'name': 'daybook_append',
@@ -657,89 +641,6 @@ TOOLS = [
         },
     },
     {
-        'name': 'daybook_unread',
-        'description': '查某 agent 对某卷的未读条目·返回 resume_byte 之后的新增条目原文。读完调 daybook_mark_read 推进游标（F2 已读未读）',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'volume': {'type': 'string', 'description': '卷名'},
-                'agent_id': {'type': 'string', 'description': '读者 agent_id'},
-                'signature': {'type': 'string', 'description': '必填·对 "unread:<agent_id>:<ts>" 的签名（防重放）'},
-                'ts': {'type': 'integer', 'description': '必填·Unix 时间戳·防重放（服务端校验 ±60s 窗口）'},
-            },
-            'required': ['volume', 'agent_id', 'signature', 'ts'],
-        },
-    },
-    {
-        'name': 'daybook_mark_read',
-        'description': '把某 agent 对某卷的已读游标推进到当前卷末尾（F2 已读未读·配合 daybook_unread）',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'volume': {'type': 'string', 'description': '卷名'},
-                'agent_id': {'type': 'string', 'description': '读者 agent_id'},
-                'signature': {'type': 'string', 'description': '必填·对 "read:<volume>" 的签名'},
-            },
-            'required': ['volume', 'agent_id', 'signature'],
-        },
-    },
-    {
-        'name': 'daybook_heartbeat',
-        'description': 'Agent 心跳注册·append 一条 [心跳] 条目到 心跳卷.txt·配合 daybook_alive 查在线状态（F3 在线感知）',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'agent_id': {'type': 'string', 'description': '必填·G3 agent_id'},
-                'signature': {'type': 'string', 'description': '必填·对 "heartbeat:<ts>" 的签名'},
-                'ts': {'type': 'integer', 'description': '必填·Unix 时间戳·防重放（服务端校验 ±60s 窗口）'},
-                'load': {'type': 'string', 'description': '可选·负载描述·如 0.3'},
-            },
-            'required': ['agent_id', 'signature', 'ts'],
-        },
-    },
-    {
-        'name': 'daybook_alive',
-        'description': '查某 agent 是否在线（心跳卷最后一条在 timeout 秒内即在线·默认 120 秒）·不验签·纯查询',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'agent_id': {'type': 'string', 'description': '查的 agent_id'},
-                'timeout': {'type': 'integer', 'description': '心跳超时秒数·默认 120'},
-            },
-            'required': ['agent_id'],
-        },
-    },
-    {
-        'name': 'daybook_index',
-        'description': '重建全部卷索引（注：daybook.py build 不支持单卷·此工具会重建所有卷）·必须附 agent_id+signature 验签',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'agent_id': {'type': 'string', 'description': '必填·G3 agent_id'},
-                'signature': {'type': 'string', 'description': '必填·对 "reindex:<ts>" 的签名（防重放）'},
-                'ts': {'type': 'integer', 'description': '必填·Unix 时间戳·防重放（服务端校验 ±60s 窗口）'},
-            },
-            'required': ['agent_id', 'signature', 'ts'],
-        },
-    },
-    {
-        'name': 'daybook_list',
-        'description': '列 daybook.conf 卷表登记的所有卷·含路径/行数/字节数',
-        'inputSchema': {'type': 'object', 'properties': {}},
-    },
-    {
-        'name': 'cross_ref_make',
-        'description': '生成跨卷引用 [卷名#L行-SHA8]',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'volume': {'type': 'string'},
-                'lineno': {'type': 'integer'},
-            },
-            'required': ['volume', 'lineno'],
-        },
-    },
-    {
         'name': 'cross_ref_verify',
         'description': '校验跨卷引用·返回 true/false',
         'inputSchema': {
@@ -750,32 +651,12 @@ TOOLS = [
             'required': ['ref'],
         },
     },
-    {
-        'name': 'daybook_multi_query',
-        'description': '按四库式层级「按需下钻」查询（v3.1）·读多级目录（部=卷／类／作者／时／二级）·'
-                       'level=部→各卷概览｜类→二级分组计数｜属（默认）→条目提要行（可 full 回全文）·'
-                       '每条附互见引用 ↪[卷#L行-SHA8]。LLM 不必拉全卷 ⇒ 长上下文＝按需下钻。',
-        'inputSchema': {
-            'type': 'object',
-            'properties': {
-                'volume': {'type': 'string', 'description': '卷名（省略＝跨全部在册卷）'},
-                'cls': {'type': 'string', 'description': '类字段过滤（子串·如 报/核/工）'},
-                'author': {'type': 'string', 'description': '作者过滤（子串）'},
-                'time': {'type': 'string', 'description': '时间前缀过滤·如 2026-10 或 2026-10-15'},
-                'l2': {'type': 'string', 'description': '二级键值过滤（二级＝类或作者·按 conf[multilevel] level2_field）'},
-                'level': {'type': 'string', 'enum': ['volume', 'category', 'entry'], 'description': '下钻层级·默认 属'},
-                'limit': {'type': 'integer', 'description': '最多返回条数（属级）·默认 50'},
-                'full': {'type': 'boolean', 'description': '属级命中回全文（默认 false·只回提要行·省上下文）'},
-            },
-            'required': [],
-        },
-    },
 ]
 
 
 def list_tools():
-    """工具清单·只读模式隐藏四个写工具。
-    Tool list · the four write tools are hidden in read-only mode."""
+    """工具清单·只读模式隐藏唯一写工具 append。
+    Tool list · the single write tool (append) is hidden in read-only mode."""
     if _tr.is_read_only():
         return [t for t in TOOLS if t.get('name') not in WRITE_TOOLS]
     return TOOLS
@@ -804,14 +685,26 @@ def call_tool(name, args, agent_id=None, signature=None):
     if not signature:
         signature = args.get('signature')
 
-    # 只读模式：四个写工具一律拒·不落盘
-    # Read-only mode: all four write tools are rejected · nothing is written
+    # 只读模式：唯一写工具 append 一律拒·不落盘
+    # Read-only mode: the single write tool (append) is rejected · nothing is written
     if _tr.is_read_only() and name in WRITE_TOOLS:
         _audit(name, agent_id, '只读模式拒绝写工具', ok=False)
         return _tool_error('只读模式（MCP_READ_ONLY=1）：写工具 %s 已禁用' % name)
 
     try:
         if name == 'daybook_query':
+            mode = (args.get('mode') or '').strip()
+            if not mode:
+                mode = 'field' if args.get('field') else 'drill'
+            if mode == 'drill':
+                # 4.0.7：multi_query 并入 query（不再是独立工具）
+                # 4.0.7: multi_query is merged into query (no longer a separate tool)
+                out = _multi_query(args)
+                _audit('query', agent_id,
+                       'drill vol=%s level=%s → %s' % (
+                           args.get('volume', ''), args.get('level', 'entry'),
+                           out.split('\n')[0][:80]))
+                return _tool_ok(out)
             field = args.get('field', '')
             value = args.get('value', '')
             extras = args.get('extra_filters') or {}
@@ -889,169 +782,6 @@ def call_tool(name, args, agent_id=None, signature=None):
             _audit('append', agent_id, 'vol=%s tag=%s to=%s → %s' % (vol, tag, to or '广播', full_path))
             return _tool_ok('appended to %s' % vol)
 
-        if name == 'daybook_unread':
-            # F2 已读未读：查 agent 对卷的未读条目
-            # F2 read/unread: query an agent's unread entries for a volume
-            # W-75 修④：先验签后取卷名
-            # W-75 fix ④: verify the signature before fetching the volume name
-            ts = int(args.get('ts', 0))
-            if abs(time.time() - ts) > 60:
-                raise ValueError('unread 时间戳越窗（当前 %.0f·收到 %d·允许 ±60s）' % (time.time(), ts))
-            payload = 'unread:%s:%d' % (agent_id, ts)
-            _verify_agent(agent_id, signature, payload, force=True)  # 防任意查他人未读
-                                                                     # guards against querying others' unread at will
-            vol = _safe_vol(args['volume'])
-            conf = _load_conf()
-            vol_path = conf.get('volumes', {}).get(vol)
-            if not vol_path:
-                raise ValueError('卷 %r 不在 daybook.conf 卷表' % vol)
-            full_path = vol_path if os.path.isabs(vol_path) else os.path.join(_root(), vol_path)
-            cursor = _read_cursor(agent_id, vol)
-            resume_byte = cursor.get('resume_byte', 0)
-            with open(full_path, 'rb') as f:
-                f.seek(resume_byte)
-                new_bytes = f.read()
-            # W-75 修⑤：硬编码 utf-8 ⇒ 走 sniff（gb18030 等卷不乱码）
-            # W-75 fix ⑤: hard-coded utf-8 ⇒ go through sniff (gb18030 and other volumes are not garbled)
-            from safeio import sniff_bytes
-            new_text, _enc, _why = sniff_bytes(new_bytes)
-            n_new = new_text.count('\n\n') + (1 if new_text and not new_text.endswith('\n\n') else 0)
-            _audit('unread', agent_id, 'vol=%s resume_byte=%d → %d new bytes' % (vol, resume_byte, len(new_bytes)))
-            return _tool_ok('未读 %d 条（%d 字节）·resume_byte=%d\n\n%s' % (n_new, len(new_bytes), resume_byte, new_text))
-
-        if name == 'daybook_mark_read':
-            # F2 已读未读：推进游标到卷末尾
-            # F2 read/unread: advance the cursor to the end of the volume
-            # W-75 修④：先验签后取卷名
-            # W-75 fix ④: verify the signature before fetching the volume name
-            payload = 'read:' + args.get('volume', '')
-            _verify_agent(agent_id, signature, payload, force=True)
-            vol = _safe_vol(args['volume'])
-            conf = _load_conf()
-            vol_path = conf.get('volumes', {}).get(vol)
-            if not vol_path:
-                raise ValueError('卷 %r 不在 daybook.conf 卷表' % vol)
-            full_path = vol_path if os.path.isabs(vol_path) else os.path.join(_root(), vol_path)
-            # 读 size 与写游标在同一把账本根锁内：并发 mark_read 不会用旧 size 覆盖新游标
-            # Read size and write the cursor under the same ledger-root lock: a concurrent
-            # mark_read can no longer overwrite a newer cursor with a stale size.
-            with _root().lock():
-                size = os.path.getsize(full_path)
-                _record_signature('daybook_mark_read', agent_id, signature, payload, volume=vol)
-                _write_cursor(agent_id, vol, size)
-            _audit('mark_read', agent_id, 'vol=%s → resume_byte=%d' % (vol, size))
-            return _tool_ok('已读推进到 %s 末尾（resume_byte=%d）' % (vol, size))
-
-        if name == 'daybook_heartbeat':
-            # F3 在线感知：append 一条 [心跳] 条目到 心跳卷.txt
-            # F3 presence sensing: append one [心跳] entry to 心跳卷.txt
-            ts = int(args.get('ts', 0))
-            if abs(time.time() - ts) > 60:
-                raise ValueError('心跳时间戳越窗（当前 %.0f·收到 %d·允许 ±60s）' % (time.time(), ts))
-            payload = 'heartbeat:%d' % ts
-            _verify_agent(agent_id, signature, payload, force=True)
-            load = args.get('load', '')
-            hb_vol = os.path.join(_root(), '心跳卷.txt')
-            msg = 'alive' + ('｜负载=%s' % load if load else '')
-            _record_signature('daybook_heartbeat', agent_id, signature, payload, load=load, ts=ts)
-            _hb_agent = _agent_reg().lookup(agent_id)
-            _hb_author = (_hb_agent.name if _hb_agent and _hb_agent.name else agent_id)
-            rc = _dba.append_one(hb_vol, '心跳', agent_id, msg, author=_hb_author,
-                                 author_id=agent_id, root=_root())
-            if rc != 0:
-                raise RuntimeError('heartbeat append_one rc=%d' % rc)
-            _audit('heartbeat', agent_id, 'load=%s' % load)
-            return _tool_ok('heartbeat appended for %s' % agent_id)
-
-        if name == 'daybook_alive':
-            # F3 在线感知：查心跳卷最后一条时间·在 timeout 秒内即在线
-            # F3 presence sensing: check the last timestamp in the heartbeat volume · online if within `timeout` seconds
-            aid = args['agent_id']
-            timeout = int(args.get('timeout', 120))
-            hb_vol = os.path.join(_root(), '心跳卷.txt')
-            if not os.path.exists(hb_vol):
-                _audit('alive', agent_id, 'agent=%s → 心跳卷不存在' % aid)
-                return _tool_ok('offline（心跳卷不存在）')
-            # 扫心跳卷·找该 agent 最后一条 [心跳]
-            # scan the heartbeat volume · find this agent's last [心跳] entry
-            last_ts = None
-            import re as _re
-            _aid_pat = _re.compile(r'^\[[^\]]+\] \[心跳\] \[%s\] ' % _re.escape(aid))
-            _hb_text, _enc, _why = _mr.read_vol(hb_vol)
-            for line in _hb_text.split('\n'):
-                if _aid_pat.match(line):
-                        # W-75 修⑥：解析行首时间·秒级（心跳已改秒级格式）
-                        # W-75 fix ⑥: parse the leading timestamp · second-level (heartbeats have moved to a second-level format)
-                        if line.startswith('['):
-                            end = line.find(']')
-                            if end > 0:
-                                ts_str = line[1:end]
-                                try:
-                                    last_ts = time.strptime(ts_str, '%Y-%m-%d %H:%M:%S')
-                                except ValueError:
-                                    try:  # 兼容旧分钟级条目
-                                          # compatible with old minute-level entries
-                                        last_ts = time.strptime(ts_str, '%Y-%m-%d %H:%M')
-                                    except ValueError:
-                                        pass
-            if last_ts is None:
-                _audit('alive', agent_id, 'agent=%s → 无心跳记录' % aid)
-                return _tool_ok('offline（无心跳记录）')
-            now_ts = time.time()
-            hb_epoch = time.mktime(last_ts)
-            age = int(now_ts - hb_epoch)
-            status = 'online' if age <= timeout else 'offline（超时 %d 秒）' % age
-            _audit('alive', agent_id, 'agent=%s age=%d → %s' % (aid, age, status))
-            return _tool_ok('%s·%s' % (aid, status))
-
-        if name == 'daybook_index':
-            # P1-1 写工具验签：agent_id+signature 验 "reindex:<ts>"
-            # P1-1 write-tool signature verification: verify "reindex:<ts>" with agent_id+signature
-            ts = int(args.get('ts', 0))
-            if abs(time.time() - ts) > 60:
-                raise ValueError('index 时间戳越窗（当前 %.0f·收到 %d·允许 ±60s）' % (time.time(), ts))
-            _verify_agent(agent_id, signature, 'reindex:%d' % ts)
-            _record_signature('daybook_index', agent_id, signature, 'reindex:%d' % ts, ts=ts)
-            conf = _load_conf()
-            # 与 CLI 同一套判据、同一种聚合：不在这里复制判拒逻辑，也不漏 2/3/4。
-            # 有 3（违例）时 build 已按卷不写回，一次签名调用不能把篡改重建为新基线。
-            # Same predicates and aggregation as the CLI — no duplicated refusal logic and
-            # nothing dropped. On 3 the build already wrote nothing for that volume, so one
-            # signed call can never rebuild tampering into a fresh baseline.
-            per, total, _rep = _db.build(conf, _root())
-            # 聚合只走 errors 一张表：这里不持有任何数字码。
-            # Aggregation goes through the single errors table; no numeric codes live here.
-            errs = _db._collected()
-            top = _errors.worst(errs)
-            rc = _errors.exit_code(top) if top else 0
-            if rc:
-                detail = []
-                if _db.CONFIG_ERRORS:
-                    detail.append('配置错 %d 处：%s' % (len(_db.CONFIG_ERRORS),
-                                  '；'.join('%s: %s' % (v, w) for v, w in _db.CONFIG_ERRORS)))
-                if _db.VIOLATIONS:
-                    detail.append('append-only 违例 %d 处（未写回）：%s' % (
-                        len(_db.VIOLATIONS),
-                        '；'.join('%s: %s' % (v, w) for v, w in _db.VIOLATIONS)))
-                if _db.EVIDENCE_MISSING:
-                    detail.append('证据缺失 %d 处（未写回）：%s。请在服务端显式认基线：'
-                                  'python3 daybook.py baseline' % (
-                                      len(_db.EVIDENCE_MISSING),
-                                      '；'.join('%s: %s' % (v, w) for v, w in _db.EVIDENCE_MISSING)))
-                if _db.AUTHOR_RED:
-                    if rc == _errors.AUTHOR:
-                        detail.append('已写回·作者口径红·只报不拦')
-                    else:
-                        detail.append('作者口径红·未写回（本轮 rc=%d 零落盘）' % rc)
-                if rc == _errors.VIOLATION:
-                    _audit('index', agent_id, '违例·拒绝写回 → rc=3', ok=False)
-                elif rc == _errors.AUTHOR:
-                    _audit('index', agent_id, '已写回·作者口径红·只报不拦 → rc=4', ok=False)
-                raise _LedgerRefusal(rc, '｜'.join(detail))
-            summary = '索引已重建：' + '｜'.join('%s %d' % (k, v) for k, v in per.items()) + '｜合计 %d 条' % total
-            _audit('index', agent_id, '→ %d 条' % total)
-            return _tool_ok(summary)
-
         if name == 'daybook_list':
             conf = _load_conf()
             vols = conf.get('volumes', {})
@@ -1073,14 +803,6 @@ def call_tool(name, args, agent_id=None, signature=None):
             _audit('list', agent_id, '→ %d 卷' % len(vols))
             return _tool_ok(out)
 
-        if name == 'cross_ref_make':
-            from cross_ref import CrossRef
-            cr = CrossRef(root=_root())
-            vol = _safe_vol(args['volume'])
-            ref = cr.make_ref(vol, int(args['lineno']))
-            _audit('cross_ref_make', agent_id, '→ %s' % ref)
-            return _tool_ok(ref)
-
         if name == 'cross_ref_verify':
             from cross_ref import CrossRef
             cr = CrossRef(root=_root())
@@ -1088,24 +810,11 @@ def call_tool(name, args, agent_id=None, signature=None):
             _audit('cross_ref_verify', agent_id, 'ref=%s → %s' % (args['ref'][:60], ok))
             return _tool_ok('true' if ok else 'false')
 
-        if name == 'daybook_multi_query':
-            # v3.1 四库式层级下钻（只读·不需要验签）
-            # v3.1 four-library-style hierarchical drilling (read-only · no signature verification needed)
-            out = _multi_query(args)
-            _audit('multi_query', agent_id,
-                   'vol=%s level=%s → %s' % (args.get('volume', ''), args.get('level', 'entry'),
-                                             out.split('\n')[0][:80]))
-            return _tool_ok(out)
-
         # 未知工具
         # unknown tool
         _audit(name, agent_id, '未知工具', ok=False)
         return _tool_error('未知工具：%s' % name)
 
-    except _LedgerRefusal as e:
-        _audit(name, agent_id, 'REFUSE rc=%d: %s' % (e.rc, str(e)[:200]), ok=False)
-        return _tool_error('%s（rc=%d）：%s'
-                           % (_REFUSAL_LABEL.get(e.rc, '账本拒绝'), e.rc, e))
     except ValueError as e:
         # 参数错/验签失败/卷不存在·返 isError:true 让模型看见（P2-1）
         # bad args / signature failure / missing volume · return isError:true so the model can see it (P2-1)

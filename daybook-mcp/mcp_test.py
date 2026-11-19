@@ -17,8 +17,8 @@ Closes the test blind spots from review report P0-3 + adds P1+/P2-1 tests:
   5. tools/call daybook_query field filtering (P0-2 verification)
   6. tools/call daybook_append 匿名 + 带 G3 签名（P1-1 验证）
   6. tools/call daybook_append anonymous + with G3 signature (P1-1 verification)
-  7. tools/call daybook_index 重建
-  7. tools/call daybook_index rebuild
+  7. daybook_index 已移出 MCP（调度/维护写走 CLI）
+  7. daybook_index moved out of MCP (scheduling/maintenance writes go through the CLI)
   8. tools/call 失败返 isError:true（P2-1 验证）
   8. tools/call failure returns isError:true (P2-1 verification)
   9. 路径穿越 ../ 拒绝（P1-3 验证）
@@ -35,6 +35,9 @@ Closes the test blind spots from review report P0-3 + adds P1+/P2-1 tests:
 Exit code: 0=PASS 1=FAIL
 """
 import os, sys, json, subprocess, tempfile, shutil, time, threading, hashlib, hmac
+# 测试入口零字节码：本进程与子进程都不写 __pycache__，避免污染发行件。
+os.environ.setdefault('PYTHONDONTWRITEBYTECODE', '1')
+sys.dont_write_bytecode = True
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SERVER = os.path.join(HERE, 'mcp_server.py')
@@ -210,95 +213,31 @@ def test_resources(tmp_root):
 
 
 def test_daybook_index():
-    """验收 7：daybook_index 重建索引·供 query 用。写工具强制验签。
-    Acceptance 7: daybook_index rebuilds the index · used by query. Write tools force signature verification.
+    """验收 7（4.0.7）：index 已归维护面，MCP 面必须为未知工具。
+    Acceptance 7 (4.0.7): index moved to the maintenance face; it must be an unknown tool over MCP.
     """
-    tmp_root = ROOT
-    os.environ['DAYBOOK_ROOT'] = tmp_root
-    agent_id, secret = _register_test_agent(tmp_root)
-    # W-75 修④：写工具须带 ts，签名覆盖 "reindex:<ts>"（防重放）
-    # W-75 fix ④: write tools must carry ts; the signature covers "reindex:<ts>" (anti-replay)
-    ts = int(time.time())
-    sig = _sign(secret, 'reindex:%d' % ts)
-    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                    'params': {'name': 'daybook_index',
-                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
-    if not _ok('7.1 daybook_index 有响应', len(out) == 1):
+    os.environ['DAYBOOK_ROOT'] = ROOT
+    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'},
+                   {'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
+                    'params': {'name': 'daybook_index', 'arguments': {}}}])
+    if not _ok('7.1 tools/list 有响应', len(out) == 2):
         return False
-    res = out[0].get('result', {})
-    text = res.get('content', [{}])[0].get('text', '')
-    # 签名只证明调用者是谁，不证明有人看过这卷：MCP 遇证据缺失必须拒认基线
-    # A signature proves who called, not that anyone reviewed the volume: MCP must refuse
-    if not _ok('7.2 证据缺失时 MCP 拒认基线（rc=5·isError·按类别取文案）',
-               res.get('isError') is True and 'rc=5' in text
-               and '证据缺失' in text and '参数错' not in text, text[:100]):
+    names = [x.get('name') for x in out[0].get('result', {}).get('tools', [])]
+    if not _ok('7.2 工具面恰为 4 个', sorted(names) == ['cross_ref_verify', 'daybook_append',
+                                                       'daybook_list', 'daybook_query'],
+               'names=%s' % names):
         return False
-    if not _ok('7.3 未写回索引（不自动重建）',
-               not os.path.exists(os.path.join(tmp_root, '索引', 'index_测试MCP.tsv'))):
+    r = out[1].get('result', {})
+    text = r.get('content', [{}])[0].get('text', '')
+    if not _ok('7.3 daybook_index 在 MCP 面为未知工具',
+               r.get('isError') is True and '未知工具' in text, text):
         return False
-    r = subprocess.run([sys.executable, 'daybook.py', 'baseline'], cwd=tmp_root,
-                       capture_output=True, text=True)
-    if not _ok('7.4 人工认基线 rc=0', r.returncode == 0, 'rc=%d' % r.returncode):
-        return False
-    ts = int(time.time())
-    sig = _sign(secret, 'reindex:%d' % ts)
-    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                    'params': {'name': 'daybook_index',
-                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
-    text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    if not _ok('7.5 认基线后索引重建成功', '索引已重建' in text and '3 条' in text, text):
-        return False
-    # 7.6 违例必须走同一聚合：isError + rc=3 + 不写回（一次签名调用不能把篡改重建为新基线）
-    # 7.6 a violation must go through the same aggregation: isError + rc=3 + nothing written
-    vol = os.path.join(tmp_root, '测试MCP.txt')
-    orig = open(vol, 'rb').read()
-    mid = len(orig) // 2
-    open(vol, 'wb').write(orig[:mid] + (b'X' if orig[mid:mid + 1] != b'X' else b'Y') + orig[mid + 1:])
-    cur_path = os.path.join(tmp_root, '索引', '.cursor_测试MCP.json')
-    cur_before = open(cur_path, 'rb').read() if os.path.exists(cur_path) else b''
-    ts = int(time.time())
-    sig = _sign(secret, 'reindex:%d' % ts)
-    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
-                    'params': {'name': 'daybook_index',
-                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
-    res = out[0].get('result', {})
-    text = res.get('content', [{}])[0].get('text', '')
-    ok3 = _ok('7.6 违例 ⇒ MCP isError + rc=3（不套参数错）',
-              res.get('isError') is True and 'rc=3' in text
-              and 'append-only 违例' in text and '参数错' not in text,
-              text[:100])
-    ok4 = _ok('7.7 违例不写回游标',
-              (open(cur_path, 'rb').read() if os.path.exists(cur_path) else b'') == cur_before)
-    open(vol, 'wb').write(orig)
-    # 7.8/7.9 作者口径红（rc=4）不是「账本不可信」：照写，文案与审计都要说「已写回·只报不拦」
-    # 7.8/7.9 author-convention red (rc=4) is not "untrusted ledger": the run writes, and both
-    # the text and the audit say "written back · report only".
-    with open(vol, 'a', encoding='utf-8') as f:
-        f.write('\n[2026-11-14 12:00] [测试] [机器id作者] [ag-0123456789abcdef] 正文\n\n')
-    ts = int(time.time())
-    sig = _sign(secret, 'reindex:%d' % ts)
-    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
-                    'params': {'name': 'daybook_index',
-                               'arguments': {'agent_id': agent_id, 'signature': sig, 'ts': ts}}}])
-    res = out[0].get('result', {})
-    text = res.get('content', [{}])[0].get('text', '')
-    ok5 = _ok('7.8 作者红 ⇒ isError + rc=4 且文案「已写回·只报不拦」',
-              res.get('isError') is True and 'rc=4' in text
-              and '已写回' in text and '只报不拦' in text and '参数错' not in text,
-              text[:120])
-    audit = ''
-    audit_path = os.path.join(tmp_root, 'MCP审计卷.txt')
-    if os.path.exists(audit_path):
-        audit = open(audit_path, encoding='utf-8').read()
-    ok6 = _ok('7.9 审计记 [FAIL] 且含「已写回·作者口径红」',
-              '[FAIL]' in audit and '已写回' in audit and '作者口径红' in audit,
-              ' | '.join([l for l in audit.splitlines() if 'index' in l][-1:]))
-    open(vol, 'wb').write(orig)
-    # 清掉本用例写出的派生件，后续用例从干净账本重建（否则 4 条索引与 3 条原文会互相判违例）
-    # Drop derived artifacts written here so later cases rebuild from a clean ledger.
-    for _d in ('开发卷', '索引'):
-        shutil.rmtree(os.path.join(tmp_root, _d), ignore_errors=True)
-    return ok3 and ok4 and ok5 and ok6
+    # 维护面仍可用：daybook.py index 入口在（首次未认基线时 rc=5 也算入口存在）
+    cli = subprocess.run([sys.executable, os.path.join(HERE, 'daybook.py'), 'index'],
+                         cwd=ROOT, capture_output=True, text=True)
+    return _ok('7.4 维护面 daybook.py index 入口仍在',
+               cli.returncode in (0, 5) and '未知命令' not in (cli.stdout + cli.stderr),
+               'rc=%d %s' % (cli.returncode, (cli.stdout + cli.stderr)[-80:]))
 
 
 def test_daybook_query(tmp_root):
@@ -499,8 +438,8 @@ def test_unknown_tool_iserror(tmp_root):
 
 
 def test_cross_ref(tmp_root):
-    """验收 4+5：tools/list schema + cross_ref_make/verify。
-    Acceptance 4+5: tools/list schema + cross_ref_make/verify.
+    """验收 4+5（4.0.7）：tools/list schema + 维护面 make + MCP verify。
+    Acceptance 4+5 (4.0.7): tools/list schema + maintenance-face make + MCP verify.
     """
     os.environ['DAYBOOK_ROOT'] = tmp_root
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'}])
@@ -508,19 +447,19 @@ def test_cross_ref(tmp_root):
         return False
     tlist = out[0].get('result', {}).get('tools', [])
     names = [t.get('name') for t in tlist]
-    if not _ok('4.2 含 daybook_query/append/index/list + cross_ref_make/verify',
+    if not _ok('4.2 含 daybook_query/append/list + cross_ref_verify；不含已移出项',
                all(n in names for n in ('daybook_query', 'daybook_append',
-                 'daybook_index', 'daybook_list',
-                 'cross_ref_make', 'cross_ref_verify')), 'names=%s' % names):
+                                        'daybook_list', 'cross_ref_verify'))
+               and not any(n in names for n in ('daybook_index', 'cross_ref_make',
+                                                'daybook_multi_query', 'daybook_unread')),
+               'names=%s' % names):
         return False
-    # cross_ref_make
-    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                    'params': {'name': 'cross_ref_make',
-                               'arguments': {'volume': '测试MCP', 'lineno': 1}}}])
-    if not _ok('5.1 cross_ref_make 有响应', len(out) == 1):
-        return False
-    text = out[0].get('result', {}).get('content', [{}])[0].get('text', '')
-    if not _ok('5.2 生成引用 [测试MCP#L1-xxx]', text.startswith('[测试MCP#L1-'), 'text=%r' % text):
+    # cross_ref_make 归维护面（模块/CLI），MCP 只留 verify
+    sys.path.insert(0, HERE)
+    from cross_ref import CrossRef
+    text = CrossRef(root=tmp_root).make_ref('测试MCP', 1)
+    if not _ok('5.1 维护面生成引用 [测试MCP#L1-xxx]',
+               bool(text) and text.startswith('[测试MCP#L1-'), 'text=%r' % text):
         return False
     # verify
     out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
@@ -734,14 +673,35 @@ def test_append_to_unknown_rejected(tmp_root):
                str(r))
 
 
+def _orch_path():
+    """司南入口：开发树同目录 / 发行树同级 daybook-orch。
+    Sinnan entry: same dir in the dev tree, sibling daybook-orch in the release tree."""
+    for p in (os.path.join(HERE, 'orchestrator.py'),
+              os.path.join(HERE, '..', 'daybook-orch', 'orchestrator.py'),
+              os.path.join(HERE, '..', 'daybook-orch', 'daybook-orch')):
+        if os.path.exists(p):
+            return os.path.abspath(p)
+    return ''
+
+
+def _orch(*args):
+    """跑司南 CLI 等价入口（4.0.7 从璇玑移出的调度语义）。
+    Run the Sinnan CLI equivalents (scheduling semantics moved out of Xuanji in 4.0.7)."""
+    entry = _orch_path()
+    if not entry:
+        return None
+    return subprocess.run([sys.executable, entry, '--home', ROOT] + [str(x) for x in args],
+                          capture_output=True, text=True, timeout=30)
+
+
 def test_unread_mark_read(tmp_root):
-    """F2：已读未读游标推进。
-    F2: read/unread cursor advancement.
+    """F2：已读未读游标推进（司南 CLI 等价入口）。
+    F2: read/unread cursor advancement (Sinnan CLI equivalents).
     """
     os.environ['DAYBOOK_ROOT'] = tmp_root
+    if not _orch_path():
+        return _ok('F2 SKIP（本包未随司南）', True, '调度语义已移出 MCP，本包无 orchestrator')
     aid, sec = _register_test_agent(tmp_root, '读者')
-    # 先写 2 条新内容
-    # Write 2 new pieces of content first
     sig1, ts1 = _append_sig(sec, '测试MCP', 'F2', content='F2 条目1')
     _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
            'params': {'name': 'daybook_append',
@@ -754,71 +714,36 @@ def test_unread_mark_read(tmp_root):
                       'arguments': {'volume': '测试MCP', 'tag': 'F2',
                                     'author': aid, 'content': 'F2 条目2',
                                     'agent_id': aid, 'signature': sig2, 'ts': ts2}}}])
-    # 查未读·应含刚写的 2 条 F2 内容（可能含初始 3 条·因游标从 0 起）
-    # Query unread · should contain the 2 just-written F2 entries (may include the initial 3 · because the cursor starts at 0)
-    ts_q = int(time.time())
-    sig_q = _sign(sec, 'unread:%s:%d' % (aid, ts_q))  # W-75 修④：签名覆盖 "unread:<agent>:<ts>"
-                                                      # W-75 fix ④: the signature covers "unread:<agent>:<ts>"
-    out, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
-                    'params': {'name': 'daybook_unread',
-                               'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_q, 'ts': ts_q}}}])
-    r = out[0].get('result', {})
-    text = r.get('content', [{}])[0].get('text', '')
+    r = _orch('unread', aid, '测试MCP')
+    text = r.stdout + r.stderr
     if not _ok('F2.1 unread 返含新写的 2 条', 'F2 条目1' in text and 'F2 条目2' in text, text):
         return False
-    # mark_read 推进游标
-    # mark_read advances the cursor
-    sig_mr = _sign(sec, 'read:测试MCP')
-    out2, _ = _rpc([{'jsonrpc': '2.0', 'id': 4, 'method': 'tools/call',
-                     'params': {'name': 'daybook_mark_read',
-                                'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_mr}}}])
-    r2 = out2[0].get('result', {})
-    if not _ok('F2.2 mark_read 成功', '已读推进' in r2.get('content', [{}])[0].get('text', ''), str(r2)):
+    r = _orch('mark_read', aid, '测试MCP')
+    if not _ok('F2.2 mark_read 成功', r.returncode == 0 and '已读推进' in r.stdout, r.stdout + r.stderr):
         return False
-    # 再查未读·应返 0 条（mark_read 推到末尾·无新内容）
-    # Query unread again · should return 0 entries (mark_read advanced to the end · no new content)
-    out3, _ = _rpc([{'jsonrpc': '2.0', 'id': 5, 'method': 'tools/call',
-                     'params': {'name': 'daybook_unread',
-                                'arguments': {'volume': '测试MCP', 'agent_id': aid, 'signature': sig_q, 'ts': ts_q}}}])
-    r3 = out3[0].get('result', {})
-    text3 = r3.get('content', [{}])[0].get('text', '')
-    return _ok('F2.3 mark_read 后未读为 0', '未读 0 条' in text3, text3)
+    r = _orch('unread', aid, '测试MCP')
+    return _ok('F2.3 mark_read 后未读为 0', '未读 0 条' in (r.stdout + r.stderr), r.stdout + r.stderr)
 
 
 def test_heartbeat_alive(tmp_root):
-    """F3：心跳 + 探活。
-    F3: heartbeat + liveness probing.
+    """F3：心跳 + 探活（司南 CLI 等价入口）。
+    F3: heartbeat + liveness probing (Sinnan CLI equivalents).
     """
     os.environ['DAYBOOK_ROOT'] = tmp_root
-    aid, sec = _register_test_agent(tmp_root, '心跳Agent')
-    # 探活前·心跳卷不存在 → offline
-    # Before probing · the heartbeat volume does not exist → offline
-    out0, _ = _rpc([{'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                     'params': {'name': 'daybook_alive',
-                                'arguments': {'agent_id': aid, 'timeout': 60}}}])
-    r0 = out0[0].get('result', {})
-    text0 = r0.get('content', [{}])[0].get('text', '')
-    if not _ok('F3.1 初始无心跳 → offline', 'offline' in text0, text0):
+    if not _orch_path():
+        return _ok('F3 SKIP（本包未随司南）', True, '调度语义已移出 MCP，本包无 orchestrator')
+    aid, _sec = _register_test_agent(tmp_root, '心跳Agent')
+    r = _orch('alive', aid, '--timeout', 60)
+    if not _ok('F3.1 初始无心跳 → offline', r.returncode == 0 and 'offline' in r.stdout,
+               r.stdout + r.stderr):
         return False
-    # append 心跳
-    # Append a heartbeat
-    ts = int(time.time())
-    sig = _sign(sec, 'heartbeat:%d' % ts)  # W-75 修④：签名覆盖 "heartbeat:<ts>"
-                                           # W-75 fix ④: the signature covers "heartbeat:<ts>"
-    out1, _ = _rpc([{'jsonrpc': '2.0', 'id': 2, 'method': 'tools/call',
-                     'params': {'name': 'daybook_heartbeat',
-                                'arguments': {'agent_id': aid, 'signature': sig, 'load': '0.3', 'ts': ts}}}])
-    r1 = out1[0].get('result', {})
-    if not _ok('F3.2 heartbeat append 成功', 'heartbeat appended' in r1.get('content', [{}])[0].get('text', ''), str(r1)):
+    r = _orch('heartbeat', aid, '--load', '0.3')
+    if not _ok('F3.2 heartbeat append 成功', r.returncode == 0 and 'heartbeat appended' in r.stdout,
+               r.stdout + r.stderr):
         return False
-    # 探活·应 online
-    # Probe liveness · should be online
-    out2, _ = _rpc([{'jsonrpc': '2.0', 'id': 3, 'method': 'tools/call',
-                     'params': {'name': 'daybook_alive',
-                                'arguments': {'agent_id': aid, 'timeout': 3600}}}])
-    r2 = out2[0].get('result', {})
-    text2 = r2.get('content', [{}])[0].get('text', '')
-    return _ok('F3.3 心跳后 → online', 'online' in text2, text2)
+    r = _orch('alive', aid, '--timeout', 3600)
+    return _ok('F3.3 心跳后 → online', r.returncode == 0 and 'online' in r.stdout,
+               r.stdout + r.stderr)
 
 
 def main():
@@ -833,7 +758,7 @@ def main():
     results.append(('initialize 握手+协商', test_initialize(tmp_root)))
     results.append(('resources list/read conf', test_resources(tmp_root)))
     results.append(('daybook_list 不再是帮助', test_daybook_list(tmp_root)))
-    results.append(('daybook_index 重建', test_daybook_index()))
+    results.append(('4.0.7 缩面：index 移出 MCP', test_daybook_index()))
     results.append(('daybook_query 按字段过滤', test_daybook_query(tmp_root)))
     results.append(('daybook_append 匿名被拒', test_daybook_append_anon_rejected(tmp_root)))
     results.append(('daybook_append 冒名被拒', test_daybook_append_impersonation(tmp_root)))

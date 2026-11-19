@@ -1,12 +1,14 @@
 {
   "mcpServers": {
     "daybook": {
-      "command": "/path/to/daybook-suite/daybook-mcp/daybook-mcp",
-      "args": [],
+      "type": "stdio",
+      "command": "/Users/YOU/.daybook-mailroom/signer/daybook-signer",
+      "args": ["workbuddy"],
       "env": {
-        "MCP_READ_ONLY": "1",
-        "DAYBOOK_ROOT": "/path/to/daybook-ledger",
-        "DAYBOOK_AGENT_ID": "WORKBUDDY"
+        "DAYBOOK_BASE": "/Users/YOU/.daybook-mailroom",
+        "DAYBOOK_ROOT": "/Users/YOU/.daybook-mailroom/ledger",
+        "DAYBOOK_SERVER": "/Users/YOU/.daybook-mailroom/runtime/daybook-suite/daybook-mcp/mcp_server.py",
+        "DAYBOOK_AUDIT_BASE": "/Users/YOU/.daybook-mailroom"
       }
     }
   }

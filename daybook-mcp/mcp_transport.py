@@ -22,8 +22,8 @@ MCP transport layer (W-DB-023-G2 · Item 1)
 """
 import sys, json, os
 
-# 只读模式开关：MCP_READ_ONLY=1 时隐藏/拒绝四个写工具·审计改 stderr（零写盘）
-# Read-only switch: MCP_READ_ONLY=1 hides/rejects the four write tools · audit goes to stderr (zero disk writes)
+# 只读模式开关：MCP_READ_ONLY=1 时隐藏/拒绝写工具 append·审计改 stderr（零写盘）
+# Read-only switch: MCP_READ_ONLY=1 hides/rejects the write tool append · audit goes to stderr (zero disk writes)
 READ_ONLY_ENV = 'MCP_READ_ONLY'
 
 
